@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="map"/>
+        <!-- Launch Sector Slicer/Tuner from Utils -->
+        <node pkg="sector_tuner" type="sector_slicing.py" name="sector_node" output="screen">
+            <param name="save_dir" value="$(find stack_master)/maps/$(arg map)" />
+        </node>
+
+        <!-- Launch Overtaking Sector Slicer/Tuner from Utils -->
+        <node pkg="overtaking_sector_tuner" type="ot_sector_slicing.py" name="ot_sector_node" output="screen">
+            <param name="save_dir" value="$(find stack_master)/maps/$(arg map)" />
+        </node>
+
+        <!-- Launch Static Obstacle Sector Slicer/Tuner from Utils -->
+        <node pkg="static_obstacle_sector_tuner" type="static_obs_sector_slicing.py" name="static_obs_sector_node" output="screen">
+            <param name="save_dir" value="$(find stack_master)/maps/$(arg map)" />
+        </node>
+</launch>
