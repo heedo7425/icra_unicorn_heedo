@@ -29,14 +29,14 @@ source <path to your catkin_ws>/devel/setup.bash
 
 Before cloning, make sure to create the appropriate directory.
 ```
-mkdir ~/unicorn_ws && cd ~/unicorn_ws
+mkdir ~/iccas2025_ws && cd ~/iccas2025_ws
 
 mkdir -p cache/noetic/build cache/noetic/devel cache/noetic/logs
 ```
 
 Recursive clone the main repository together with it's submodules!
 ```bash
-git clone --recurse-submodules https://github.com/HMCL-UNIST/UNICORN.git && cd UNICORN
+git clone --recurse-submodules https://github.com/Brojoon-10/UNICORN-ICCAS_2025.git && cd UNICORN-ICCAS_2025
 ```
 
 ## udev Rules Setup
@@ -80,7 +80,7 @@ docker compose build nuc
 
 Then Open the workspace from VS Code:
 ```bash
-code ~/unicorn_ws/UNICORN
+code ~/iccas2025_ws/UNICORN-ICCAS_2025
 ```
 
 In the VS Code window, press `Ctrl + Shift + P` to open the command palette. From the banner that appears, select `Dev Containers: Rebuild and Reopen in Container`. This will allow VS Code to automatically connect to the container.
