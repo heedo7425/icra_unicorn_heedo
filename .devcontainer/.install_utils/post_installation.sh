@@ -35,6 +35,9 @@ chmod +x compile.sh
 # source
 source /opt/ros/noetic/setup.bash && source /home/${USER}/catkin_ws/devel/setup.bash
 
+catkin build perception
+source /opt/ros/noetic/setup.bash && source /home/${USER}/catkin_ws/devel/setup.bash
+
 # python privileges
 find /home/${USER}/catkin_ws -type f -name "*.py" -exec chmod +x {} \;
 

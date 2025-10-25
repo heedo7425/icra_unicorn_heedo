@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import time
-from typing import List, Any, Tuple
+from typing import List, Any, Tuple, Optional
 import copy
 import os
 import sys
@@ -762,15 +762,15 @@ class ObstacleSpliner:
             return
 
         # ===== DEBUG: Log all obstacles (throttled) =====
-        if len(self.latest_obstacles) > 0:
-            rospy.loginfo_throttle(2.0, f"[{self.name}] ===== OBSTACLE DEBUG =====")
-            for obs in self.latest_obstacles:
-                rospy.loginfo_throttle(2.0,
-                    f"[{self.name}] OBS: id={obs.id}, "
-                    f"sector_id={obs.sector_id}, "
-                    f"in_static_obs_sector={obs.in_static_obs_sector}, "
-                    f"is_static={obs.is_static}, "
-                    f"s={obs.s_center:.2f}m, d={obs.d_center:.2f}m")
+        # if len(self.latest_obstacles) > 0:
+        #     rospy.loginfo_throttle(2.0, f"[{self.name}] ===== OBSTACLE DEBUG =====")
+        #     for obs in self.latest_obstacles:
+        #         rospy.loginfo_throttle(2.0,
+        #             f"[{self.name}] OBS: id={obs.id}, "
+        #             f"sector_id={obs.sector_id}, "
+        #             f"in_static_obs_sector={obs.in_static_obs_sector}, "
+        #             f"is_static={obs.is_static}, "
+        #             f"s={obs.s_center:.2f}m, d={obs.d_center:.2f}m")
 
         # Filter obstacles into two lists:
         # 1. static_obs_in_sector: For memory tracking (use latest_obstacles)
@@ -897,9 +897,9 @@ class ObstacleSpliner:
         keys_to_remove = []
         for key, mem in self.static_obs_memory.items():
             time_diff = (current_time - mem['last_seen']).to_sec()
-            rospy.loginfo_throttle(1.0,
-                f"[{self.name}] DEBUG MEM OBS: sector={key[0]}, id={key[1]}, "
-                f"time_since_last_seen={time_diff:.2f}s, will_remove={time_diff > self.memory_timeout_sec}")
+            # rospy.loginfo_throttle(1.0,
+            #     f"[{self.name}] DEBUG MEM OBS: sector={key[0]}, id={key[1]}, "
+            #     f"time_since_last_seen={time_diff:.2f}s, will_remove={time_diff > self.memory_timeout_sec}")
 
             if (current_time - mem['last_seen']) > timeout:
                 keys_to_remove.append(key)
@@ -909,7 +909,7 @@ class ObstacleSpliner:
 
         for key in keys_to_remove:
             del self.static_obs_memory[key]
-            rospy.loginfo(f"[{self.name}] Removed stale obstacle: sector={key[0]}, id={key[1]}")
+            # rospy.loginfo(f"[{self.name}] Removed stale obstacle: sector={key[0]}, id={key[1]}")
 
         # ===== Phase: Decide use_fixed_path and set obs_in_interest =====
         if self.fixed_path_generated:
@@ -1435,10 +1435,10 @@ class ObstacleSpliner:
 
                 if not inside:
                     # ===== HJ MODIFIED: Enhanced debug logging =====
-                    rospy.logerr(
-                        f"[{self.name}] DEBUG ABORT #2: Point {i}/{samples.shape[0]} OUTSIDE bounds! "
-                        f"xy=({samples[i, 0]:.2f}, {samples[i, 1]:.2f}), "
-                        f"Filter: {'OBSTACLES_ONLY' if (self.use_fixed_path and self.map_filter_fixed) else 'ORIGINAL'}")
+                    # rospy.logerr(
+                    #     f"[{self.name}] DEBUG ABORT #2: Point {i}/{samples.shape[0]} OUTSIDE bounds! "
+                    #     f"xy=({samples[i, 0]:.2f}, {samples[i, 1]:.2f}), "
+                    #     f"Filter: {'OBSTACLES_ONLY' if (self.use_fixed_path and self.map_filter_fixed) else 'ORIGINAL'}")
                     # ===== HJ MODIFIED END =====
                     danger_flag = True
                     break
@@ -1660,10 +1660,26 @@ class ObstacleSpliner:
             if success:
                 rospy.loginfo(f"[{self.name}] [THREAD] Fixed path generated successfully!")
                 self.fixed_path_generated = True  # Static flag: generation completed
+
+                # ===== HJ MODIFIED: Publish fixed path IMMEDIATELY before flag =====
+                # Critical: state_machine must receive waypoints BEFORE use_fixed_path flag
+                # Update timestamps
+                self.fixed_path_wpnts.header.stamp = rospy.Time.now()
+                if len(self.fixed_path_markers.markers) > 0:
+                    self.fixed_path_markers.markers[0].header.stamp = rospy.Time.now()
+
+                # Publish waypoints FIRST
+                self.fixed_path_pub.publish(self.fixed_path_wpnts)
+                self.fixed_path_mrks_pub.publish(self.fixed_path_markers)
+                self.fixed_path_last_pub_time = rospy.Time.now()
+                rospy.loginfo(f"[{self.name}] [THREAD] Published FIXED path ({len(self.fixed_path_wpnts.wpnts)} waypoints)")
+
+                # THEN publish flag (ordering critical!)
                 self.use_fixed_path = True  # Dynamic flag: start using fixed path
-                # ===== HJ ADDED: Publish flag change =====
                 self.use_fixed_path_pub.publish(Bool(data=True))
-                # ===== HJ ADDED END =====
+                rospy.loginfo(f"[{self.name}] [THREAD] Published use_fixed_path=True")
+                # ===== HJ MODIFIED END =====
+
                 # ===== HJ ADDED: Start adaptive timeout decay =====
                 self.last_timeout_decay_time = rospy.Time.now()
                 rospy.loginfo(f"[{self.name}] Started adaptive memory timeout decay (initial={self.memory_timeout_sec}s)")
@@ -1728,7 +1744,7 @@ class ObstacleSpliner:
             for idx, ratio in enumerate(safety_width_ratios):
                 try:
                     safety_width_adjusted = self.safety_width * ratio
-                    rospy.loginfo(
+                    rospy.logwarn(
                         f"[{self.name}] Attempt {idx+1}/{len(safety_width_ratios)}: "
                         f"safety_width={safety_width_adjusted:.3f}m (ratio={ratio:.2f})"
                     )
@@ -1749,7 +1765,7 @@ class ObstacleSpliner:
                     # Catch both ValueError (constraints inconsistent) and RuntimeError (track too small)
                     error_msg = str(e)
                     if "constraints are inconsistent" in error_msg or "Problem not solvable" in error_msg:
-                        rospy.logwarn(
+                        rospy.logerr(
                             f"[{self.name}] Attempt {idx+1}/{len(safety_width_ratios)} failed: {error_msg}. "
                             f"Trying next configuration..."
                         )
@@ -1980,48 +1996,47 @@ class ObstacleSpliner:
             bound_r_m = self._pixels_to_meters(bound_r_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
             bound_l_m = self._pixels_to_meters(bound_l_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
 
+            # ===== HJ ADDED: Interpolate centerline for uniform spacing =====
+            # Skeleton gives uneven spacing (~0.05m avg), interpolate to uniform stepsize
+            # Adjust centerline_stepsize for speed vs accuracy tradeoff:
+            #   0.1m = Global planner default (accurate, slower)
+            #   0.3m = 3x faster (recommended for real-time)
+            #   0.5m = 5x faster (speed priority)
+            from global_racetrajectory_optimization import helper_funcs_glob
+
+            centerline_stepsize = 0.1  # meters - ADJUST THIS VALUE
+
+            original_count = centerline_m.shape[0]
+            centerline_tmp = np.column_stack((centerline_m, np.zeros((centerline_m.shape[0], 2))))
+            centerline_m_int = helper_funcs_glob.src.interp_track.interp_track(
+                reftrack=centerline_tmp, stepsize_approx=centerline_stepsize
+            )
+            centerline_m = centerline_m_int[:, :2]  # Extract x, y only
+            rospy.loginfo(f"[{self.name}] Centerline interpolated: {original_count} → {centerline_m.shape[0]} points (stepsize={centerline_stepsize}m)")
+            # ===== HJ ADDED END =====
+
             # ===== HJ ADDED: Validate and correct centerline direction (same as global_planner_node.py) =====
             # Compare centerline direction with GB raceline direction at the same XY location
-            if len(centerline_m) > 10 and len(self.gb_wpnts.wpnts) > 10:
-                # Use GB raceline's first waypoint as reference location
-                ref_x = self.gb_wpnts.wpnts[0].x_m
-                ref_y = self.gb_wpnts.wpnts[0].y_m
-                ref_heading = self.gb_wpnts.wpnts[0].psi_rad
+            # ===== HJ MODIFIED: Use signed area to determine direction (more robust for closed loops) =====
+            # Calculate signed area to determine if centerline is CCW or CW
+            is_ccw = self._is_polygon_ccw(centerline_m)
 
-                # Find closest point on centerline to this location
-                distances = np.sqrt((centerline_m[:, 0] - ref_x)**2 + (centerline_m[:, 1] - ref_y)**2)
-                closest_idx = np.argmin(distances)
+            rospy.loginfo(f"[{self.name}] Centerline direction: {'CCW (counter-clockwise)' if is_ccw else 'CW (clockwise)'}")
 
-                # Calculate centerline direction near this point (use ±5 points for robustness)
-                idx_start = max(0, closest_idx - 5)
-                idx_end = min(len(centerline_m) - 1, closest_idx + 5)
+            # Determine desired direction based on reverse_mapping
+            # reverse_mapping=False → want CCW (반시계)
+            # reverse_mapping=True → want CW (시계)
+            want_ccw = not self.reverse_mapping
 
-                cent_heading = np.angle(complex(
-                    centerline_m[idx_end, 0] - centerline_m[idx_start, 0],
-                    centerline_m[idx_end, 1] - centerline_m[idx_start, 1]
-                ))
-
-                rospy.loginfo(
-                    f"[{self.name}] Direction check at GB wpnt[0] ({ref_x:.2f}, {ref_y:.2f}): "
-                    f"GB_heading={ref_heading:.3f}rad, centerline_heading={cent_heading:.3f}rad"
-                )
-
-                # Flip if directions don't match (like global_planner_node.py line 489)
-                if not self._compare_direction(cent_heading, ref_heading):
-                    centerline_pixels = np.flip(centerline_pixels, axis=0)
-                    centerline_m = np.flip(centerline_m, axis=0)
-                    bound_r_m, bound_l_m = bound_l_m, bound_r_m  # Swap bounds when flipping
-                    rospy.loginfo(f"[{self.name}] Centerline FLIPPED to match GB raceline direction")
-                else:
-                    rospy.loginfo(f"[{self.name}] Centerline direction matches GB raceline")
-
-                # Flip again if reverse_mapping is True (like global_planner_node.py line 494)
-                if self.reverse_mapping:
-                    centerline_pixels = np.flip(centerline_pixels, axis=0)
-                    centerline_m = np.flip(centerline_m, axis=0)
-                    bound_r_m, bound_l_m = bound_l_m, bound_r_m  # Swap bounds when flipping
-                    rospy.loginfo(f"[{self.name}] Centerline flipped (reverse_mapping=True)")
-            # ===== HJ ADDED END =====
+            # Flip if current direction doesn't match desired direction
+            if is_ccw != want_ccw:
+                centerline_pixels = np.flip(centerline_pixels, axis=0)
+                centerline_m = np.flip(centerline_m, axis=0)
+                bound_r_m, bound_l_m = bound_l_m, bound_r_m  # Swap bounds when flipping
+                rospy.loginfo(f"[{self.name}] Centerline FLIPPED to {'CCW' if want_ccw else 'CW'} (reverse_mapping={self.reverse_mapping})")
+            else:
+                rospy.loginfo(f"[{self.name}] Centerline direction correct ({'CCW' if want_ccw else 'CW'})")
+            # ===== HJ MODIFIED END =====
 
             # Step 6: Calculate reftrack distances
             reftrack = self._calculate_reftrack_distances(centerline_m, bound_r_m, bound_l_m)
@@ -2154,7 +2169,7 @@ class ObstacleSpliner:
 
             # Replace the entire optim_opts_mincurv dictionary with tighter settings
             # This is more robust than trying to replace individual values
-            replacement = 'optim_opts_mincurv={"width_opt": 0.3,\n                    "iqp_iters_min": 15,\n                    "iqp_curverror_allowed": 0.01}'
+            replacement = 'optim_opts_mincurv={"width_opt": 0.8,\n                    "iqp_iters_min": 5,\n                    "iqp_curverror_allowed": 0.05}'
 
             ini_content_modified = re.sub(
                 r'optim_opts_mincurv=\{[^}]+\}',
@@ -2167,6 +2182,32 @@ class ObstacleSpliner:
             modified_match = re.search(r'optim_opts_mincurv=\{[^}]+\}', ini_content_modified, re.DOTALL)
             if modified_match:
                 rospy.loginfo(f"[{self.name}] AFTER: {modified_match.group()}")
+
+            # ===== HJ ADDED: Modify additional parameters for faster optimization =====
+            # Modify stepsize_opts for faster internal processing
+            # stepsize_prep: 0.05 → 0.1 (spline fitting 2x faster)
+            # stepsize_reg: 0.2 → 0.3 (optimization 1.5x faster)
+            # stepsize_interp_after_opt: 0.1 (keep for 10cm waypoint spacing)
+            stepsize_replacement = 'stepsize_opts={"stepsize_prep": 0.5,\n               "stepsize_reg": 0.3,\n               "stepsize_interp_after_opt": 0.1}'
+            ini_content_modified = re.sub(
+                r'stepsize_opts=\{[^}]+\}',
+                stepsize_replacement,
+                ini_content_modified,
+                flags=re.DOTALL
+            )
+
+            # NOTE: curv_calc_opts modification not needed - only used in mintime optimization
+            # We use mincurv_iqp which uses analytical curvature calculation (calc_head_curv_an)
+            # curv_replacement = 'curv_calc_opts = {"d_preview_curv": 1.0,\n                  "d_review_curv": 1.0,\n                  "d_preview_head": 0.5,\n                  "d_review_head": 0.5}'
+            # ini_content_modified = re.sub(
+            #     r'curv_calc_opts\s*=\s*\{[^}]+\}',
+            #     curv_replacement,
+            #     ini_content_modified,
+            #     flags=re.DOTALL
+            # )
+
+            rospy.loginfo(f"[{self.name}] Modified stepsize_opts for faster optimization")
+            # ===== HJ ADDED END =====
 
             # Write modified content back
             with open(temp_ini, 'w') as f:
@@ -2293,6 +2334,10 @@ class ObstacleSpliner:
         1. Drawing 0.5m diameter circle at obstacle position
         2. Drawing 0.4m thick line from circle to nearest wall (black pixel)
 
+        NEW LOGIC (HJ):
+        - If nearest wall distance < 2.0m: Connect to nearest wall (any direction)
+        - If nearest wall distance >= 2.0m: Connect to closer GB boundary (left or right)
+
         Args:
             bw: Binary image (255=free, 0=occupied)
             verified_obs: List of (sector_id, obs_id, s, d)
@@ -2313,6 +2358,17 @@ class ObstacleSpliner:
 
         obstacle_radius_px = int(obstacle_radius_m / map_resolution)
         line_thickness_px = max(1, int(line_thickness_m / map_resolution))
+
+        # ===== HJ ADDED: Load GB raceline boundaries for smart connection =====
+        WALL_CONNECTION_THRESHOLD = 2.0  # meters - threshold for smart boundary connection
+        bound_r_original, bound_l_original = self._get_original_wall_boundaries()
+        use_gb_boundaries = (bound_r_original is not None and bound_l_original is not None)
+
+        if not use_gb_boundaries:
+            rospy.logwarn(f"[{self.name}] GB boundaries not available, using nearest wall for all obstacles")
+        else:
+            rospy.loginfo(f"[{self.name}] Using GB boundaries for smart obstacle connection (threshold={WALL_CONNECTION_THRESHOLD}m)")
+        # ===== HJ ADDED END =====
 
         for sector_id, obs_id, obs_s, obs_d in verified_obs:
             # Convert Frenet (s, d) to Cartesian (x, y)
@@ -2347,24 +2403,125 @@ class ObstacleSpliner:
             # Calculate distances to all wall pixels
             distances = np.sqrt((wall_pixels[:, 0] - obs_y_px)**2 + (wall_pixels[:, 1] - obs_x_px)**2)
             nearest_idx = np.argmin(distances)
-            nearest_wall_y_px = wall_pixels[nearest_idx, 0]
-            nearest_wall_x_px = wall_pixels[nearest_idx, 1]
+            nearest_distance_m = distances[nearest_idx] * map_resolution
 
-            # Step 3: Draw thick line from obstacle to nearest wall (ONLY on modified_bw, NOT on obstacles_only_bw)
-            # ===== HJ MODIFIED: Line only on modified_bw for skeletonize =====
+            # ===== HJ MODIFIED: Smart connection logic based on gap size =====
+            connection_type = ""
+            target_wall_x_px = None
+            target_wall_y_px = None
+
+            # ===== DEBUG: Log decision criteria =====
+            # rospy.logerr(f"[{self.name}] ========== OBSTACLE CONNECTION DEBUG ==========")
+            # rospy.logerr(f"[{self.name}] Obstacle {obs_id} at s={obs_s:.2f}, d={obs_d:.2f}, xy=({obs_x_m:.2f}, {obs_y_m:.2f})")
+            # rospy.logerr(f"[{self.name}] Nearest wall distance: {nearest_distance_m:.2f}m")
+            # rospy.logerr(f"[{self.name}] Threshold: {WALL_CONNECTION_THRESHOLD}m")
+            # rospy.logerr(f"[{self.name}] GB boundaries available: {use_gb_boundaries}")
+            # ===== DEBUG END =====
+
+            if nearest_distance_m < WALL_CONNECTION_THRESHOLD or not use_gb_boundaries:
+                # Small gap OR no GB boundaries: Use nearest wall (original method)
+                nearest_wall_y_px = wall_pixels[nearest_idx, 0]
+                nearest_wall_x_px = wall_pixels[nearest_idx, 1]
+                target_wall_x_px = nearest_wall_x_px
+                target_wall_y_px = nearest_wall_y_px
+                connection_type = f"nearest_wall ({nearest_distance_m:.2f}m < {WALL_CONNECTION_THRESHOLD}m)"
+
+                # ===== DEBUG =====
+                # rospy.logerr(f"[{self.name}] DECISION: Using NEAREST WALL (gap too small or no GB boundaries)")
+                # rospy.logerr(f"[{self.name}] Target: pixel ({nearest_wall_x_px}, {nearest_wall_y_px})")
+                # ===== DEBUG END =====
+
+            else:
+                # Large gap: Use GB boundary with normal direction (smart method)
+                # rospy.logerr(f"[{self.name}] DECISION: Using GB BOUNDARY (gap >= {WALL_CONNECTION_THRESHOLD}m)")
+
+                # Get GB normal directions at obstacle s position
+                left_normal, right_normal = self._get_gb_normals_at_s(obs_s)
+                # rospy.logerr(f"[{self.name}] GB normals: left={left_normal}, right={right_normal}")
+
+                obs_pos = np.array([obs_x_m, obs_y_m])
+
+                # Find intersections in both normal directions
+                left_intersection, left_distance = self._find_boundary_intersection(
+                    obs_pos, left_normal, bound_l_original
+                )
+                right_intersection, right_distance = self._find_boundary_intersection(
+                    obs_pos, right_normal, bound_r_original
+                )
+
+                # ===== DEBUG =====
+                # rospy.logerr(f"[{self.name}] Left boundary: intersection={left_intersection is not None}, distance={left_distance if left_distance else 'N/A'}")
+                # rospy.logerr(f"[{self.name}] Right boundary: intersection={right_intersection is not None}, distance={right_distance if right_distance else 'N/A'}")
+                # ===== DEBUG END =====
+
+                # Handle 4 cases:
+                # 1. Both intersections found: Choose closer one
+                # 2. Only left found: Use left
+                # 3. Only right found: Use right
+                # 4. Neither found: Fallback to nearest wall
+
+                if left_intersection is not None and right_intersection is not None:
+                    # Both found: choose closer
+                    if left_distance < right_distance:
+                        target_x_m, target_y_m = left_intersection
+                        connection_type = f"left_normal ({left_distance:.2f}m < {right_distance:.2f}m)"
+                        # rospy.logerr(f"[{self.name}] RESULT: Both boundaries found, chose LEFT (closer)")
+                    else:
+                        target_x_m, target_y_m = right_intersection
+                        connection_type = f"right_normal ({right_distance:.2f}m < {left_distance:.2f}m)"
+                        # rospy.logerr(f"[{self.name}] RESULT: Both boundaries found, chose RIGHT (closer)")
+
+                elif left_intersection is not None:
+                    # Only left found
+                    target_x_m, target_y_m = left_intersection
+                    connection_type = f"left_normal_only ({left_distance:.2f}m)"
+                    # rospy.logerr(f"[{self.name}] RESULT: Only LEFT boundary found")
+
+                elif right_intersection is not None:
+                    # Only right found
+                    target_x_m, target_y_m = right_intersection
+                    connection_type = f"right_normal_only ({right_distance:.2f}m)"
+                    # rospy.logerr(f"[{self.name}] RESULT: Only RIGHT boundary found")
+
+                else:
+                    # Neither found: fallback to nearest wall
+                    # rospy.logerr(f"[{self.name}] RESULT: NO GB boundaries found, fallback to NEAREST WALL")
+                    nearest_wall_y_px = wall_pixels[nearest_idx, 0]
+                    nearest_wall_x_px = wall_pixels[nearest_idx, 1]
+                    target_wall_x_px = nearest_wall_x_px
+                    target_wall_y_px = nearest_wall_y_px
+                    connection_type = f"nearest_wall_fallback ({nearest_distance_m:.2f}m)"
+
+                # Convert target position to pixels (if we used GB boundary)
+                if target_wall_x_px is None:
+                    target_x_px = int((target_x_m - map_origin_x) / map_resolution)
+                    target_y_px = int((target_y_m - map_origin_y) / map_resolution)
+                    # Flip Y for image coordinates
+                    target_y_px = modified_bw.shape[0] - target_y_px
+
+                    # Validate pixel coordinates
+                    target_x_px = max(0, min(target_x_px, modified_bw.shape[1] - 1))
+                    target_y_px = max(0, min(target_y_px, modified_bw.shape[0] - 1))
+
+                    target_wall_x_px = target_x_px
+                    target_wall_y_px = target_y_px
+
+                    # rospy.logerr(f"[{self.name}] Target: meters ({target_x_m:.2f}, {target_y_m:.2f}) -> pixel ({target_wall_x_px}, {target_wall_y_px})")
+
+            # Step 3: Draw thick line from obstacle to target wall (ONLY on modified_bw, NOT on obstacles_only_bw)
             cv2.line(
                 modified_bw,
                 (obs_x_px, obs_y_px),
-                (nearest_wall_x_px, nearest_wall_y_px),
+                (target_wall_x_px, target_wall_y_px),
                 0,  # Black (occupied)
                 line_thickness_px
             )
             # ===== HJ MODIFIED END =====
 
+            # rospy.logerr(f"[{self.name}] ========== FINAL: Connected via {connection_type} ==========")
             rospy.loginfo(
                 f"[{self.name}] Added obstacle {obs_id} at pixel ({obs_x_px}, {obs_y_px}), "
-                f"connected to wall at ({nearest_wall_x_px}, {nearest_wall_y_px}), "
-                f"distance={distances[nearest_idx]*map_resolution:.2f}m"
+                f"connected via {connection_type}"
             )
 
         # ===== HJ MODIFIED: Return both versions =====
@@ -2393,7 +2550,14 @@ class ObstacleSpliner:
             rospy.logerr(f"[{self.name}] No closed contours found in skeleton")
             return None
 
-        rospy.loginfo(f"[{self.name}] Found {len(closed_contours)} closed contours in skeleton")
+        # ===== HJ ADDED: Alert if multiple contours (obstacle connection may have failed) =====
+        if len(closed_contours) > 1:
+            rospy.logerr(f"[{self.name}] ========== WARNING: MULTIPLE CONTOURS DETECTED ==========")
+            rospy.logerr(f"[{self.name}] Found {len(closed_contours)} closed contours in skeleton!")
+            rospy.logerr(f"[{self.name}] This may indicate obstacle-wall connection failed.")
+        else:
+            rospy.loginfo(f"[{self.name}] Found {len(closed_contours)} closed contour in skeleton (OK)")
+        # ===== HJ ADDED END =====
 
         # Calculate line length of every contour to get the real centerline
         line_lengths = []
@@ -2404,16 +2568,24 @@ class ObstacleSpliner:
                                      (pnt[0][1] - cont[k - 1][0][1]) ** 2)
             line_lengths.append(line_length)
 
-        # Log all contour lengths for debugging
-        for i, length in enumerate(line_lengths):
-            rospy.loginfo(f"[{self.name}] Contour {i}: {length:.1f} pixels")
+        # Log all contour lengths for debugging (only if multiple contours)
+        if len(closed_contours) > 1:
+            rospy.logerr(f"[{self.name}] Contour lengths:")
+            for i, length in enumerate(line_lengths):
+                rospy.logerr(f"[{self.name}]   Contour {i}: {length:.1f} pixels")
 
         # Take the shortest line (innermost contour = centerline)
         # NOTE: In mapping, longest is outer wall, shortest is usually centerline
         min_length_index = np.argmin(line_lengths)
         smallest_contour = np.array(closed_contours[min_length_index]).flatten()
-
         rospy.loginfo(f"[{self.name}] Selected contour {min_length_index} as centerline (length={line_lengths[min_length_index]:.1f} pixels)")
+
+        # ===== HJ MODIFIED: Take the longest contour when obstacles present =====
+        # When obstacles are present, longest contour is the main track path
+        # Shorter contours are usually noise/residue around obstacles
+        # max_length_index = np.argmax(line_lengths)
+        # smallest_contour = np.array(closed_contours[max_length_index]).flatten()
+        # rospy.loginfo(f"[{self.name}] Selected contour {max_length_index} as centerline (length={line_lengths[max_length_index]:.1f} pixels)")
 
         # Reshape from [x1,y1,x2,y2,...] to [[x1,y1],[x2,y2],...]
         len_reshape = int(len(smallest_contour) / 2)
@@ -2928,31 +3100,192 @@ class ObstacleSpliner:
             traceback.print_exc()
     # ===== HJ ADDED END =====
 
-    def _compare_direction(self, alpha: float, beta: float) -> bool:
+    def _is_polygon_ccw(self, points: np.ndarray) -> bool:
         """
-        Compare the direction of two angles and check if they point in the same direction.
-        Same logic as global_planner_node.py line 1291.
+        Determine if a closed polygon is oriented counter-clockwise (CCW) using signed area.
+
+        Uses the Shoelace formula to calculate signed area.
+        Since points are in ROS coordinates (X right, Y up), standard formula applies:
+        - Positive signed area → CCW
+        - Negative signed area → CW
 
         Args:
-            alpha: direction angle in rad
-            beta: direction angle in rad
+            points: Nx2 array of (x, y) coordinates in ROS coordinate system
 
         Returns:
-            True if alpha and beta point in the same direction (within 90 degrees)
+            True if counter-clockwise (CCW), False if clockwise (CW)
         """
-        delta_theta = abs(alpha - beta)
+        n = len(points)
+        if n < 3:
+            rospy.logwarn(f"[{self.name}] Not enough points ({n}) to determine polygon direction")
+            return True  # Default to CCW
 
-        if delta_theta > np.pi:
-            delta_theta = 2 * np.pi - delta_theta
+        # Calculate signed area using Shoelace formula
+        # Area = 0.5 * sum((x_i * y_{i+1}) - (x_{i+1} * y_i))
+        signed_area = 0.0
+        for i in range(n):
+            x1, y1 = points[i]
+            x2, y2 = points[(i + 1) % n]  # Next point (wrap around)
+            signed_area += x1 * y2 - x2 * y1
 
-        same_direction = delta_theta < np.pi / 2
+        # In ROS coordinates (right-handed): positive area = CCW
+        return signed_area > 0
 
-        rospy.loginfo(
-            f"[{self.name}] Direction comparison: alpha={alpha:.3f}rad, beta={beta:.3f}rad, "
-            f"delta={delta_theta:.3f}rad, same_direction={same_direction}"
-        )
+    def _get_gb_normals_at_s(self, obs_s: float) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """
+        Get left and right normal direction vectors at given s position on GB raceline.
 
-        return same_direction
+        Args:
+            obs_s: s position on GB raceline
+
+        Returns:
+            (left_normal, right_normal): Tuple of (dx, dy) direction vectors in ROS coordinates (meters)
+        """
+        if len(self.gb_wpnts.wpnts) < 2:
+            rospy.logwarn(f"[{self.name}] Not enough GB waypoints for heading interpolation")
+            # Default: horizontal normals
+            return (0.0, 1.0), (0.0, -1.0)
+
+        # Find two waypoints bracketing obs_s for interpolation
+        s_values = np.array([wp.s_m for wp in self.gb_wpnts.wpnts])
+        psi_values = np.array([wp.psi_rad for wp in self.gb_wpnts.wpnts])
+
+        # Handle wraparound for closed loop
+        max_s = s_values[-1]
+        obs_s_wrapped = obs_s % max_s if max_s > 0 else obs_s
+
+        # Find bracketing indices
+        idx_after = np.searchsorted(s_values, obs_s_wrapped)
+
+        if idx_after == 0:
+            # Before first waypoint: use first waypoint's heading
+            psi_ros = psi_values[0]
+        elif idx_after >= len(s_values):
+            # After last waypoint: use last waypoint's heading
+            psi_ros = psi_values[-1]
+        else:
+            # Interpolate between idx_after-1 and idx_after
+            idx_before = idx_after - 1
+            s_before = s_values[idx_before]
+            s_after = s_values[idx_after]
+            psi_before = psi_values[idx_before]
+            psi_after = psi_values[idx_after]
+
+            # Handle angle wraparound for interpolation
+            delta_psi = psi_after - psi_before
+            if delta_psi > np.pi:
+                delta_psi -= 2 * np.pi
+            elif delta_psi < -np.pi:
+                delta_psi += 2 * np.pi
+
+            # Linear interpolation
+            t = (obs_s_wrapped - s_before) / (s_after - s_before) if s_after != s_before else 0.0
+            psi_ros = psi_before + t * delta_psi
+
+            # Normalize to [-π, π]
+            if psi_ros > np.pi:
+                psi_ros -= 2 * np.pi
+            elif psi_ros < -np.pi:
+                psi_ros += 2 * np.pi
+
+        # Calculate normal vectors in ROS coordinates (X right, Y up)
+        # psi_ros: 0 = east/X-axis, π/2 = north/Y-axis
+        # Left normal: psi + π/2 (CCW 90 degrees)
+        # Right normal: psi - π/2 (CW 90 degrees)
+        psi_left = psi_ros + np.pi / 2
+        psi_right = psi_ros - np.pi / 2
+
+        left_normal = (np.cos(psi_left), np.sin(psi_left))
+        right_normal = (np.cos(psi_right), np.sin(psi_right))
+
+        return left_normal, right_normal
+
+    def _find_boundary_intersection(
+        self,
+        obs_pos: np.ndarray,
+        direction: Tuple[float, float],
+        boundary_points: np.ndarray,
+        max_distance_m: float = 10.0
+    ) -> Tuple[Optional[np.ndarray], Optional[float]]:
+        """
+        Find intersection of bidirectional ray with boundary segments.
+
+        Ray: starts at obstacle, goes in normal direction (bidirectional - both + and - direction)
+        Boundary: consecutive points form line segments
+
+        Returns the closest intersection point to the obstacle.
+
+        Args:
+            obs_pos: (x, y) obstacle position in meters (ROS coordinates)
+            direction: (dx, dy) normal direction vector (bidirectional ray)
+            boundary_points: Nx2 array of boundary XY positions (consecutive points form segments)
+            max_distance_m: Maximum distance from obstacle to consider
+
+        Returns:
+            (intersection_point, distance): Tuple of intersection (x, y) and distance from obstacle,
+                                           or (None, None) if no intersection found
+        """
+        if len(boundary_points) < 2:
+            return None, None
+
+        dir_x, dir_y = direction
+
+        # Normalize direction
+        dir_magnitude = np.sqrt(dir_x**2 + dir_y**2)
+        if dir_magnitude < 1e-6:
+            rospy.logwarn(f"[{self.name}] Direction vector too small: {direction}")
+            return None, None
+
+        dir_x /= dir_magnitude
+        dir_y /= dir_magnitude
+
+        closest_intersection = None
+        closest_distance = float('inf')
+
+        # Check intersection with each boundary segment
+        for i in range(len(boundary_points) - 1):
+            p1 = boundary_points[i]      # Segment start
+            p2 = boundary_points[i + 1]  # Segment end
+
+            # Ray-Segment intersection
+            # Ray: P = obs_pos + t * direction (t can be positive or negative - bidirectional)
+            # Segment: Q = p1 + s * (p2 - p1), where 0 <= s <= 1
+
+            seg_dir = p2 - p1  # Segment direction
+
+            # Solve: obs_pos + t * dir = p1 + s * seg_dir
+            # Rearrange: t * dir - s * seg_dir = p1 - obs_pos
+            # In matrix form:
+            # [dir_x, -seg_dir_x] [t]   [p1_x - obs_pos_x]
+            # [dir_y, -seg_dir_y] [s] = [p1_y - obs_pos_y]
+
+            denom = dir_x * (-seg_dir[1]) - dir_y * (-seg_dir[0])
+            denom = dir_x * seg_dir[1] - dir_y * seg_dir[0]
+
+            if abs(denom) < 1e-10:
+                # Parallel or collinear - no unique intersection
+                continue
+
+            diff = p1 - obs_pos
+            t = (diff[0] * seg_dir[1] - diff[1] * seg_dir[0]) / denom
+            s = (diff[0] * dir_y - diff[1] * dir_x) / denom
+
+            # Check if intersection is valid:
+            # 1. s in [0, 1]: intersection is on the segment (not just the extended line)
+            # 2. Distance within max_distance_m
+            if 0 <= s <= 1:
+                distance = abs(t)  # Distance along ray (bidirectional, so absolute value)
+
+                if distance <= max_distance_m and distance < closest_distance:
+                    # Calculate intersection point
+                    intersection = obs_pos + t * np.array([dir_x, dir_y])
+                    closest_intersection = intersection
+                    closest_distance = distance
+
+        if closest_intersection is not None:
+            return closest_intersection, closest_distance
+        else:
+            return None, None
 
 if __name__ == "__main__":
     spliner = ObstacleSpliner()

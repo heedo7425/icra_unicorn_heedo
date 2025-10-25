@@ -1,29 +1,29 @@
 n_sectors: 4
 Static_Obs_sector0:
   start: 0
-  end: 49
+  end: 223
   s_start: 0.0
-  s_end: 4.895415533319531
+  s_end: 22.261103359736584
   name: sector_1
   static_obs_section: false
 Static_Obs_sector1:
-  start: 49
-  end: 260
-  s_start: 4.895415533319531
-  s_end: 25.97567425843016
+  start: 223
+  end: 288
+  s_start: 22.261103359736584
+  s_end: 28.749765774009578
   name: sector_2
   static_obs_section: false
 Static_Obs_sector2:
-  start: 260
-  end: 314
-  s_start: 25.97567425843016
-  s_end: 31.370621989027196
+  start: 288
+  end: 369
+  s_start: 28.749765774009578
+  s_end: 36.835637397949775
   name: sector_3
   static_obs_section: false
 Static_Obs_sector3:
-  start: 314
-  end: 397
-  s_start: 31.370621989027196
-  s_end: 39.662856463833776
+  start: 369
+  end: 419
+  s_start: 36.835637397949775
+  s_end: 41.826916178159735
   name: sector_4
   static_obs_section: false

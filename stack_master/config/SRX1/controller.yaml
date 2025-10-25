@@ -1,9 +1,9 @@
 AEB_thres: 0.2
-KD: 0.05
+KD: 0.035
 KD_for_speed: 0.2
 KI: 0.0
 KI_for_speed: 0.5
-KP: 0.5
+KP: 0.35
 KP_for_speed: 1.45
 a_x_max: 5.0
 a_y_max: 5.0
@@ -18,7 +18,7 @@ end_scale_speed: 10.0
 future_constant: 0.05
 heading_error_thres: 10.0
 lat_err_coeff: 1.0
-m_l1: 0.2
+m_l1: 0.43
 prioritize_dyn: false
 q_l1: -0.2
 speed_diff_thres: 0.1

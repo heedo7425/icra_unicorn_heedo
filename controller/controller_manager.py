@@ -462,6 +462,7 @@ class Controller_manager:
                 self.measure_pub.publish(end-start)
                 
             ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
+            # ack_msg = self.create_ack_msg(0, acceleration, jerk, steering_angle)
 
             self.drive_pub.publish(ack_msg)
             if self.measuring:
