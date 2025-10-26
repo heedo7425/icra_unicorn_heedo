@@ -7,7 +7,7 @@ import numpy as np
 import rospy
 
 from std_msgs.msg import Float32
-from f110_msgs.msg import WpntArray
+from f110_msgs.msg import WpntArray, OTWpntArray
 from sensor_msgs.msg import LaserScan
 from filterpy.common import Q_discrete_white_noise
 from filterpy.kalman import ExtendedKalmanFilter as EKF
@@ -302,10 +302,15 @@ class StaticDynamic:
         self.from_bag = rospy.get_param("/from_bag", False)
         self.measuring = rospy.get_param("/measure", False)
 
+        # ===== HJ ADDED: Fixed path Frenet converter =====
+        self.fixed_converter = None
+        self.fixed_converter_initialized = False
+        # ===== HJ ADDED END =====
 
         # --- Subscribers ---
         rospy.Subscriber('/detect/raw_obstacles', ObstacleArray, self.obstacleCallback)
         rospy.Subscriber('/global_waypoints_scaled', WpntArray, self.pathCallback)
+        rospy.Subscriber('/planner/avoidance/smart_static_otwpnts', OTWpntArray, self.fixedPathCallback)  # ===== HJ ADDED =====
         rospy.Subscriber('/car_state/odom_frenet', Odometry, self.carStateCallback)
         rospy.Subscriber('/car_state/odom', Odometry, self.carStateGlobCallback)
         rospy.Subscriber('/scan', LaserScan, self.scansCallback)
@@ -416,7 +421,51 @@ class StaticDynamic:
             self.track_length = data.wpnts[-1].s_m
             Opponent_state.track_length = self.track_length
             Opponent_state.waypoints = self.globalpath
-    
+
+    # ===== HJ ADDED: Fixed path callback (initialize converter only once) =====
+    def fixedPathCallback(self, data):
+        if not data.wpnts:
+            # Fixed path not available - normal before Smart path is generated
+            return
+
+        # Initialize converter only once when Fixed path first becomes available
+        if not self.fixed_converter_initialized:
+            fixed_waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+            self.fixed_converter = FrenetConverter(fixed_waypoints[:, 0], fixed_waypoints[:, 1])
+            self.fixed_converter_initialized = True
+            rospy.loginfo('[Tracking] Fixed path Frenet converter initialized: %d waypoints', len(data.wpnts))
+
+    def convert_frenet_velocity(self, s_gb, d_gb, vs_gb, vd_gb, x_m, y_m):
+        """
+        Convert velocity from GB Frenet to Fixed Frenet coordinates.
+
+        Args:
+            s_gb, d_gb: GB Frenet position
+            vs_gb, vd_gb: GB Frenet velocity
+            x_m, y_m: XY position
+
+        Returns:
+            vs_fixed, vd_fixed: Fixed Frenet velocity
+        """
+        if not self.fixed_converter_initialized or self.fixed_converter is None:
+            return 0.0, 0.0
+
+        # Get tangent angles for both reference paths
+        psi_gb = np.arctan2(*self.converter.get_derivative(s_gb)[::-1])  # dy/ds, dx/ds
+        s_fixed_approx = self.fixed_converter.get_approx_s(np.array([x_m]), np.array([y_m]))[0]
+        psi_fixed = np.arctan2(*self.fixed_converter.get_derivative(s_fixed_approx)[::-1])
+
+        # Convert GB Frenet velocity to XY velocity
+        vx = vs_gb * np.cos(psi_gb) - vd_gb * np.sin(psi_gb)
+        vy = vs_gb * np.sin(psi_gb) + vd_gb * np.cos(psi_gb)
+
+        # Convert XY velocity to Fixed Frenet velocity
+        vs_fixed = vx * np.cos(psi_fixed) + vy * np.sin(psi_fixed)
+        vd_fixed = -vx * np.sin(psi_fixed) + vy * np.cos(psi_fixed)
+
+        return float(vs_fixed), float(vd_fixed)
+    # ===== HJ ADDED END =====
+
     def initialize_converter(self) -> bool:
         """
         Initialize the FrenetConverter object"""
@@ -832,6 +881,47 @@ class StaticDynamic:
             obs_msg.d_left  = obs_msg.d_center+obs_msg.size/2
 
             obs_msg.x_m, obs_msg.y_m = self.converter.get_cartesian(obs_msg.s_center,obs_msg.d_center)
+
+            # ===== HJ ADDED: Calculate Fixed path Frenet coordinates =====
+            if self.fixed_converter_initialized and self.fixed_converter is not None:
+                # Get Fixed Frenet position
+                s_fixed, d_fixed = self.fixed_converter.get_frenet(np.array([obs_msg.x_m]), np.array([obs_msg.y_m]))
+                obs_msg.s_center_fixed = float(s_fixed[0])
+                obs_msg.d_center_fixed = float(d_fixed[0])
+                obs_msg.s_start_fixed = obs_msg.s_center_fixed - obs_msg.size / 2
+                obs_msg.s_end_fixed = obs_msg.s_center_fixed + obs_msg.size / 2
+                obs_msg.d_right_fixed = obs_msg.d_center_fixed - obs_msg.size / 2
+                obs_msg.d_left_fixed = obs_msg.d_center_fixed + obs_msg.size / 2
+
+                # Convert velocity from GB Frenet to Fixed Frenet
+                vs_fixed, vd_fixed = self.convert_frenet_velocity(
+                    obs_msg.s_center, obs_msg.d_center,
+                    obs_msg.vs, obs_msg.vd,
+                    obs_msg.x_m, obs_msg.y_m
+                )
+                obs_msg.vs_fixed = vs_fixed
+                obs_msg.vd_fixed = vd_fixed
+
+                # Copy variance (coordinate-system independent approximation)
+                obs_msg.s_var_fixed = obs_msg.s_var if hasattr(obs_msg, 's_var') else 0.0
+                obs_msg.d_var_fixed = obs_msg.d_var if hasattr(obs_msg, 'd_var') else 0.0
+                obs_msg.vs_var_fixed = obs_msg.vs_var if hasattr(obs_msg, 'vs_var') else 0.0
+                obs_msg.vd_var_fixed = obs_msg.vd_var if hasattr(obs_msg, 'vd_var') else 0.0
+            else:
+                # Fixed path not available - fill with zeros
+                obs_msg.s_center_fixed = 0.0
+                obs_msg.d_center_fixed = 0.0
+                obs_msg.s_start_fixed = 0.0
+                obs_msg.s_end_fixed = 0.0
+                obs_msg.d_right_fixed = 0.0
+                obs_msg.d_left_fixed = 0.0
+                obs_msg.vs_fixed = 0.0
+                obs_msg.vd_fixed = 0.0
+                obs_msg.s_var_fixed = 0.0
+                obs_msg.d_var_fixed = 0.0
+                obs_msg.vs_var_fixed = 0.0
+                obs_msg.vd_var_fixed = 0.0
+            # ===== HJ ADDED END =====
 
             if obs.staticFlag is None and self.publish_static:
                 raw_opponent_array.append(obs_msg)

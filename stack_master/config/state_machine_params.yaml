@@ -21,4 +21,5 @@ splini_hyst_timer_sec: 0.7
 splini_ttl: 2.0
 track_width: 2.6
 use_force_trailing: false
+# volt_threshold: 15.2
 volt_threshold: 11

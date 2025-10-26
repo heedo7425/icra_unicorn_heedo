@@ -24,3 +24,17 @@ bool is_visible
 # Static obstacle sector information
 int32 sector_id                    # Static obs sector ID (-1 if not in any sector)
 bool in_static_obs_sector          # True if in sector with static_obs_section=true
+
+# Fixed path Frenet coordinates (empty/0.0 if Fixed path not available)
+float64 s_start_fixed
+float64 s_end_fixed
+float64 d_right_fixed
+float64 d_left_fixed
+float64 s_center_fixed
+float64 d_center_fixed
+float64 vs_fixed
+float64 vd_fixed
+float64 s_var_fixed
+float64 d_var_fixed
+float64 vs_var_fixed
+float64 vd_var_fixed

@@ -20,7 +20,9 @@ double Obstacle::squaredDist(const Obstacle &other)
 }
 
 Detect::Detect() : nh_("~"), tf_listener_(), car_s_(0),
-  measuring_(false), from_bag_(false), path_needs_update_(false)
+  measuring_(false), from_bag_(false), path_needs_update_(false),
+  fixed_path_available_(false), fixed_converter_initialized_(false),
+  car_s_fixed_(0.0), car_d_fixed_(0.0)
 {
   // Load parameters from ROS parameter server
   nh_.param("/measure", measuring_, false);
@@ -68,8 +70,10 @@ Detect::Detect() : nh_("~"), tf_listener_(), car_s_(0),
 
   // Subscribers
   global_wpnts_sub_ = nh_.subscribe("/global_waypoints_scaled", 10, &Detect::pathCb, this);
+  fixed_path_sub_ = nh_.subscribe("/planner/avoidance/smart_static_otwpnts", 10, &Detect::fixedPathCb, this);  // ===== HJ ADDED =====
   scan_sub_ = nh_.subscribe("/scan", 10, &Detect::laserCb, this);
   odom_frenet_sub_ = nh_.subscribe("/car_state/odom_frenet", 10, &Detect::carStateCb, this);
+  odom_frenet_fixed_sub_ = nh_.subscribe("/car_state/odom_frenet_fixed", 10, &Detect::carStateFixedCb, this);  // ===== HJ ADDED =====
 
   if (!from_bag_) {
     dyn_param_sub_ = nh_.subscribe("/dyn_perception/parameter_updates", 10, &Detect::dynParamCb, this);
@@ -136,9 +140,41 @@ void Detect::pathCb(const f110_msgs::WpntArray::ConstPtr &msg)
   path_needs_update_ = false;
 }
 
+// ===== HJ ADDED: Fixed path callback (initialize converter only once) =====
+void Detect::fixedPathCb(const f110_msgs::OTWpntArray::ConstPtr &msg)
+{
+  if (msg->wpnts.empty()) {
+    // Fixed path not available - this is normal before Smart path is generated
+    return;
+  }
+
+  // Initialize converter only once when Fixed path first becomes available
+  if (!fixed_converter_initialized_) {
+    bool enable_wrapping = true;
+    fixed_frenet_converter_.SetGlobalTrajectory(&(msg->wpnts), enable_wrapping);
+    fixed_converter_initialized_ = true;
+    fixed_path_available_ = true;
+
+    ROS_INFO("[Detect] Fixed path Frenet converter initialized: %zu waypoints, track_length=%.2f",
+             msg->wpnts.size(), msg->wpnts.back().s_m);
+  }
+}
+// ===== HJ ADDED END =====
+
 void Detect::carStateCb(const nav_msgs::Odometry::ConstPtr &msg)
 {
 }
+
+// ===== HJ ADDED: Fixed odom callback =====
+void Detect::carStateFixedCb(const nav_msgs::Odometry::ConstPtr &msg)
+{
+  // Extract s and d from odom_frenet_fixed topic
+  // Assuming the topic structure is similar to odom_frenet
+  // Position in Frenet frame: x = s, y = d
+  car_s_fixed_ = msg->pose.pose.position.x;
+  car_d_fixed_ = msg->pose.pose.position.y;
+}
+// ===== HJ ADDED END =====
 
 void Detect::dynParamCb(const dynamic_reconfigure::Config::ConstPtr &msg)
 {
@@ -640,6 +676,44 @@ void Detect::publishObstaclesMessage()
     obsMsg.sector_id = sector_id;
     obsMsg.in_static_obs_sector = in_static_obs_sector;
     // ===== HJ EDITED END =====
+
+    // ===== HJ ADDED: Calculate Fixed path Frenet coordinates =====
+    if (fixed_path_available_ && fixed_converter_initialized_) {
+      double s_fixed, d_fixed;
+      int idx_fixed;
+      fixed_frenet_converter_.GetFrenetPoint(tracked_obstacles_[i].center_x, tracked_obstacles_[i].center_y,
+                                             &s_fixed, &d_fixed, &idx_fixed, true);
+
+      obsMsg.s_start_fixed = s_fixed - tracked_obstacles_[i].size / 2.0;
+      obsMsg.s_end_fixed = s_fixed + tracked_obstacles_[i].size / 2.0;
+      obsMsg.d_left_fixed = d_fixed + tracked_obstacles_[i].size / 2.0;
+      obsMsg.d_right_fixed = d_fixed - tracked_obstacles_[i].size / 2.0;
+      obsMsg.s_center_fixed = s_fixed;
+      obsMsg.d_center_fixed = d_fixed;
+
+      // For now, set velocity and variance to 0 (static obstacles assumed)
+      obsMsg.vs_fixed = 0.0;
+      obsMsg.vd_fixed = 0.0;
+      obsMsg.s_var_fixed = 0.0;
+      obsMsg.d_var_fixed = 0.0;
+      obsMsg.vs_var_fixed = 0.0;
+      obsMsg.vd_var_fixed = 0.0;
+    } else {
+      // Fixed path not available - fill with zeros
+      obsMsg.s_start_fixed = 0.0;
+      obsMsg.s_end_fixed = 0.0;
+      obsMsg.d_left_fixed = 0.0;
+      obsMsg.d_right_fixed = 0.0;
+      obsMsg.s_center_fixed = 0.0;
+      obsMsg.d_center_fixed = 0.0;
+      obsMsg.vs_fixed = 0.0;
+      obsMsg.vd_fixed = 0.0;
+      obsMsg.s_var_fixed = 0.0;
+      obsMsg.d_var_fixed = 0.0;
+      obsMsg.vs_var_fixed = 0.0;
+      obsMsg.vd_var_fixed = 0.0;
+    }
+    // ===== HJ ADDED END =====
 
     obstacles_array_msg.obstacles.push_back(obsMsg);
   }

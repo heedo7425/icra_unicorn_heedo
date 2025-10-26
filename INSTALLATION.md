@@ -34,9 +34,15 @@ mkdir ~/iccas2025_ws && cd ~/iccas2025_ws
 mkdir -p cache/noetic/build cache/noetic/devel cache/noetic/logs
 ```
 
-Recursive clone the main repository together with it's submodules!
+Recursive clone the main repository together with it's submodules! You may need ssh-key!
 ```bash
+
+ssh-keygen -t ed25519 -C "your_email@example.com"
+cat ~/.ssh/id_ed25519.pub
+
 git clone --recurse-submodules https://github.com/Brojoon-10/UNICORN-ICCAS_2025.git && cd UNICORN-ICCAS_2025
+
+git clone --recurse-submodules git@github.com:Brojoon-10/UNICORN-ICCAS_2025.git && cd UNICORN-ICCAS_2025
 ```
 
 ## udev Rules Setup

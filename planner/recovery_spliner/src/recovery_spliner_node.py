@@ -73,6 +73,8 @@ class ObstacleSpliner:
         self.has_fixed_path = False
         # ===== IY ADD : RECOVERY - Fixed path specific converter =====
         self.fixed_path_converter = None
+        self.fixed_inflection_points = np.array([])
+        self.fixed_path_initialized = False
         # ===== IY ADD END =====
         # ===== IY ADDED END =====
 
@@ -122,14 +124,27 @@ class ObstacleSpliner:
         self.use_fixed_path = data.data
 
     def fixed_path_wpnts_cb(self, data: OTWpntArray):
-        self.fixed_path_wpnts = data
-        self.has_fixed_path = True
-        # ===== IY ADD : RECOVERY - Initialize fixed path converter =====
-        if len(data.wpnts) > 1:
+        self.fixed_path_wpnts = data  # Always update (keep latest waypoints)
+
+        # ===== HJ MODIFIED: Initialize only once to avoid repeated converter creation =====
+        if not self.fixed_path_initialized and len(data.wpnts) > 1:
+            # Initialize converter (only once)
             fixed_path_xy = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
             self.fixed_path_converter = FrenetConverter(fixed_path_xy[:, 0], fixed_path_xy[:, 1])
-            rospy.loginfo_throttle(5.0, f"[{self.name}] Fixed path converter initialized with {len(data.wpnts)} waypoints")
-        # ===== IY ADD END =====
+
+            # ===== HJ ADDED: Calculate inflection points (same logic as GB) =====
+            kappas = np.array([wpnt.kappa_radpm for wpnt in data.wpnts])
+            sign_changes = np.sign(kappas)
+            self.fixed_inflection_points = np.where(np.diff(sign_changes) != 0)[0]
+            # ===== HJ ADDED END =====
+
+            # Set initialization complete flags
+            self.fixed_path_initialized = True
+            self.has_fixed_path = True
+
+            rospy.loginfo(f"[{self.name}] Fixed path initialized: {len(data.wpnts)} waypoints, "
+                         f"{len(self.fixed_inflection_points)} inflection points")
+        # ===== HJ MODIFIED END =====
     # ===== IY ADDED END =====
 
     def state_cb(self, data: Odometry):
@@ -345,21 +360,33 @@ class ObstacleSpliner:
         # ===== IY MODIFIED END =====
         cur_s_idx = int(cur_s / wpnt_dist)
 
-        # ===== IY MODIFIED : RECOVERY - Fixed path에서는 inflection points를 사용하지 않음 =====
+        # ===== HJ MODIFIED: Use inflection points logic for both GB and Fixed path =====
         if self.use_fixed_path:
-            # Fixed path는 GB와 다른 형태이므로 inflection points 사용 안 함
-            candidate_len = int(ref_max_idx / 2)
-            rospy.loginfo_throttle(5.0, f"[{self.name}] Fixed path candidate_len: {candidate_len}")
-        elif len(self.inflection_points) != 0:
-            infl_sector_idx = np.searchsorted(self.inflection_points, cur_s_idx)
+            # Fixed path: use fixed_inflection_points (same logic as GB)
+            if self.fixed_path_initialized and len(self.fixed_inflection_points) != 0:
+                infl_sector_idx = np.searchsorted(self.fixed_inflection_points, cur_s_idx)
+                next_infl_sector_idx = self.fixed_inflection_points[(infl_sector_idx) % len(self.fixed_inflection_points)]
 
-            next_infl_sector_idx = self.inflection_points[(infl_sector_idx)%len(self.inflection_points)]
-
-            candidate_len = next_infl_sector_idx - cur_s_idx + ref_max_idx if infl_sector_idx == len(self.inflection_points) \
-                                                                                else next_infl_sector_idx - cur_s_idx
+                candidate_len = (next_infl_sector_idx - cur_s_idx + ref_max_idx
+                                if infl_sector_idx == len(self.fixed_inflection_points)
+                                else next_infl_sector_idx - cur_s_idx)
+                rospy.loginfo_throttle(5.0, f"[{self.name}] Fixed path using inflection points: candidate_len={candidate_len}")
+            else:
+                # Fallback (inflection points not yet generated)
+                candidate_len = int(ref_max_idx / 2)
+                rospy.loginfo_throttle(5.0, f"[{self.name}] Fixed path fallback: candidate_len={candidate_len}")
         else:
-            candidate_len = int(ref_max_idx/2)
-        # ===== IY MODIFIED END =====
+            # GB path: use inflection_points (existing logic)
+            if len(self.inflection_points) != 0:
+                infl_sector_idx = np.searchsorted(self.inflection_points, cur_s_idx)
+                next_infl_sector_idx = self.inflection_points[(infl_sector_idx) % len(self.inflection_points)]
+
+                candidate_len = (next_infl_sector_idx - cur_s_idx + ref_max_idx
+                                if infl_sector_idx == len(self.inflection_points)
+                                else next_infl_sector_idx - cur_s_idx)
+            else:
+                candidate_len = int(ref_max_idx / 2)
+        # ===== HJ MODIFIED END =====
 
         candidate_len = max(candidate_len, self.min_candidates_lookahead_n)
 
@@ -465,20 +492,20 @@ class ObstacleSpliner:
 
         samples = np.vstack([samples, xy_additional])
 
-        # # ===== IY ADD : RECOVERY - Use fixed path converter when in fixed path mode =====
-        # if self.use_fixed_path and self.fixed_path_converter is not None:
-        #     s_, d_ = self.fixed_path_converter.get_frenet(samples[:, 0], samples[:, 1])
-        #     rospy.loginfo_throttle(5.0, f"[{self.name}] Using fixed_path_converter for Frenet transformation")
-        # else:
-        #     s_, d_ = self.converter.get_frenet(samples[:, 0], samples[:, 1])
-        # # ===== IY ADD END =====
+        # ===== IY ADD : RECOVERY - Use fixed path converter when in fixed path mode =====
+        if self.use_fixed_path and self.fixed_path_converter is not None:
+            s_, d_ = self.fixed_path_converter.get_frenet(samples[:, 0], samples[:, 1])
+            rospy.loginfo_throttle(5.0, f"[{self.name}] Using fixed_path_converter for Frenet transformation")
+        else:
+            s_, d_ = self.converter.get_frenet(samples[:, 0], samples[:, 1])
+        # ===== IY ADD END =====
 
-        # ===== HJ MODIFIED: ALWAYS use GB converter for Frenet coordinates =====
-        # Recovery waypoints should always have s, d in GB Frenet coordinates
-        # regardless of whether we're in Smart mode or GB mode
-        s_, d_ = self.converter.get_frenet(samples[:, 0], samples[:, 1])
-        rospy.loginfo_throttle(5.0, f"[{self.name}] Using GB converter for Frenet (use_fixed_path={self.use_fixed_path})")
-        # ===== HJ MODIFIED END =====
+        # # ===== HJ MODIFIED: ALWAYS use GB converter for Frenet coordinates =====
+        # # Recovery waypoints should always have s, d in GB Frenet coordinates
+        # # regardless of whether we're in Smart mode or GB mode
+        # s_, d_ = self.converter.get_frenet(samples[:, 0], samples[:, 1])
+        # rospy.loginfo_throttle(5.0, f"[{self.name}] Using GB converter for Frenet (use_fixed_path={self.use_fixed_path})")
+        # # ===== HJ MODIFIED END =====
 
         psi_, kappa_ = tph.calc_head_curv_num.\
             calc_head_curv_num(

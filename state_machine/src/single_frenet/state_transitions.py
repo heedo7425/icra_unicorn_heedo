@@ -21,6 +21,7 @@ _smart_static_checker = None
 # ===== HJ ADDED END =====
 
 close_threshold_smart = 0.05
+close_threshold_gb = 0.05
 
 """
 Transitions should loosely follow the following template (basically a match-case)
@@ -61,7 +62,7 @@ def GlobalTrackingTransition(state_machine: StateMachine) -> Tuple[StateType, St
         else:
             return ObstacleTransition_SmartMode(state_machine, close_to_smart)
     else:
-        close_to_gb = state_machine._check_close_to_raceline(0.05) * state_machine._check_close_to_raceline_heading(20)
+        close_to_gb = state_machine._check_close_to_raceline(close_threshold_gb) * state_machine._check_close_to_raceline_heading(20)
         # rospy.logwarn(f"[GlobalTracking] GB MODE: close_to_gb={close_to_gb}, num_obs={len(state_machine.cur_obstacles_in_interest)}")
 
         if len(state_machine.cur_obstacles_in_interest) == 0:
@@ -90,7 +91,7 @@ def RecoveryTransition(state_machine: StateMachine) -> Tuple[StateType, StateTyp
         # Recovery ended - return to Smart mode closed loop
         return SmartStaticTransition(state_machine)
     else:
-        close_to_gb = state_machine._check_close_to_raceline(0.05) * state_machine._check_close_to_raceline_heading(20)
+        close_to_gb = state_machine._check_close_to_raceline(close_threshold_gb) * state_machine._check_close_to_raceline_heading(20)
         # rospy.logwarn(f"[Recovery] GB MODE: close_to_gb={close_to_gb}, sustainable={recovery_sustainability}")
 
         if recovery_sustainability and not close_to_gb:
@@ -116,7 +117,7 @@ def TrailingTransition(state_machine: StateMachine) -> Tuple[StateType, StateTyp
                 return StateType.FTGONLY, StateType.FTGONLY
             return ObstacleTransition_SmartMode(state_machine, close_to_smart)
     else:
-        close_to_gb = state_machine._check_close_to_raceline(0.05) * state_machine._check_close_to_raceline_heading(20)
+        close_to_gb = state_machine._check_close_to_raceline(close_threshold_gb) * state_machine._check_close_to_raceline_heading(20)
         # rospy.logwarn(f"[Trailing] GB MODE: close_to_gb={close_to_gb}")
 
         if len(state_machine.cur_obstacles_in_interest) == 0:

@@ -12,6 +12,7 @@
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <f110_msgs/WpntArray.h>
+#include <f110_msgs/OTWpntArray.h>
 #include <f110_msgs/ObstacleArray.h>
 #include <f110_msgs/Obstacle.h>
 #include <dynamic_reconfigure/Config.h>
@@ -106,6 +107,16 @@ private:
   std::string map_name_;
   frenet_conversion::FrenetConverter frenet_converter_;
 
+  // ===== HJ ADDED: Fixed path Frenet converter and odom =====
+  ros::Subscriber fixed_path_sub_;
+  ros::Subscriber odom_frenet_fixed_sub_;
+  frenet_conversion::FrenetConverter fixed_frenet_converter_;
+  bool fixed_path_available_;
+  bool fixed_converter_initialized_;
+  double car_s_fixed_;
+  double car_d_fixed_;
+  // ===== HJ ADDED END =====
+
   // ===== HJ EDITED START: Static obstacle sector information =====
   struct StaticObsSector {
     double s_start;
@@ -123,7 +134,9 @@ private:
   // Callbacks
   void laserCb(const sensor_msgs::LaserScan::ConstPtr &msg);
   void pathCb(const f110_msgs::WpntArray::ConstPtr &msg);
+  void fixedPathCb(const f110_msgs::OTWpntArray::ConstPtr &msg);  // ===== HJ ADDED: Fixed path callback =====
   void carStateCb(const nav_msgs::Odometry::ConstPtr &msg);
+  void carStateFixedCb(const nav_msgs::Odometry::ConstPtr &msg);  // ===== HJ ADDED: Fixed odom callback =====
   void dynParamCb(const dynamic_reconfigure::Config::ConstPtr &msg);
   void staticObsSectorDynCb(const dynamic_reconfigure::Config::ConstPtr &msg);  // ===== HJ EDITED =====
 

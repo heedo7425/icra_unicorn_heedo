@@ -55,12 +55,12 @@ class VelocityPlanner:
 
 
         self.v_max = 12.0
-        self.ax_max_motor = 3.9
+        self.ax_max_motor = 5.5
         self.ax_max_brake = 7.0
         self.dyn_model_exp = 1.0
 
-        self.a_y_max = 5.0
-        self.a_x_max = 7.0
+        self.a_y_max = 8.0
+        self.a_x_max = 10.0
 
         self.ggv[:,1] = self.a_x_max
         self.ggv[:,2] = self.a_y_max
@@ -69,8 +69,10 @@ class VelocityPlanner:
 
         # Subscribe to the topics
         self.glb_wpnts_pub = rospy.Publisher('/global_waypoints', WpntArray, queue_size=10)
+        self.smart_static_wpnts_pub = rospy.Publisher('/planner/avoidance/smart_static_otwpnts', OTWpntArray, queue_size=10)
 
         rospy.Subscriber("/global_waypoints", WpntArray, self.wpnts_callback)
+        rospy.Subscriber("/planner/avoidance/smart_static_otwpnts", OTWpntArray, self.smart_static_wpnts_callback)
 
     def wpnts_callback(self, msg):
         wpnts = msg.wpnts
@@ -107,11 +109,49 @@ class VelocityPlanner:
             wpnts[i].ax_mps2 = ax_profile[i]
         
         msg.wpnts = wpnts
-        print("NEW Vel Profliie Pub")
+        print("NEW Vel Profile Pub")
         self.glb_wpnts_pub.publish(msg)
 
+    def smart_static_wpnts_callback(self, msg):
+        """Callback for smart_static_otwpnts topic - calculate velocity profile"""
+        wpnts = msg.wpnts
 
-        
+        # Extract kappa from waypoints
+        kappa = np.array([wp.kappa_radpm for wp in wpnts])
+        el_lengths = 0.1 * np.ones(len(kappa))
+
+        # Calculate velocity profile
+        vx_profile = calc_vel_profile(ggv=self.ggv,
+                                      ax_max_machines=self.ax_max_machines,
+                                      b_ax_max_machines=self.b_ax_max_machines,
+                                      v_max=self.v_max,
+                                      kappa=kappa,
+                                      el_lengths=el_lengths,
+                                      closed=True,
+                                      filt_window=self.filt_window,
+                                      dyn_model_exp=self.dyn_model_exp,
+                                      drag_coeff=self.drag_coeff,
+                                      m_veh=self.m_veh)
+
+        # Assign velocity to waypoints
+        for i in range(len(vx_profile)):
+            wpnts[i].vx_mps = vx_profile[i]
+
+        # Calculate acceleration profile
+        vx_profile_opt_cl = np.append(vx_profile, vx_profile[0])
+        ax_profile = tph.calc_ax_profile.calc_ax_profile(vx_profile=vx_profile_opt_cl,
+                                                            el_lengths=el_lengths,
+                                                            eq_length_output=False)
+
+        # Assign acceleration to waypoints
+        for i in range(len(ax_profile)):
+            wpnts[i].ax_mps2 = ax_profile[i]
+
+        msg.wpnts = wpnts
+        print("NEW Smart Static Vel Profile Pub")
+        self.smart_static_wpnts_pub.publish(msg)
+
+
 
 
 if __name__ == '__main__':

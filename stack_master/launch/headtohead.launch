@@ -56,27 +56,27 @@
     <!-- DYNAMIC AVOIDANCE -->
     <arg name="dynamic_avoidance_mode" default="Change" /> <!-- SQP / Spline / Change -->
     <!-- SQP Local Planner -->
-    <group if="$(eval dynamic_avoidance_mode == 'SQP')">
+    <!-- <group if="$(eval dynamic_avoidance_mode == 'SQP')">
         <node pkg="sqp_planner" type="dynamic_sqp_server.py" name="dynamic_sqp_tuner_node" output="screen"/>
         <node pkg="sqp_planner" type="sqp_avoidance_node.py" name="planner_sqp" output="screen"/>
         <node pkg="sqp_planner" type="update_waypoints.py" name="waypoint_updater" output="screen"/>
-    </group>
+    </group> -->
     <!-- Spline Local Planner -->
-    <group if="$(eval dynamic_avoidance_mode == 'Spline')">
+    <!-- <group if="$(eval dynamic_avoidance_mode == 'Spline')">
         <node pkg="spliner_planner" type="dynamic_avoidance_server.py" name="dynamic_avoidance_tuner_node" output="screen"/>
         <node pkg="spliner_planner" type="dynamic_avoidance_node.py" name="planner_spl" output="screen"/>
         <node pkg="spliner_planner" type="update_waypoints.py" name="waypoint_updater" output="screen"/>
-    </group>
+    </group> -->
     <!-- Change Local Planner -->
-    <group if="$(eval dynamic_avoidance_mode == 'Change')">
+    <!-- <group if="$(eval dynamic_avoidance_mode == 'Change')">
         <node pkg="lane_change_planner" type="dynamic_change_server.py" name="dynamic_change_tuner_node" output="screen"/>
         <node pkg="lane_change_planner" type="change_avoidance_node.py" name="planner_change" output="screen"/>
         <node pkg="lane_change_planner" type="update_waypoints.py" name="waypoint_updater" output="screen"/>
-    </group>
+    </group> -->
     <!-- GP Opp Trajectory Predictor  -->
-    <node pkg="gp_traj_predictor" type="dynamic_prediction_server.py" name="dynamic_prediction_tuner_node" output="screen"/>
+    <!-- <node pkg="gp_traj_predictor" type="dynamic_prediction_server.py" name="dynamic_prediction_tuner_node" output="screen"/>
     <node pkg="gp_traj_predictor" type="opp_prediction.py" name="opponent_propagation_predictor" output="screen"/>
     <node pkg="gp_traj_predictor" type="opponent_trajectory.py" name="OpponentHalflap" output="screen"/>
     <node pkg="gp_traj_predictor" type="gaussian_process_opp_traj.py" name="GP_trajectory" output="screen" launch-prefix="taskset -c 1"/>
-    <node pkg="gp_traj_predictor" type="predictor_opponent_trajectory.py" name="Predictor_Opp" output="screen"/>
+    <node pkg="gp_traj_predictor" type="predictor_opponent_trajectory.py" name="Predictor_Opp" output="screen"/> -->
 </launch>
