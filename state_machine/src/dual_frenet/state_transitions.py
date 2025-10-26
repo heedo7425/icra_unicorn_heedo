@@ -11,8 +11,42 @@ import states
 if TYPE_CHECKING:
     from state_machine_node import StateMachine
 
-close_threshold_smart = 0.05
-close_threshold_gb = 0.05
+close_threshold_smart = 0.15
+close_threshold_gb = 0.15
+
+# ===== HJ ADDED: Debug logging helper - only logs when values change =====
+_debug_log_cache = {}
+DEBUG_LOGGING_ENABLED = False  # Set to False to disable all debug logging
+
+def debug_log_on_change(tag, **kwargs):
+    """Log only when any of the kwargs values change
+
+    Can be globally enabled/disabled via DEBUG_LOGGING_ENABLED flag.
+
+    Usage:
+        debug_log_on_change("MyTag", value1=x, value2=y, value3=z)
+    """
+    global _debug_log_cache
+
+    # Skip if debug logging is disabled
+    if not DEBUG_LOGGING_ENABLED:
+        return
+
+    # Create cache key
+    cache_key = tag
+
+    # Get previous values
+    prev_values = _debug_log_cache.get(cache_key, None)
+
+    # Check if any value changed
+    if prev_values != kwargs:
+        # Build log message
+        msg_parts = [f"{k}={v}" for k, v in kwargs.items()]
+        rospy.logwarn(f"[DEBUG {tag}] " + ", ".join(msg_parts))
+
+        # Update cache
+        _debug_log_cache[cache_key] = kwargs.copy()
+# ===== HJ ADDED END =====
 
 """
 Transitions should loosely follow the following template (basically a match-case)
@@ -39,17 +73,21 @@ def GlobalTrackingTransition(state_machine: StateMachine) -> Tuple[StateType, St
 
     Routes to completely separate Smart or GB mode transitions.
     """
-    # rospy.logwarn("========== GlobalTrackingTransition ENTERED ==========")
-
     smart_active = state_machine.smart_static_active
 
     # Complete mode switching - call separate function sets
     if smart_active:
         smart_helper = state_machine.smart_helper
         close_to_smart = smart_helper._check_close_to_raceline(close_threshold_smart) * smart_helper._check_close_to_raceline_heading(20)
-        # rospy.logwarn(f"[GlobalTracking] SMART MODE: close_to_smart={close_to_smart}, num_obs={len(smart_helper.cur_obstacles_in_interest)}")
+        num_obs = len(smart_helper.cur_obstacles_in_interest)
 
-        if len(smart_helper.cur_obstacles_in_interest) == 0:
+        debug_log_on_change("GlobalTracking_SMART",
+                           close=close_to_smart,
+                           num_obs=num_obs,
+                           cur_s=round(smart_helper.cur_s, 2),
+                           cur_d=round(smart_helper.cur_d, 3))
+
+        if num_obs == 0:
             return NonObstacleTransition_SmartMode(state_machine, close_to_smart)
         else:
             return ObstacleTransition_SmartMode(state_machine, close_to_smart)
@@ -68,8 +106,6 @@ def RecoveryTransition(state_machine: StateMachine) -> Tuple[StateType, StateTyp
 
     Recovery operates within the mode's closed loop.
     """
-    # rospy.logwarn("========== RecoveryTransition ENTERED ==========")
-
     smart_active = state_machine.smart_static_active
 
     # Use appropriate Frenet coordinate system based on mode
@@ -78,7 +114,11 @@ def RecoveryTransition(state_machine: StateMachine) -> Tuple[StateType, StateTyp
         smart_helper = state_machine.smart_helper
         recovery_sustainability = smart_helper._check_sustainability(state_machine.recovery_wpnts, state_machine.cur_recovery_wpnts)
         close_to_smart = smart_helper._check_close_to_raceline(close_threshold_smart) * smart_helper._check_close_to_raceline_heading(20)
-        # rospy.logwarn(f"[Recovery] SMART MODE: close_to_smart={close_to_smart}, sustainable={recovery_sustainability}")
+
+        debug_log_on_change("Recovery_SMART",
+                           sustainable=recovery_sustainability,
+                           close=close_to_smart,
+                           continuing=recovery_sustainability and not close_to_smart)
 
         if recovery_sustainability and not close_to_smart:
             return StateType.RECOVERY, StateType.RECOVERY
@@ -97,19 +137,23 @@ def RecoveryTransition(state_machine: StateMachine) -> Tuple[StateType, StateTyp
 
 def TrailingTransition(state_machine: StateMachine) -> Tuple[StateType, StateType]:
     """Transitions for being in `StateType.TRAILING`"""
-    # rospy.logwarn("========== TrailingTransition ENTERED ==========")
-
     smart_active = state_machine.smart_static_active
 
     if smart_active:
         smart_helper = state_machine.smart_helper
         close_to_smart = smart_helper._check_close_to_raceline(close_threshold_smart) * smart_helper._check_close_to_raceline_heading(20)
-        # rospy.logwarn(f"[Trailing] SMART MODE: close_to_smart={close_to_smart}")
+        num_obs = len(smart_helper.cur_obstacles_in_interest)
+        ftg_check = state_machine._check_ftg()
 
-        if len(smart_helper.cur_obstacles_in_interest) == 0:
+        debug_log_on_change("Trailing_SMART",
+                           close=close_to_smart,
+                           num_obs=num_obs,
+                           ftg=ftg_check)
+
+        if num_obs == 0:
             return NonObstacleTransition_SmartMode(state_machine, close_to_smart)
         else:
-            if state_machine._check_ftg():
+            if ftg_check:
                 return StateType.FTGONLY, StateType.FTGONLY
             return ObstacleTransition_SmartMode(state_machine, close_to_smart)
     else:
@@ -126,8 +170,6 @@ def TrailingTransition(state_machine: StateMachine) -> Tuple[StateType, StateTyp
 
 def OvertakingTransition(state_machine: StateMachine) -> Tuple[StateType, StateType]:
     """Transitions for being in `StateType.OVERTAKE`"""
-    # rospy.logwarn("========== OvertakingTransition ENTERED ==========")
-
     smart_active = state_machine.smart_static_active
 
     # Use appropriate Frenet coordinate system based on mode
@@ -140,6 +182,13 @@ def OvertakingTransition(state_machine: StateMachine) -> Tuple[StateType, StateT
         ot_sustainability = state_machine._check_overtaking_mode_sustainability()
         enemy_in_front = state_machine._check_enemy_in_front()
 
+    debug_log_on_change("Overtaking",
+                       mode="SMART" if smart_active else "GB",
+                       sustainable=ot_sustainability,
+                       enemy=enemy_in_front,
+                       ttl_count=state_machine.overtaking_ttl_count,
+                       continuing=ot_sustainability and (enemy_in_front or state_machine.overtaking_ttl_count < state_machine.overtaking_ttl_count_threshold))
+
     if ot_sustainability and enemy_in_front:
         state_machine.overtaking_ttl_count = 0
         return StateType.OVERTAKE, StateType.OVERTAKE
@@ -150,10 +199,8 @@ def OvertakingTransition(state_machine: StateMachine) -> Tuple[StateType, StateT
 
     # Overtaking ended - return to appropriate mode's closed loop
     if smart_active:
-        # rospy.logwarn(f"[Overtaking→SMART MODE]")
         return SmartStaticTransition(state_machine)
     else:
-        # rospy.logwarn(f"[Overtaking→GB MODE]")
         return GlobalTrackingTransition(state_machine)
 
 
@@ -218,13 +265,13 @@ def SmartStaticTransition(state_machine: StateMachine) -> Tuple[StateType, State
     Entry point for Smart mode's closed loop.
     Only considers Smart Static path - GB raceline is completely ignored.
     """
-    # rospy.logwarn("========== SmartStaticTransition ENTERED ==========")
-
     smart_helper = state_machine.smart_helper
     close_to_smart = smart_helper._check_close_to_raceline(close_threshold_smart) * smart_helper._check_close_to_raceline_heading(20)
     num_obstacles = len(smart_helper.cur_obstacles_in_interest)
 
-    # rospy.logwarn(f"[SMART_STATIC] close_to_smart={close_to_smart}, num_obstacles={num_obstacles}")
+    debug_log_on_change("SmartStatic",
+                       close=close_to_smart,
+                       num_obs=num_obstacles)
 
     # Delegate to Smart mode transitions only
     if num_obstacles == 0:
@@ -246,15 +293,16 @@ def NonObstacleTransition_SmartMode(state_machine: StateMachine, close_to_smart:
     Args:
         close_to_smart: True if close to Smart Static path (already calculated with Fixed Frenet)
     """
-    # rospy.logwarn(f">>> NonObstacleTransition_SmartMode: close_to_smart={close_to_smart}")
-
     smart_helper = state_machine.smart_helper
 
     wpnts_valid = smart_helper._check_latest_wpnts(
         state_machine.smart_static_wpnts,
         state_machine.cur_smart_static_avoidance_wpnts)
 
-    # rospy.logwarn(f"[NonObstacle_Smart] wpnts_valid={wpnts_valid}, close_to_smart={close_to_smart}")
+    debug_log_on_change("NonObstacle_SMART",
+                       close=close_to_smart,
+                       wpnts_valid=wpnts_valid,
+                       num_wpnts=len(state_machine.cur_smart_static_avoidance_wpnts.list))
 
     # Priority 1: Smart path available and close - use it
     if wpnts_valid and close_to_smart:
@@ -288,18 +336,33 @@ def ObstacleTransition_SmartMode(state_machine: StateMachine, close_to_smart: bo
     """
     smart_helper = state_machine.smart_helper
 
-    # rospy.logwarn(f">>> ObstacleTransition_SmartMode: close_to_smart={close_to_smart}, num_obs={len(smart_helper.cur_obstacles_in_interest)}")
-
     wpnts_valid = smart_helper._check_latest_wpnts(
         state_machine.smart_static_wpnts,
         state_machine.cur_smart_static_avoidance_wpnts)
     smart_path_free = smart_helper._check_free_frenet(state_machine.cur_smart_static_avoidance_wpnts)
 
-    # rospy.logwarn(f"[Obstacle_Smart] wpnts_valid={wpnts_valid}, close={close_to_smart}, path_free={smart_path_free}")
+    # Check overtaking conditions
+    ot_mode = smart_helper._check_overtaking_mode()
+    static_ot_mode = smart_helper._check_static_overtaking_mode()
+
+    debug_log_on_change("Obstacle_SMART",
+                       close=close_to_smart,
+                       wpnts_valid=wpnts_valid,
+                       path_free=smart_path_free,
+                       ot_mode=ot_mode,
+                       static_ot=static_ot_mode,
+                       num_obs=len(smart_helper.cur_obstacles_in_interest))
+
+    # ===== HJ ADDED: Periodic debug logging when blocked =====
+    if not smart_path_free and not ot_mode and not static_ot_mode:
+        rospy.logwarn_throttle(2.0,
+            f"[DEBUG Obstacle_SMART BLOCKED] Path blocked but no overtaking! "
+            f"close={close_to_smart}, wpnts_valid={wpnts_valid}, "
+            f"static_ot={static_ot_mode}, ot={ot_mode}, num_obs={len(smart_helper.cur_obstacles_in_interest)}")
+    # ===== HJ ADDED END =====
 
     # Priority 1: Smart path available, close, and free - use it
     if wpnts_valid and close_to_smart and smart_path_free:
-        # rospy.logwarn(f"[Obstacle_Smart→SMART_STATIC] ✓ Valid, close & free")
         return StateType.SMART_STATIC, StateType.SMART_STATIC
 
     # Priority 2: Check recovery availability (only if not close to Smart path)
@@ -307,12 +370,10 @@ def ObstacleTransition_SmartMode(state_machine: StateMachine, close_to_smart: bo
     if not close_to_smart:
         recovery_availability = smart_helper._check_latest_wpnts(state_machine.recovery_wpnts, state_machine.cur_recovery_wpnts)
         if (recovery_availability and smart_helper._check_free_frenet(state_machine.cur_recovery_wpnts)):
-            # rospy.logwarn(f"[Obstacle_Smart→RECOVERY] Not close, recovery available")
             return StateType.RECOVERY, StateType.RECOVERY
 
     # Priority 3: Overtaking check (use smart_helper for Fixed Frenet based checks)
-    if smart_helper._check_overtaking_mode() or smart_helper._check_static_overtaking_mode():
-        # rospy.logwarn(f"[Obstacle_Smart→OVERTAKE] Overtaking triggered")
+    if ot_mode or static_ot_mode:
         return StateType.OVERTAKE, StateType.OVERTAKE
 
     # Priority 4: TRAILING state - Smart mode always uses Smart path

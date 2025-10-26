@@ -24,6 +24,40 @@ import trajectory_planning_helpers as tph
 import configparser
 from frenet_converter.frenet_converter import FrenetConverter  # ===== HJ ADDED =====
 
+# ===== HJ ADDED: Debug logging helper for state_machine_node =====
+DEBUG_LOGGING_ENABLED = False  # Set to False to disable all debug logging
+_debug_log_cache = {}
+
+def debug_log_on_change(tag, **kwargs):
+    """Log only when any of the kwargs values change
+
+    Can be globally enabled/disabled via DEBUG_LOGGING_ENABLED flag.
+
+    Usage:
+        debug_log_on_change("MyTag", value1=x, value2=y, value3=z)
+    """
+    global _debug_log_cache
+
+    # Skip if debug logging is disabled
+    if not DEBUG_LOGGING_ENABLED:
+        return
+
+    # Create cache key
+    cache_key = tag
+
+    # Get previous values
+    prev_values = _debug_log_cache.get(cache_key, None)
+
+    # Check if any value changed
+    if prev_values != kwargs:
+        # Build log message
+        msg_parts = [f"{k}={v}" for k, v in kwargs.items()]
+        rospy.logwarn(f"[DEBUG {tag}] " + ", ".join(msg_parts))
+
+        # Update cache
+        _debug_log_cache[cache_key] = kwargs.copy()
+# ===== HJ ADDED END =====
+
 
 try:
     # if we are in the car, vesc msgs are built and we read them
@@ -285,11 +319,6 @@ class StateMachine:
 
         )
 
-        # # ===== HJ ADDED: Smart Static state checker (Smart Static raceline based) =====
-        # from state_helper_for_smart import SmartStaticChecker
-        # self.smart_static_checker = SmartStaticChecker(self)
-        # # ===== HJ ADDED END =====
-
         # SUBSCRIPTIONS
         self.opponent = ObstacleArray()
         
@@ -351,6 +380,12 @@ class StateMachine:
             self.latency_pub = rospy.Publisher("/state_machine/latency", Float32, queue_size=10)
 
         rospy.Subscriber("/save_start_traj", Bool, self.save_start_traj_cb)
+
+        # ===== HJ ADDED: Initialize Smart Static helper for Fixed Frenet transitions =====
+        from state_helper_for_smart import SmartStaticChecker
+        self.smart_helper = SmartStaticChecker(self)
+        rospy.loginfo(f"[{self.name}] Smart Static helper initialized for Fixed Frenet transitions")
+        # ===== HJ ADDED END =====
 
         # MAIN LOOP
         self.loop()
@@ -871,7 +906,20 @@ class StateMachine:
             gap = (wpnt_data.list[-1].s_m - self.cur_s) % self.track_length
             min_dist = np.min(np.linalg.norm(wpnt_data.array[:, 0:2] - self.current_position[:2], axis=1))
 
-            if gap > wpnt_data.on_spline_front_horizon_thres_m and min_dist < wpnt_data.on_spline_min_dist_thres_m:
+            # ===== HJ ADDED: Debug logging for failed checks =====
+            is_smart_helper = hasattr(self, 'parent')
+            gap_ok = gap > wpnt_data.on_spline_front_horizon_thres_m
+            dist_ok = min_dist < wpnt_data.on_spline_min_dist_thres_m
+
+            if not (gap_ok and dist_ok):
+                tag = "HELPER" if is_smart_helper else "PARENT"
+                rospy.logwarn_throttle(2.0,
+                    f"[DEBUG {tag} _check_on_spline FAIL] planner={wpnt_data.name}, "
+                    f"gap={gap:.2f}m (need>{wpnt_data.on_spline_front_horizon_thres_m:.2f}): {gap_ok}, "
+                    f"min_dist={min_dist:.3f}m (need<{wpnt_data.on_spline_min_dist_thres_m:.3f}): {dist_ok}")
+            # ===== HJ ADDED END =====
+
+            if gap_ok and dist_ok:
                 return True
         return False
     
@@ -1081,21 +1129,26 @@ class StateMachine:
         return is_free
         
     def _check_availability(self, wpnts, wpnts_data) -> bool:
+        # ===== HJ MODIFIED: Check if wpnts is None (not published yet) =====
+        if wpnts is None or wpnts_data.stamp is None:
+            return False
+        # ===== HJ MODIFIED END =====
+
         # rospy.logwarn((rospy.Time.now() - wpnts_data.stamp).to_sec())
         if (rospy.Time.now() - wpnts_data.stamp).to_sec() > wpnts_data.killing_timer_sec:
             wpnts_data.is_init = False
-            if state_machine._check_latest_wpnts(wpnts, wpnts_data):
+            if self._check_latest_wpnts(wpnts, wpnts_data):
                 return True
             else:
                 return False
-            
+
         if (rospy.Time.now() - wpnts_data.stamp).to_sec() > wpnts_data.hyst_timer_sec:
-            if state_machine._check_latest_wpnts(wpnts, wpnts_data):
+            if self._check_latest_wpnts(wpnts, wpnts_data):
                 return True
 
-            
+
         if not self._check_on_spline(wpnts_data):
-            if state_machine._check_latest_wpnts(wpnts, wpnts_data):
+            if self._check_latest_wpnts(wpnts, wpnts_data):
                 return True
             else:
                 return False
@@ -1116,27 +1169,68 @@ class StateMachine:
         return False
     
     def _check_overtaking_mode(self) -> bool:
-        if (
-            self._check_ot_sector()
-            # and self._check_enemy_in_front()
-            and self._check_getting_closer(threshold_m = 10.0)
-            and self._check_latest_wpnts(self.avoidance_wpnts, self.cur_avoidance_wpnts)
-            and self._check_free_frenet(self.cur_avoidance_wpnts)
-        ):
+        # ===== HJ ADDED: Debug logging =====
+        ot_sector_check = self._check_ot_sector()
+        closer_check = self._check_getting_closer(threshold_m = 10.0)
+        latest_check = self._check_latest_wpnts(self.avoidance_wpnts, self.cur_avoidance_wpnts)
+        free_check = self._check_free_frenet(self.cur_avoidance_wpnts)
+
+        is_smart_helper = hasattr(self, 'parent')
+        tag = "HELPER" if is_smart_helper else "PARENT"
+
+        wpnts_info = "None"
+        if self.avoidance_wpnts is not None:
+            wpnts_info = f"exists(len={len(self.avoidance_wpnts.wpnts)})"
+
+        debug_log_on_change(
+            f"{tag}_check_OT",
+            ot_sector=ot_sector_check,
+            closer=closer_check,
+            latest=latest_check,
+            free=free_check,
+            wpnts_avail=self.avoidance_wpnts is not None,
+            wpnts=wpnts_info,
+            num_obs=len(self.obstacles_in_interest)
+        )
+        # ===== HJ ADDED END =====
+
+        if ot_sector_check and closer_check and latest_check and free_check:
             self.static_overtaking_mode = False
             return True
         else:
             return False
         
     def _check_static_overtaking_mode(self) -> bool:
-        if (
-            # self._check_ot_sector()
-            # self._check_enemy_in_front()
-            self.cur_vs < 3.0
-            and self._check_getting_closer(threshold_m = 7.0)
-            and self._check_latest_wpnts(self.static_avoidance_wpnts, self.cur_static_avoidance_wpnts)
-            and self._check_free_frenet(self.cur_static_avoidance_wpnts)
-        ):
+        # ===== HJ ADDED: Debug logging =====
+        vs_check = self.cur_vs < 3.0
+        closer_check = self._check_getting_closer(threshold_m = 7.0)
+        latest_check = self._check_latest_wpnts(self.static_avoidance_wpnts, self.cur_static_avoidance_wpnts)
+        free_check = self._check_free_frenet(self.cur_static_avoidance_wpnts)
+
+        # Determine if this is smart_helper or parent for logging
+        is_smart_helper = hasattr(self, 'parent')  # SmartStaticChecker has parent attribute
+        tag = "HELPER" if is_smart_helper else "PARENT"
+
+        # Get wpnts info
+        wpnts_info = "None"
+        if self.static_avoidance_wpnts is not None:
+            wpnts_info = f"exists(len={len(self.static_avoidance_wpnts.wpnts)})"
+
+        # Use debug_log_on_change for logging
+        debug_log_on_change(
+            f"{tag}_check_static_OT",
+            vs=round(self.cur_vs, 2),
+            vs_ok=vs_check,
+            closer=closer_check,
+            latest=latest_check,
+            free=free_check,
+            wpnts_avail=self.static_avoidance_wpnts is not None,
+            wpnts=wpnts_info,
+            num_obs=len(self.obstacles_in_interest)
+        )
+        # ===== HJ ADDED END =====
+
+        if vs_check and closer_check and latest_check and free_check:
             self.static_overtaking_mode = True
             return True
         else:
@@ -1342,9 +1436,10 @@ class StateMachine:
         Returns:
             List of extra waypoints
         """
-        if self.smart_static_active and self.cur_smart_static_avoidance_wpnts.is_init and self.smart_track_length is not None:
+        if self.smart_static_active and self.cur_smart_static_avoidance_wpnts.is_init:
             # Smart mode: find Smart waypoint with s_m closest to last_s_m
-            track_length = self.smart_track_length
+            # Use last waypoint's s_m as track length (consistent with get_smart_static_wpts)
+            track_length = self.cur_smart_static_avoidance_wpnts.list[-1].s_m
 
             # Find index of waypoint with s_m closest to last_s_m (considering closed-loop wrap-around)
             s_diffs = []
@@ -1377,23 +1472,24 @@ class StateMachine:
         """Obtain waypoints from smart static avoidance fixed path.
 
         Finds closest waypoint by s_m value (with closed-loop wrap-around), then uses modulo for extraction.
+        Uses Fixed Frenet cur_s from smart_helper for accurate positioning.
         """
         if self.cur_smart_static_avoidance_wpnts.is_init:
-            # Get track length from Frenet converter (initialized in callback)
-            if self.smart_track_length is None:
-                rospy.logwarn_throttle(1.0, f"[{self.name}] Smart Frenet converter not yet initialized, using fallback")
-                # Fallback to distance-based method
-                return self.get_smart_static_wpts_distance_based()
+            # ===== HJ MODIFIED: Use last waypoint's s_m as track length =====
+            # For closed loop, last waypoint's arc length is the total track length
+            track_length = self.cur_smart_static_avoidance_wpnts.list[-1].s_m
 
-            track_length = self.smart_track_length
+            # Use Fixed Frenet cur_s from smart_helper (matches wpnt.s_m coordinate system)
+            cur_s_fixed = self.smart_helper.cur_s
+            # ===== HJ MODIFIED END =====
 
             # Find index of waypoint with s_m closest to cur_s (considering closed-loop wrap-around)
             s_diffs = []
             for wpnt in self.cur_smart_static_avoidance_wpnts.list:
                 # Calculate signed difference (forward direction)
-                forward_diff = (wpnt.s_m - self.cur_s) % track_length
+                forward_diff = (wpnt.s_m - cur_s_fixed) % track_length
                 # Calculate backward difference
-                backward_diff = (self.cur_s - wpnt.s_m) % track_length
+                backward_diff = (cur_s_fixed - wpnt.s_m) % track_length
                 # Take minimum absolute distance
                 s_diffs.append(min(forward_diff, backward_diff))
 
@@ -1614,17 +1710,39 @@ class StateMachine:
             self.cur_gb_wpnts.list = self.gb_wpnts.wpnts
 
         self.cur_obstacles_in_interest = self.obstacles_in_interest
-        
+
+        # ===== HJ ADDED: Update smart_helper synchronously =====
+        # Update smart_helper's obstacles_in_interest at same time as parent
+        # This ensures perfect synchronization between GB and Smart modes
+        if self.smart_static_active and self.smart_helper is not None:
+            self.smart_helper.update()
+        # ===== HJ ADDED END =====
+
         return
 
         
     def get_overtaking_target(self):
-        if self.cur_gb_wpnts.closest_target is not None:
-            return [self.cur_gb_wpnts.closest_target]
-        if self.cur_recovery_wpnts.closest_target is not None:
-            return [self.cur_recovery_wpnts.closest_target]
+        # ===== HJ MODIFIED: Use appropriate Frenet coordinate system based on mode =====
+        # In Smart mode, closest_target uses Fixed Frenet (from smart_helper)
+        # In GB mode, closest_target uses GB Frenet (from self)
+        if self.smart_static_active:
+            # Smart mode: use smart_helper's Fixed Frenet based calculations
+            smart_helper = self.smart_helper
+            if smart_helper.cur_gb_wpnts.closest_target is not None:
+                return [smart_helper.cur_gb_wpnts.closest_target]
+            if smart_helper.cur_recovery_wpnts.closest_target is not None:
+                return [smart_helper.cur_recovery_wpnts.closest_target]
+            else:
+                return []
         else:
-            return []
+            # GB mode: use self's GB Frenet based calculations
+            if self.cur_gb_wpnts.closest_target is not None:
+                return [self.cur_gb_wpnts.closest_target]
+            if self.cur_recovery_wpnts.closest_target is not None:
+                return [self.cur_recovery_wpnts.closest_target]
+            else:
+                return []
+        # ===== HJ MODIFIED END =====
 
 
 
@@ -1639,50 +1757,107 @@ class StateMachine:
             return []
         
     def get_farthest_target(self, local_wpnts_src):
-        if local_wpnts_src == StateType.GB_TRACK and self.cur_gb_wpnts.closest_target is not None:
-            closest_target = self.cur_gb_wpnts.closest_target
-            closest_gap = self.cur_gb_wpnts.closest_gap
-            if self.cur_avoidance_wpnts.closest_target is not None and closest_gap <= self.cur_avoidance_wpnts.closest_gap:
-                closest_gap = self.cur_avoidance_wpnts.closest_gap
-                closest_target = self.cur_avoidance_wpnts.closest_target
-                local_wpnts_src = StateType.OVERTAKE
-            if self.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < self.cur_static_avoidance_wpnts.closest_gap:
-                closest_gap = self.cur_static_avoidance_wpnts.closest_gap
-                closest_target = self.cur_static_avoidance_wpnts.closest_target
-                local_wpnts_src = StateType.OVERTAKE
-            if self.cur_start_wpnts.closest_target is not None and closest_gap < self.cur_start_wpnts.closest_gap:
-                closest_gap = self.cur_start_wpnts.closest_gap
-                closest_target = self.cur_start_wpnts.closest_target
-                local_wpnts_src = StateType.START
-            return [closest_target], local_wpnts_src
+        # ===== HJ MODIFIED: Use appropriate Frenet coordinate system based on mode =====
+        # In Smart mode, all closest_target/gap calculations use Fixed Frenet (from smart_helper)
+        # In GB mode, all closest_target/gap calculations use GB Frenet (from self)
+        if self.smart_static_active:
+            # Smart mode: use smart_helper's Fixed Frenet based calculations
+            smart_helper = self.smart_helper
 
-        if local_wpnts_src == StateType.RECOVERY and self.cur_recovery_wpnts.closest_target is not None:
-            closest_target = self.cur_recovery_wpnts.closest_target
-            closest_gap = self.cur_recovery_wpnts.closest_gap
-            if self.cur_avoidance_wpnts.closest_target is not None and closest_gap < self.cur_avoidance_wpnts.closest_gap:
-                closest_gap = self.cur_avoidance_wpnts.closest_gap
-                closest_target = self.cur_avoidance_wpnts.closest_target
-                local_wpnts_src = StateType.OVERTAKE
-            if self.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < self.cur_static_avoidance_wpnts.closest_gap:
-                closest_gap = self.cur_static_avoidance_wpnts.closest_gap
-                closest_target = self.cur_static_avoidance_wpnts.closest_target
-                local_wpnts_src = StateType.OVERTAKE
-            if self.cur_start_wpnts.closest_target is not None and closest_gap < self.cur_start_wpnts.closest_gap:
-                closest_gap = self.cur_start_wpnts.closest_gap
-                closest_target = self.cur_start_wpnts.closest_target
-                local_wpnts_src = StateType.START
-            return [closest_target], local_wpnts_src
-            
+            if local_wpnts_src == StateType.SMART_STATIC and smart_helper.cur_gb_wpnts.closest_target is not None:
+                closest_target = smart_helper.cur_gb_wpnts.closest_target
+                closest_gap = smart_helper.cur_gb_wpnts.closest_gap
+                if smart_helper.cur_avoidance_wpnts.closest_target is not None and closest_gap <= smart_helper.cur_avoidance_wpnts.closest_gap:
+                    closest_gap = smart_helper.cur_avoidance_wpnts.closest_gap
+                    closest_target = smart_helper.cur_avoidance_wpnts.closest_target
+                    local_wpnts_src = StateType.OVERTAKE
+                if smart_helper.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < smart_helper.cur_static_avoidance_wpnts.closest_gap:
+                    closest_gap = smart_helper.cur_static_avoidance_wpnts.closest_gap
+                    closest_target = smart_helper.cur_static_avoidance_wpnts.closest_target
+                    local_wpnts_src = StateType.OVERTAKE
+                if smart_helper.cur_start_wpnts.closest_target is not None and closest_gap < smart_helper.cur_start_wpnts.closest_gap:
+                    closest_gap = smart_helper.cur_start_wpnts.closest_gap
+                    closest_target = smart_helper.cur_start_wpnts.closest_target
+                    local_wpnts_src = StateType.START
+                return [closest_target], local_wpnts_src
+
+            if local_wpnts_src == StateType.RECOVERY and smart_helper.cur_recovery_wpnts.closest_target is not None:
+                closest_target = smart_helper.cur_recovery_wpnts.closest_target
+                closest_gap = smart_helper.cur_recovery_wpnts.closest_gap
+                if smart_helper.cur_avoidance_wpnts.closest_target is not None and closest_gap < smart_helper.cur_avoidance_wpnts.closest_gap:
+                    closest_gap = smart_helper.cur_avoidance_wpnts.closest_gap
+                    closest_target = smart_helper.cur_avoidance_wpnts.closest_target
+                    local_wpnts_src = StateType.OVERTAKE
+                if smart_helper.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < smart_helper.cur_static_avoidance_wpnts.closest_gap:
+                    closest_gap = smart_helper.cur_static_avoidance_wpnts.closest_gap
+                    closest_target = smart_helper.cur_static_avoidance_wpnts.closest_target
+                    local_wpnts_src = StateType.OVERTAKE
+                if smart_helper.cur_start_wpnts.closest_target is not None and closest_gap < smart_helper.cur_start_wpnts.closest_gap:
+                    closest_gap = smart_helper.cur_start_wpnts.closest_gap
+                    closest_target = smart_helper.cur_start_wpnts.closest_target
+                    local_wpnts_src = StateType.START
+                return [closest_target], local_wpnts_src
+
+        else:
+            # GB mode: use self's GB Frenet based calculations
+            if local_wpnts_src == StateType.GB_TRACK and self.cur_gb_wpnts.closest_target is not None:
+                closest_target = self.cur_gb_wpnts.closest_target
+                closest_gap = self.cur_gb_wpnts.closest_gap
+                if self.cur_avoidance_wpnts.closest_target is not None and closest_gap <= self.cur_avoidance_wpnts.closest_gap:
+                    closest_gap = self.cur_avoidance_wpnts.closest_gap
+                    closest_target = self.cur_avoidance_wpnts.closest_target
+                    local_wpnts_src = StateType.OVERTAKE
+                if self.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < self.cur_static_avoidance_wpnts.closest_gap:
+                    closest_gap = self.cur_static_avoidance_wpnts.closest_gap
+                    closest_target = self.cur_static_avoidance_wpnts.closest_target
+                    local_wpnts_src = StateType.OVERTAKE
+                if self.cur_start_wpnts.closest_target is not None and closest_gap < self.cur_start_wpnts.closest_gap:
+                    closest_gap = self.cur_start_wpnts.closest_gap
+                    closest_target = self.cur_start_wpnts.closest_target
+                    local_wpnts_src = StateType.START
+                return [closest_target], local_wpnts_src
+
+            if local_wpnts_src == StateType.RECOVERY and self.cur_recovery_wpnts.closest_target is not None:
+                closest_target = self.cur_recovery_wpnts.closest_target
+                closest_gap = self.cur_recovery_wpnts.closest_gap
+                if self.cur_avoidance_wpnts.closest_target is not None and closest_gap < self.cur_avoidance_wpnts.closest_gap:
+                    closest_gap = self.cur_avoidance_wpnts.closest_gap
+                    closest_target = self.cur_avoidance_wpnts.closest_target
+                    local_wpnts_src = StateType.OVERTAKE
+                if self.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < self.cur_static_avoidance_wpnts.closest_gap:
+                    closest_gap = self.cur_static_avoidance_wpnts.closest_gap
+                    closest_target = self.cur_static_avoidance_wpnts.closest_target
+                    local_wpnts_src = StateType.OVERTAKE
+                if self.cur_start_wpnts.closest_target is not None and closest_gap < self.cur_start_wpnts.closest_gap:
+                    closest_gap = self.cur_start_wpnts.closest_gap
+                    closest_target = self.cur_start_wpnts.closest_target
+                    local_wpnts_src = StateType.START
+                return [closest_target], local_wpnts_src
+        # ===== HJ MODIFIED END =====
+
         return [], local_wpnts_src
 
     
-    def check_ot_cloest_target(self):            
-        if self.gb_closest_target is not None and self.ot_closest_target is not None and self.local_wpnts_src == StateType.GB_TRACK:
-            if self.ot_closest_gap > self.gb_closest_gap:
-                self.local_wpnts_src = StateType.OVERTAKE       
-        elif self.cur_recovery_wpnts.closest_target is not None and self.ot_closest_target is not None and self.local_wpnts_src == StateType.RECOVERY:
-            if self.ot_closest_gap > self.cur_recovery_wpnts.closest_gap:
-                self.local_wpnts_src = StateType.OVERTAKE       
+    def check_ot_cloest_target(self):
+        # ===== HJ MODIFIED: Use appropriate Frenet coordinate system based on mode =====
+        if self.smart_static_active:
+            # Smart mode: use smart_helper's Fixed Frenet based calculations
+            smart_helper = self.smart_helper
+            if smart_helper.cur_gb_wpnts.closest_target is not None and smart_helper.ot_closest_target is not None and self.local_wpnts_src == StateType.SMART_STATIC:
+                if smart_helper.ot_closest_gap > smart_helper.cur_gb_wpnts.closest_gap:
+                    self.local_wpnts_src = StateType.OVERTAKE
+            elif smart_helper.cur_recovery_wpnts.closest_target is not None and smart_helper.ot_closest_target is not None and self.local_wpnts_src == StateType.RECOVERY:
+                if smart_helper.ot_closest_gap > smart_helper.cur_recovery_wpnts.closest_gap:
+                    self.local_wpnts_src = StateType.OVERTAKE
+        else:
+            # GB mode: use self's GB Frenet based calculations
+            if self.gb_closest_target is not None and self.ot_closest_target is not None and self.local_wpnts_src == StateType.GB_TRACK:
+                if self.ot_closest_gap > self.gb_closest_gap:
+                    self.local_wpnts_src = StateType.OVERTAKE
+            elif self.cur_recovery_wpnts.closest_target is not None and self.ot_closest_target is not None and self.local_wpnts_src == StateType.RECOVERY:
+                if self.ot_closest_gap > self.cur_recovery_wpnts.closest_gap:
+                    self.local_wpnts_src = StateType.OVERTAKE
+        # ===== HJ MODIFIED END =====       
 
     #############
     # MAIN LOOP #
@@ -1714,6 +1889,11 @@ class StateMachine:
             # publishes a marker that warn the user that the car is not ready to run
             self.publish_not_ready_marker()
             
+        # ===== HJ ADDED: Log state changes =====
+        prev_state = self.cur_state
+        prev_wpnts_src = self.local_wpnts_src
+        # ===== HJ ADDED END =====
+
         if self.force_gbtrack_state:
             self.cur_state = StateType.GB_TRACK
             self.local_wpnts_src = StateType.GB_TRACK
@@ -1724,6 +1904,12 @@ class StateMachine:
             rospy.logwarn(f"[{self.name}] FTGONLY sector !!!")
         else:
             self.cur_state, self.local_wpnts_src = self.state_transitions[self.cur_state](self)
+
+        # ===== HJ ADDED: Log state changes =====
+        if prev_state != self.cur_state or prev_wpnts_src != self.local_wpnts_src:
+            mode_tag = "SMART" if self.smart_static_active else "GB"
+            rospy.logwarn(f"[STATE CHANGE {mode_tag}] {prev_state.name} → {self.cur_state.name} | wpnts: {prev_wpnts_src.name} → {self.local_wpnts_src.name}")
+        # ===== HJ ADDED END =====
 
         if self.cur_state == StateType.TRAILING:
             self.check_ot_cloest_target()

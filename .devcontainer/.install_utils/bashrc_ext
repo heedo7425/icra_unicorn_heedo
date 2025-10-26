@@ -23,8 +23,8 @@ echo "ROS_DISTRO $ROS_DISTRO"
 export ROS_HOSTNAME=localhost
 export ROS_IP=localhost
 
-export ROS_HOSTNAME='192.168.50.38'
-export ROS_IP='192.168.50.38'
+# export ROS_HOSTNAME='192.168.50.38'
+# export ROS_IP='192.168.50.38'
 
 export ROS_MASTER_URI="http://${ROS_HOSTNAME}:11311"
 

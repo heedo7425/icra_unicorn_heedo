@@ -24,6 +24,40 @@ import trajectory_planning_helpers as tph
 import configparser
 from frenet_converter.frenet_converter import FrenetConverter  # ===== HJ ADDED =====
 
+# ===== HJ ADDED: Debug logging helper for state_machine_node =====
+DEBUG_LOGGING_ENABLED = False  # Set to False to disable all debug logging
+_debug_log_cache = {}
+
+def debug_log_on_change(tag, **kwargs):
+    """Log only when any of the kwargs values change
+
+    Can be globally enabled/disabled via DEBUG_LOGGING_ENABLED flag.
+
+    Usage:
+        debug_log_on_change("MyTag", value1=x, value2=y, value3=z)
+    """
+    global _debug_log_cache
+
+    # Skip if debug logging is disabled
+    if not DEBUG_LOGGING_ENABLED:
+        return
+
+    # Create cache key
+    cache_key = tag
+
+    # Get previous values
+    prev_values = _debug_log_cache.get(cache_key, None)
+
+    # Check if any value changed
+    if prev_values != kwargs:
+        # Build log message
+        msg_parts = [f"{k}={v}" for k, v in kwargs.items()]
+        rospy.logwarn(f"[DEBUG {tag}] " + ", ".join(msg_parts))
+
+        # Update cache
+        _debug_log_cache[cache_key] = kwargs.copy()
+# ===== HJ ADDED END =====
+
 
 try:
     # if we are in the car, vesc msgs are built and we read them
@@ -872,7 +906,20 @@ class StateMachine:
             gap = (wpnt_data.list[-1].s_m - self.cur_s) % self.track_length
             min_dist = np.min(np.linalg.norm(wpnt_data.array[:, 0:2] - self.current_position[:2], axis=1))
 
-            if gap > wpnt_data.on_spline_front_horizon_thres_m and min_dist < wpnt_data.on_spline_min_dist_thres_m:
+            # ===== HJ ADDED: Debug logging for failed checks =====
+            is_smart_helper = hasattr(self, 'parent')
+            gap_ok = gap > wpnt_data.on_spline_front_horizon_thres_m
+            dist_ok = min_dist < wpnt_data.on_spline_min_dist_thres_m
+
+            if not (gap_ok and dist_ok):
+                tag = "HELPER" if is_smart_helper else "PARENT"
+                rospy.logwarn_throttle(2.0,
+                    f"[DEBUG {tag} _check_on_spline FAIL] planner={wpnt_data.name}, "
+                    f"gap={gap:.2f}m (need>{wpnt_data.on_spline_front_horizon_thres_m:.2f}): {gap_ok}, "
+                    f"min_dist={min_dist:.3f}m (need<{wpnt_data.on_spline_min_dist_thres_m:.3f}): {dist_ok}")
+            # ===== HJ ADDED END =====
+
+            if gap_ok and dist_ok:
                 return True
         return False
     
@@ -1122,27 +1169,68 @@ class StateMachine:
         return False
     
     def _check_overtaking_mode(self) -> bool:
-        if (
-            self._check_ot_sector()
-            # and self._check_enemy_in_front()
-            and self._check_getting_closer(threshold_m = 10.0)
-            and self._check_latest_wpnts(self.avoidance_wpnts, self.cur_avoidance_wpnts)
-            and self._check_free_frenet(self.cur_avoidance_wpnts)
-        ):
+        # ===== HJ ADDED: Debug logging =====
+        ot_sector_check = self._check_ot_sector()
+        closer_check = self._check_getting_closer(threshold_m = 10.0)
+        latest_check = self._check_latest_wpnts(self.avoidance_wpnts, self.cur_avoidance_wpnts)
+        free_check = self._check_free_frenet(self.cur_avoidance_wpnts)
+
+        is_smart_helper = hasattr(self, 'parent')
+        tag = "HELPER" if is_smart_helper else "PARENT"
+
+        wpnts_info = "None"
+        if self.avoidance_wpnts is not None:
+            wpnts_info = f"exists(len={len(self.avoidance_wpnts.wpnts)})"
+
+        debug_log_on_change(
+            f"{tag}_check_OT",
+            ot_sector=ot_sector_check,
+            closer=closer_check,
+            latest=latest_check,
+            free=free_check,
+            wpnts_avail=self.avoidance_wpnts is not None,
+            wpnts=wpnts_info,
+            num_obs=len(self.obstacles_in_interest)
+        )
+        # ===== HJ ADDED END =====
+
+        if ot_sector_check and closer_check and latest_check and free_check:
             self.static_overtaking_mode = False
             return True
         else:
             return False
         
     def _check_static_overtaking_mode(self) -> bool:
-        if (
-            # self._check_ot_sector()
-            # self._check_enemy_in_front()
-            self.cur_vs < 3.0
-            and self._check_getting_closer(threshold_m = 7.0)
-            and self._check_latest_wpnts(self.static_avoidance_wpnts, self.cur_static_avoidance_wpnts)
-            and self._check_free_frenet(self.cur_static_avoidance_wpnts)
-        ):
+        # ===== HJ ADDED: Debug logging =====
+        vs_check = self.cur_vs < 3.0
+        closer_check = self._check_getting_closer(threshold_m = 7.0)
+        latest_check = self._check_latest_wpnts(self.static_avoidance_wpnts, self.cur_static_avoidance_wpnts)
+        free_check = self._check_free_frenet(self.cur_static_avoidance_wpnts)
+
+        # Determine if this is smart_helper or parent for logging
+        is_smart_helper = hasattr(self, 'parent')  # SmartStaticChecker has parent attribute
+        tag = "HELPER" if is_smart_helper else "PARENT"
+
+        # Get wpnts info
+        wpnts_info = "None"
+        if self.static_avoidance_wpnts is not None:
+            wpnts_info = f"exists(len={len(self.static_avoidance_wpnts.wpnts)})"
+
+        # Use debug_log_on_change for logging
+        debug_log_on_change(
+            f"{tag}_check_static_OT",
+            vs=round(self.cur_vs, 2),
+            vs_ok=vs_check,
+            closer=closer_check,
+            latest=latest_check,
+            free=free_check,
+            wpnts_avail=self.static_avoidance_wpnts is not None,
+            wpnts=wpnts_info,
+            num_obs=len(self.obstacles_in_interest)
+        )
+        # ===== HJ ADDED END =====
+
+        if vs_check and closer_check and latest_check and free_check:
             self.static_overtaking_mode = True
             return True
         else:
@@ -1622,7 +1710,14 @@ class StateMachine:
             self.cur_gb_wpnts.list = self.gb_wpnts.wpnts
 
         self.cur_obstacles_in_interest = self.obstacles_in_interest
-        
+
+        # ===== HJ ADDED: Update smart_helper synchronously =====
+        # Update smart_helper's obstacles_in_interest at same time as parent
+        # This ensures perfect synchronization between GB and Smart modes
+        if self.smart_static_active and self.smart_helper is not None:
+            self.smart_helper.update()
+        # ===== HJ ADDED END =====
+
         return
 
         
@@ -1794,6 +1889,11 @@ class StateMachine:
             # publishes a marker that warn the user that the car is not ready to run
             self.publish_not_ready_marker()
             
+        # ===== HJ ADDED: Log state changes =====
+        prev_state = self.cur_state
+        prev_wpnts_src = self.local_wpnts_src
+        # ===== HJ ADDED END =====
+
         if self.force_gbtrack_state:
             self.cur_state = StateType.GB_TRACK
             self.local_wpnts_src = StateType.GB_TRACK
@@ -1804,6 +1904,12 @@ class StateMachine:
             rospy.logwarn(f"[{self.name}] FTGONLY sector !!!")
         else:
             self.cur_state, self.local_wpnts_src = self.state_transitions[self.cur_state](self)
+
+        # ===== HJ ADDED: Log state changes =====
+        if prev_state != self.cur_state or prev_wpnts_src != self.local_wpnts_src:
+            mode_tag = "SMART" if self.smart_static_active else "GB"
+            rospy.logwarn(f"[STATE CHANGE {mode_tag}] {prev_state.name} → {self.cur_state.name} | wpnts: {prev_wpnts_src.name} → {self.local_wpnts_src.name}")
+        # ===== HJ ADDED END =====
 
         if self.cur_state == StateType.TRAILING:
             self.check_ot_cloest_target()

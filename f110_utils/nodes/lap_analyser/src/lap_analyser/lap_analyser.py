@@ -39,24 +39,26 @@ class LapAnalyser:
             print("[Lap Analyzer] Waiting for global lateral waypoints")
             rospy.sleep(0.1)
 
-        rospy.Subscriber('/car_state/odom_frenet', Odometry, self.frenet_odom_cb)  # car odom in frenet frame
-
-        rospy.Subscriber('/lap_analyser/start', Empty, self.start_log_cb)
-
-        # New subscriber for x,y coordinate odom (assumed available)
-        rospy.Subscriber('/car_state/odom', Odometry, self.odom_xy_cb)
+        # ===== HJ MODIFIED: Initialize variables BEFORE subscribing =====
+        # Initialize all instance variables before registering callbacks
         self.latest_odom = None
         self.odom_points = []  # to store current odom (x,y) along with d and dist_to_boundary
-
-        # publishes once when a lap is completed
-        self.lap_data_pub = rospy.Publisher('lap_data', LapData, queue_size=10)
-        self.min_car_distance_to_boundary_pub = rospy.Publisher('min_car_distance_to_boundary', Float32, queue_size=10) # publishes every time a new car position is received
         self.lap_start_time = rospy.Time.now()
         self.last_s = 0
         self.accumulated_error = 0
         self.max_error = 0
         self.n_datapoints = 0
         self.lap_count = -1
+        # ===== HJ MODIFIED END =====
+
+        # Now register subscribers (callbacks can safely access initialized variables)
+        rospy.Subscriber('/car_state/odom_frenet', Odometry, self.frenet_odom_cb)  # car odom in frenet frame
+        rospy.Subscriber('/lap_analyser/start', Empty, self.start_log_cb)
+        rospy.Subscriber('/car_state/odom', Odometry, self.odom_xy_cb)  # New subscriber for x,y coordinate odom
+
+        # Publishers
+        self.lap_data_pub = rospy.Publisher('lap_data', LapData, queue_size=10)
+        self.min_car_distance_to_boundary_pub = rospy.Publisher('min_car_distance_to_boundary', Float32, queue_size=10)
 
         self.NUM_LAPS_ANALYSED = 10
         '''The number of laps to analyse and compute statistics for'''
