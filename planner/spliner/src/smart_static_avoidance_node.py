@@ -158,7 +158,7 @@ class ObstacleSpliner:
         self.gb_optimizer_plot = rospy.get_param(f'/{self.name}/gb_optimizer_plot', False)  # Show plots for debugging
 
         # Get racecar_version and map_name for locating config files (same as mapping.launch)
-        self.racecar_version = rospy.get_param('racecar_version', 'FIESTA1')
+        self.racecar_version = rospy.get_param('racecar_version', 'SRX1')
         self.map_name = rospy.get_param('/map')  # Map name from /map parameter
         self.map_dir = os.path.join(
             os.path.dirname(__file__),

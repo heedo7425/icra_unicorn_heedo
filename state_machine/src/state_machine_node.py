@@ -22,7 +22,6 @@ from vel_planner.vel_planner import calc_vel_profile
 
 import trajectory_planning_helpers as tph
 import configparser
-from frenet_converter.frenet_converter import FrenetConverter  # ===== HJ ADDED =====
 
 # ===== HJ ADDED: Debug logging helper for state_machine_node =====
 DEBUG_LOGGING_ENABLED = False  # Set to False to disable all debug logging
@@ -197,9 +196,8 @@ class StateMachine:
         self.cur_start_wpnts = WaypointData('start_planner', False)
         # ===== HJ MODIFIED: Use static_avoidance_planner params for smart_static =====
         self.cur_smart_static_avoidance_wpnts = WaypointData('static_avoidance_planner', True)
-        self.smart_frenet_converter = None  # Frenet converter for Smart Static path (initialized on first waypoints)
-        self.smart_track_length = None  # Track length from Smart Frenet converter
-        self.smart_wpnt_dist = None  # Waypoint distance from Smart Frenet converter
+        self.smart_track_length = None  # Track length from Smart Static path (from s_m)
+        self.smart_wpnt_dist = None  # Average waypoint distance from Smart Static path (from s_m)
         # ===== HJ MODIFIED END =====
 
 
@@ -442,21 +440,23 @@ class StateMachine:
         self.smart_static_wpnts = data  # ===== HJ ADDED: Store raw message for _check_latest_wpnts =====
         self.cur_smart_static_avoidance_wpnts.initialize_traj(data)
 
-        # Initialize Frenet converter on first waypoints (or if not yet initialized)
-        if self.smart_frenet_converter is None and len(data.wpnts) > 0:
-            # Extract X and Y coordinates separately
-            waypoints_x = np.array([wpnt.x_m for wpnt in data.wpnts])
-            waypoints_y = np.array([wpnt.y_m for wpnt in data.wpnts])
+        # ===== HJ MODIFIED: Use s_m directly from OTWpntArray instead of FrenetConverter =====
+        # OTWpntArray already contains s_m values, no need to create FrenetConverter
+        if len(data.wpnts) > 0 and self.smart_track_length is None:
+            # Track length from last waypoint's s_m
+            self.smart_track_length = data.wpnts[-1].s_m
 
-            # Create Frenet converter
-            self.smart_frenet_converter = FrenetConverter(waypoints_x, waypoints_y)
+            # Average waypoint distance from consecutive s_m differences
+            if len(data.wpnts) >= 2:
+                s_diffs = [data.wpnts[i].s_m - data.wpnts[i-1].s_m for i in range(1, len(data.wpnts))]
+                self.smart_wpnt_dist = np.mean(s_diffs)
+            else:
+                self.smart_wpnt_dist = self.smart_track_length
 
-            # Store track length and waypoint distance
-            self.smart_track_length = self.smart_frenet_converter.raceline_length
-            self.smart_wpnt_dist = self.smart_frenet_converter.waypoints_distance_m
-
-            rospy.loginfo(f"[{self.name}] Smart Frenet converter initialized: "
-                         f"track_length={self.smart_track_length:.2f}m, wpnt_dist={self.smart_wpnt_dist:.3f}m")
+            rospy.loginfo(f"[{self.name}] Smart Static path initialized: "
+                         f"track_length={self.smart_track_length:.2f}m, wpnt_dist={self.smart_wpnt_dist:.3f}m, "
+                         f"num_wpnts={len(data.wpnts)}")
+        # ===== HJ MODIFIED END =====
 
     def smart_static_active_cb(self, data):
         """Flag from spliner: is smart static mode currently active?"""
@@ -691,16 +691,46 @@ class StateMachine:
     ...
     """
 
+    # ===== ORIGINAL FUNCTION (before HJ modification) =====
+    # def _check_only_ftg_zone(self) -> bool:
+    #     ftg_only = False
+    #     # check if the car is in a ftg only zone, but only if there is an only ftg zone
+    #     if len(self.only_ftg_zones) != 0:
+    #         for sector in self.only_ftg_zones:
+    #             if sector[0] <= self.cur_s / self.waypoints_dist <= sector[1]:
+    #                 ftg_only = True
+    #                 # rospy.logwarn(f"[{self.name}] IN FTG ONLY ZONE")
+    #                 break  # cannot be in two ftg zones
+    #     return ftg_only
+    # ===== ORIGINAL FUNCTION END =====
+
+    # ===== HJ MODIFIED: Always use GB Frenet coordinates for zone checks =====
     def _check_only_ftg_zone(self) -> bool:
+        """Check if in FTG-only zone using GB raceline coordinates
+
+        Zones are defined using GB raceline waypoint indices.
+        When called from SmartStaticChecker, uses parent's GB cur_s instead of Fixed cur_s.
+        """
         ftg_only = False
         # check if the car is in a ftg only zone, but only if there is an only ftg zone
         if len(self.only_ftg_zones) != 0:
+            # Use GB Frenet coordinates for zone check (zones are GB raceline based)
+            if hasattr(self, 'parent'):
+                # SmartStaticChecker - use parent's GB coordinates
+                cur_s_for_zone = self.parent.cur_s
+                waypoints_dist_for_zone = self.parent.waypoints_dist
+            else:
+                # StateMachine - use own GB coordinates
+                cur_s_for_zone = self.cur_s
+                waypoints_dist_for_zone = self.waypoints_dist
+
             for sector in self.only_ftg_zones:
-                if sector[0] <= self.cur_s / self.waypoints_dist <= sector[1]:
+                if sector[0] <= cur_s_for_zone / waypoints_dist_for_zone <= sector[1]:
                     ftg_only = True
                     # rospy.logwarn(f"[{self.name}] IN FTG ONLY ZONE")
                     break  # cannot be in two ftg zones
         return ftg_only
+    # ===== HJ MODIFIED END =====
 
     def _check_close_to_raceline(self, threshold_m=None) -> bool:
         if threshold_m is None:
@@ -717,79 +747,50 @@ class StateMachine:
         else:
             return np.abs(self.cur_d) < np.deg2rad(threshold_deg)
 
-    # ===== HJ ADDED: Smart Static path proximity check =====
-    def _check_close_to_smart_static_path(self, threshold_m=None) -> bool:
-        """Check if ego is close to Smart Static path (lateral distance)
+    # ===== ORIGINAL FUNCTION (before HJ modification) =====
+    # def _check_ot_sector(self) -> bool:
+    #     # self.ot_section_check_pub.publish(True)
+    #     # return True
+    #
+    #     for sector in self.overtake_zones:
+    #         if sector[0] <= self.cur_s / self.waypoints_dist <= sector[1]:
+    #             # rospy.loginfo(f"[{self.name}] In overtaking sector!")
+    #             self.ot_section_check_pub.publish(True)
+    #             return True
+    #     self.ot_section_check_pub.publish(False)
+    #
+    #     return False
+    # ===== ORIGINAL FUNCTION END =====
 
-        Uses Cartesian distance to Smart Static waypoints since we don't have
-        Smart Static Frenet coordinates in single Frenet approach.
-
-        Args:
-            threshold_m: Lateral distance threshold [m]. Defaults to gb_ego_width_m.
-
-        Returns:
-            True if within threshold distance to Smart Static path
-        """
-        if not self.smart_static_active or len(self.cur_smart_static_avoidance_wpnts.list) == 0:
-            return False
-
-        if threshold_m is None:
-            threshold_m = self.gb_ego_width_m
-
-        # Find closest point on Smart Static path
-        ego_pos = np.array(self.current_position[:2])
-        wpnts_array = self.cur_smart_static_avoidance_wpnts.array[:, 0:2]  # [x, y]
-
-        distances = np.linalg.norm(wpnts_array - ego_pos, axis=1)
-        min_distance = np.min(distances)
-
-        return min_distance < threshold_m
-
-    def _check_close_to_smart_static_path_heading(self, threshold_deg=None) -> bool:
-        """Check if ego heading is aligned with Smart Static path
-
-        Compares ego heading with closest waypoint's heading on Smart Static path.
-
-        Args:
-            threshold_deg: Heading difference threshold [deg]. Defaults to 20 deg.
-
-        Returns:
-            True if heading difference is within threshold
-        """
-        if not self.smart_static_active or len(self.cur_smart_static_avoidance_wpnts.list) == 0:
-            return False
-
-        if threshold_deg is None:
-            threshold_deg = 20
-
-        # Find closest waypoint on Smart Static path
-        ego_pos = np.array(self.current_position[:2])
-        wpnts_array = self.cur_smart_static_avoidance_wpnts.array[:, 0:2]  # [x, y]
-
-        distances = np.linalg.norm(wpnts_array - ego_pos, axis=1)
-        closest_wpnt_idx = np.argmin(distances)
-
-        # Get closest waypoint's heading
-        closest_wpnt_psi = self.cur_smart_static_avoidance_wpnts.list[closest_wpnt_idx].psi_rad
-
-        # Compare with ego heading
-        heading_diff = np.abs(self.current_position[2] - closest_wpnt_psi)
-
-        return heading_diff < np.deg2rad(threshold_deg)
-    # ===== HJ ADDED END =====
-
+    # ===== HJ MODIFIED: Always use GB Frenet coordinates for zone checks =====
     def _check_ot_sector(self) -> bool:
-        # self.ot_section_check_pub.publish(True) 
+        """Check if in overtake zone using GB raceline coordinates
+
+        Zones are defined using GB raceline waypoint indices.
+        When called from SmartStaticChecker, uses parent's GB cur_s instead of Fixed cur_s.
+        """
+        # self.ot_section_check_pub.publish(True)
         # return True
 
+        # Use GB Frenet coordinates for zone check (zones are GB raceline based)
+        if hasattr(self, 'parent'):
+            # SmartStaticChecker - use parent's GB coordinates
+            cur_s_for_zone = self.parent.cur_s
+            waypoints_dist_for_zone = self.parent.waypoints_dist
+        else:
+            # StateMachine - use own GB coordinates
+            cur_s_for_zone = self.cur_s
+            waypoints_dist_for_zone = self.waypoints_dist
+
         for sector in self.overtake_zones:
-            if sector[0] <= self.cur_s / self.waypoints_dist <= sector[1]:
+            if sector[0] <= cur_s_for_zone / waypoints_dist_for_zone <= sector[1]:
                 # rospy.loginfo(f"[{self.name}] In overtaking sector!")
                 self.ot_section_check_pub.publish(True)
                 return True
         self.ot_section_check_pub.publish(False)
 
         return False
+    # ===== HJ MODIFIED END =====
 
     def _check_getting_closer(self, threshold_m=3.0) -> bool:
         obs = None
@@ -1437,18 +1438,10 @@ class StateMachine:
             List of extra waypoints
         """
         if self.smart_static_active and self.cur_smart_static_avoidance_wpnts.is_init:
-            # Smart mode: find Smart waypoint with s_m closest to last_s_m
-            # Use last waypoint's s_m as track length (consistent with get_smart_static_wpts)
-            track_length = self.cur_smart_static_avoidance_wpnts.list[-1].s_m
-
-            # Find index of waypoint with s_m closest to last_s_m (considering closed-loop wrap-around)
-            s_diffs = []
-            for wpnt in self.cur_smart_static_avoidance_wpnts.list:
-                forward_diff = (wpnt.s_m - last_s_m) % track_length
-                backward_diff = (last_s_m - wpnt.s_m) % track_length
-                s_diffs.append(min(forward_diff, backward_diff))
-
-            start_idx = np.argmin(s_diffs)
+            # ===== HJ FIXED: Use index-based approach (same as original code) to prevent reverse wrapping =====
+            # Convert s_m to index, then +1 to get NEXT waypoint
+            # This ensures we always move forward, even at track boundaries (modulo handles wrap-around)
+            start_idx = int(last_s_m / self.smart_wpnt_dist) + 1
             num_smart = len(self.cur_smart_static_avoidance_wpnts.list)
 
             # Extract waypoints with modulo wrap-around
@@ -1456,6 +1449,7 @@ class StateMachine:
                      for i in range(num_needed)]
 
             rospy.logdebug(f"[{self.name}] Shortage filled with Smart waypoints: start_idx={start_idx}, num={num_needed}")
+            # ===== HJ FIXED END =====
         else:
             # GB mode: original behavior
             gb_start_idx = int(last_s_m / self.wpnt_dist) + 1
@@ -1483,18 +1477,11 @@ class StateMachine:
             cur_s_fixed = self.smart_helper.cur_s
             # ===== HJ MODIFIED END =====
 
-            # Find index of waypoint with s_m closest to cur_s (considering closed-loop wrap-around)
-            s_diffs = []
-            for wpnt in self.cur_smart_static_avoidance_wpnts.list:
-                # Calculate signed difference (forward direction)
-                forward_diff = (wpnt.s_m - cur_s_fixed) % track_length
-                # Calculate backward difference
-                backward_diff = (cur_s_fixed - wpnt.s_m) % track_length
-                # Take minimum absolute distance
-                s_diffs.append(min(forward_diff, backward_diff))
-
-            min_idx = np.argmin(s_diffs)
+            # ===== HJ FIXED: Use GlobalTracking-style rounding for closest waypoint =====
+            # Round to nearest waypoint index (same approach as GlobalTracking)
+            min_idx = int(cur_s_fixed / self.smart_wpnt_dist + 0.5)
             num_smart_wpnts = len(self.cur_smart_static_avoidance_wpnts.list)
+            # ===== HJ FIXED END =====
 
             # Use modulo to wrap around - pure Smart waypoints, no GB fallback!
             wpnts = [self.cur_smart_static_avoidance_wpnts.list[(min_idx + i) % num_smart_wpnts]

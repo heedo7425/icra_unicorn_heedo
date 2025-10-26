@@ -10,13 +10,40 @@ def GlobalTracking(state_machine: StateMachine) -> List[Wpnt]:
     s = int(state_machine.cur_s/state_machine.waypoints_dist + 0.5)
     return [state_machine.cur_gb_wpnts.list[(s + i)%state_machine.num_glb_wpnts] for i in range(state_machine.n_loc_wpnts)]
 
+# ===== ORIGINAL FUNCTION (before HJ modification) =====
+# def Overtaking(state_machine: StateMachine) -> List[Wpnt]:
+#     if (state_machine.ot_planner == "spliner" or state_machine.ot_planner == "predictive_spliner"):
+#         return state_machine.get_splini_wpts()
+#
+#     else:
+#         s = state_machine.cur_id_ot
+#         return [state_machine.overtake_wpnts[(s + i)%state_machine.num_ot_points] for i in range(state_machine.n_loc_wpnts)]
+# ===== ORIGINAL FUNCTION END =====
+
+# ===== HJ MODIFIED: Prioritize static obstacle avoidance regardless of ot_planner =====
 def Overtaking(state_machine: StateMachine) -> List[Wpnt]:
+    """Generate overtaking waypoints
+
+    Priority order:
+    1. Static obstacle avoidance (static_overtaking_mode) - works with any planner
+    2. Dynamic obstacle avoidance with spliner
+    3. Pre-computed overtaking waypoints (fallback)
+
+    This ensures static obstacles are always avoided regardless of ot_planner choice.
+    """
+    # Priority 1: Static obstacle overtaking (regardless of ot_planner)
+    if state_machine.static_overtaking_mode:
+        return state_machine.get_splini_wpts()  # Uses cur_static_avoidance_wpnts internally
+
+    # Priority 2: Dynamic obstacle overtaking with spliner
     if (state_machine.ot_planner == "spliner" or state_machine.ot_planner == "predictive_spliner"):
-        return state_machine.get_splini_wpts()
-    
+        return state_machine.get_splini_wpts()  # Uses cur_avoidance_wpnts internally
+
+    # Priority 3: Pre-computed overtaking waypoints (other planners)
     else:
         s = state_machine.cur_id_ot
         return [state_machine.overtake_wpnts[(s + i)%state_machine.num_ot_points] for i in range(state_machine.n_loc_wpnts)]
+# ===== HJ MODIFIED END =====
 
 def RECOVERY(state_machine: StateMachine):
     return state_machine.get_recovery_wpts()

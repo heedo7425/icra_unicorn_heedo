@@ -74,11 +74,7 @@ class Controller_manager:
         
         self.state_machine_rate = rospy.get_param('state_machine/rate') #rate in hertz
         self.position_in_map = [] # current position in map frame
-        # ===== HJ MODIFIED: Dual Frenet position system =====
-        self.position_in_map_frenet = [] # current position in frenet coordinates (GB or Fixed depending on mode)
-        self.position_in_map_frenet_gb = [] # GB Frenet position
-        self.position_in_map_frenet_fixed = [] # Fixed Frenet position
-        # ===== HJ MODIFIED END =====
+        self.position_in_map_frenet = [] # current position in frenet coordinates
         self.waypoint_list_in_map = [] # waypoints starting at car's position in map frame
         self.speed_now = 0 # current speed
         self.acc_now = np.zeros(10) # last 5 accleration values
@@ -92,13 +88,7 @@ class Controller_manager:
         self.trailing_command = 2
         self.i_gap = 0
 
-        # ===== HJ ADDED: Dual Frenet converter system =====
-        self.converter = None  # GB Frenet converter (will be converter_gb)
-        self.converter_gb = None  # GB raceline converter
-        self.converter_fixed = None  # Smart Static Fixed path converter
-        self.smart_static_active = False  # Current Smart Static mode state
-        self._prev_smart_static_active = False  # Track mode changes
-        # ===== HJ ADDED END =====
+        self.converter = None
 
         # initializing l1 parameter
         # This step could be removed with rospy.wait_for_message() in control loop
@@ -150,18 +140,9 @@ class Controller_manager:
             waypoints = rospy.wait_for_message('/global_waypoints', WpntArray)
         self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in waypoints.wpnts])
 
-        # ===== HJ MODIFIED: Dual track length for GB and Fixed =====
-        self.track_length_gb = rospy.get_param("/global_republisher/track_length")
-        self.track_length_fixed = 0.0  # Will be set when Fixed path arrives
-        self.track_length = self.track_length_gb  # Default to GB, updated dynamically in controller_cycle
-        rospy.loginfo(f"[{self.name}] GB track length: {self.track_length_gb:.2f}m")
-        # ===== HJ MODIFIED END =====
+        self.track_length = rospy.get_param("/global_republisher/track_length")
 
-        # ===== HJ MODIFIED: Initialize GB converter and set as default =====
-        self.converter_gb = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
-        self.converter = self.converter_gb  # Default to GB
-        rospy.loginfo(f"[{self.name}] Initialized GB Frenet converter")
-        # ===== HJ MODIFIED END =====
+        self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
 
 
         # FTG
@@ -239,12 +220,7 @@ class Controller_manager:
         rospy.Subscriber('/car_state/odom', Odometry, self.odom_cb) # car speed
         rospy.Subscriber('/car_state/pose', PoseStamped, self.car_state_cb) # car position (x, y, theta)
         rospy.Subscriber('/imu/data', Imu, self.imu_cb) # acceleration subscriber for steer change
-        # ===== HJ MODIFIED: Dual Frenet odom subscribers =====
-        rospy.Subscriber('/car_state/odom_frenet', Odometry, self.car_state_frenet_gb_cb) # GB frenet coordinates
-        rospy.Subscriber('/car_state/odom_frenet_fixed', Odometry, self.car_state_frenet_fixed_cb) # Fixed frenet coordinates
-        rospy.Subscriber('/smart_static_active', Bool, self.smart_static_active_cb) # Smart Static mode flag
-        rospy.Subscriber('/smart_static_avoidance_wpnts', WpntArray, self.smart_static_wpnts_cb) # Fixed path waypoints
-        # ===== HJ MODIFIED END =====
+        rospy.Subscriber('/car_state/odom_frenet', Odometry, self.car_state_frenet_cb) # car frenet coordinates
         rospy.Subscriber("/dyn_controller/parameter_updates", Config, self.l1_params_cb) #l1 param tuning/updating
         rospy.Subscriber("/scan", LaserScan, self.scan_cb)
         rospy.Subscriber("/vesc/odom", Odometry, self.vesc_odom_cb)
@@ -390,76 +366,12 @@ class Controller_manager:
                                        data.pose.orientation.z, data.pose.orientation.w])[2]
         self.position_in_map = np.array([x, y, theta])[np.newaxis]
 
-    # ===== HJ MODIFIED: Split Frenet callbacks for GB and Fixed =====
-    def car_state_frenet_gb_cb(self, data: Odometry):
-        """GB Frenet odom callback"""
+    def car_state_frenet_cb(self, data: Odometry):
         s = data.pose.pose.position.x
         d = data.pose.pose.position.y
         vs = data.twist.twist.linear.x
         vd = data.twist.twist.linear.y
-        self.position_in_map_frenet_gb = np.array([s, d, vs, vd])
-
-        # Update active frenet position if in GB mode
-        if not self.smart_static_active:
-            self.position_in_map_frenet = self.position_in_map_frenet_gb
-
-    def car_state_frenet_fixed_cb(self, data: Odometry):
-        """Fixed Frenet odom callback"""
-        s = data.pose.pose.position.x
-        d = data.pose.pose.position.y
-        vs = data.twist.twist.linear.x
-        vd = data.twist.twist.linear.y
-        self.position_in_map_frenet_fixed = np.array([s, d, vs, vd])
-
-        # Update active frenet position if in Smart Static mode
-        if self.smart_static_active:
-            self.position_in_map_frenet = self.position_in_map_frenet_fixed
-
-    def smart_static_active_cb(self, data: Bool):
-        """Smart Static mode flag callback - switches between GB and Fixed Frenet"""
-        prev_state = self.smart_static_active
-        self.smart_static_active = data.data
-
-        # Detect mode changes and switch converter + frenet position + track_length
-        if self.smart_static_active != prev_state:
-            if self.smart_static_active:
-                # Switching to Smart Static mode
-                if self.converter_fixed is not None:
-                    self.controller.converter = self.converter_fixed
-                    self.track_length = self.track_length_fixed
-                    rospy.loginfo(f"[{self.name}] Switched to Fixed Frenet (length={self.track_length_fixed:.2f}m)")
-                if len(self.position_in_map_frenet_fixed) > 0:
-                    self.position_in_map_frenet = self.position_in_map_frenet_fixed
-            else:
-                # Switching to GB mode
-                self.controller.converter = self.converter_gb
-                self.track_length = self.track_length_gb
-                rospy.loginfo(f"[{self.name}] Switched to GB Frenet (length={self.track_length_gb:.2f}m)")
-                if len(self.position_in_map_frenet_gb) > 0:
-                    self.position_in_map_frenet = self.position_in_map_frenet_gb
-
-        self._prev_smart_static_active = self.smart_static_active
-
-    def smart_static_wpnts_cb(self, data: WpntArray):
-        """Smart Static waypoints callback - creates Fixed Frenet converter only once"""
-        if len(data.wpnts) == 0:
-            return
-
-        # Only create if not already created
-        if self.converter_fixed is None:
-            fixed_wpnts = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
-            self.converter_fixed = FrenetConverter(fixed_wpnts[:, 0], fixed_wpnts[:, 1])
-
-            # Calculate Fixed track length (last waypoint's s value)
-            self.track_length_fixed = data.wpnts[-1].s_m
-            rospy.loginfo(f"[{self.name}] Created Fixed Frenet converter ({len(fixed_wpnts)} waypoints, length={self.track_length_fixed:.2f}m)")
-
-            # If currently in Smart Static mode, apply it immediately
-            if self.smart_static_active:
-                self.controller.converter = self.converter_fixed
-                self.track_length = self.track_length_fixed
-                rospy.loginfo(f"[{self.name}] Applied Fixed Frenet converter (Smart mode active)")
-    # ===== HJ MODIFIED END ===== 
+        self.position_in_map_frenet = np.array([s,d,vs,vd]) 
 
 
     def behavior_cb(self, data: BehaviorStrategy):
