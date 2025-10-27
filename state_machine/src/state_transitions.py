@@ -263,8 +263,40 @@ def SmartStaticTransition(state_machine: StateMachine) -> Tuple[StateType, State
     """Transitions for being in `StateType.SMART_STATIC`
 
     Entry point for Smart mode's closed loop.
-    Only considers Smart Static path - GB raceline is completely ignored.
+    When flag is active: uses Smart Static path only (GB raceline ignored).
+    When flag turns off: returns to GB mode transitions.
     """
+    # ===== HJ ADDED: Handle smart_static_active flag off - return to GB mode =====
+    if not state_machine.smart_static_active:
+        # Flag turned off - need to safely return to GB mode
+        rospy.logwarn("[SmartStaticTransition] Flag off, returning to GB mode")
+
+        # Clear all closest_targets to prevent Frenet coordinate mismatch
+        # (smart_helper may have set these with Fixed Frenet coordinates)
+        state_machine.cur_gb_wpnts.closest_target = None
+        state_machine.cur_recovery_wpnts.closest_target = None
+        state_machine.cur_avoidance_wpnts.closest_target = None
+        state_machine.cur_static_avoidance_wpnts.closest_target = None
+
+        # Check if we're close enough to GB raceline for direct transition
+        close_to_gb = state_machine._check_close_to_raceline(close_threshold_gb) * \
+                      state_machine._check_close_to_raceline_heading(20)
+
+        if close_to_gb:
+            # Close enough to GB - safe to return immediately
+            rospy.logwarn("[SmartStaticTransition→GB_TRACK] Close to GB, direct return")
+            return StateType.GB_TRACK, StateType.GB_TRACK
+        else:
+            # Not close to GB - delegate to GB mode transitions
+            # GB transitions will handle recovery/overtaking/trailing logic
+            rospy.logwarn("[SmartStaticTransition] Not close to GB, using GB transitions")
+            if len(state_machine.cur_obstacles_in_interest) == 0:
+                return NonObstacleTransition_GBMode(state_machine, close_to_gb)
+            else:
+                return ObstacleTransition_GBMode(state_machine, close_to_gb)
+    # ===== HJ ADDED END =====
+
+    # Original Smart mode logic (flag still active)
     smart_helper = state_machine.smart_helper
     close_to_smart = smart_helper._check_close_to_raceline(close_threshold_smart) * smart_helper._check_close_to_raceline_heading(20)
     num_obstacles = len(smart_helper.cur_obstacles_in_interest)

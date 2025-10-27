@@ -117,6 +117,12 @@ class ObstacleSpliner:
         self.fixed_path_last_pub_time = rospy.Time(0)
         self.fixed_path_pub_rate = 2.0  # seconds (0.5Hz) - static data doesn't need high rate
         # ===== HJ ADDED END =====
+        # ===== HJ ADDED: State-aware flag management =====
+        self.pending_flag_true = False   # Want to publish True but waiting for safe conditions
+        self.pending_flag_false = False  # Want to publish False but waiting for safe state
+        self.current_state_name = "GB_TRACK"  # State Machine's current state from behavior_strategy
+        self.published_flag = False  # Currently published flag value (actual topic value)
+        # ===== HJ ADDED END =====
         self.min_stable_observations = 5  # 0.25 seconds at 20Hz (enough for static obs with std check)
         self.position_std_threshold = 0.05  # 5cm position stability threshold
         self.min_sectors_with_stable_obs = 2  # Need stable obstacles in 2 DIFFERENT sectors
@@ -256,16 +262,11 @@ class ObstacleSpliner:
         """
         Callback for /behavior_strategy topic.
 
-        NOTE: Commented out for smart static avoidance mode.
-        We use tracking_obs_cb instead to see ALL obstacles.
-        Keep this for future reference if needed.
+        Track current state for safe flag transition timing.
         """
-        # ===== HJ COMMENTED OUT: Use tracking_obs_cb for smart static avoidance =====
-        # if len(data.overtaking_targets)!= 0:
-        #     self.obs_in_interest = data.overtaking_targets[0]
-        # else:
-        #     self.obs_in_interest = None
-        pass
+        # ===== HJ ADDED: Track state for safe flag management =====
+        self.current_state_name = data.state
+        # ===== HJ ADDED END =====
 
 
     def state_frenet_cb(self, data: Odometry):
@@ -415,6 +416,35 @@ class ObstacleSpliner:
             self._process_obstacles()
             # ===== HJ PHASE A END =====
 
+            # ===== HJ ADDED: State-aware flag management - publish when safe =====
+            # Check if we have pending flag changes and can safely publish them
+            desired_flag = self.use_fixed_path and self.fixed_path_generated
+
+            # Detect if internal state changed (want to publish new value)
+            if desired_flag != self.published_flag:
+                # Check if current state is safe for flag transition (not OVERTAKE)
+                if self.current_state_name != "OVERTAKE":
+                    # Safe to publish - do it now
+                    rospy.loginfo(f"[{self.name}] Publishing smart_static_active={desired_flag} (state={self.current_state_name})")
+                    self.use_fixed_path_pub.publish(Bool(data=desired_flag))
+                    self.published_flag = desired_flag
+                    # Clear pending flags
+                    self.pending_flag_true = False
+                    self.pending_flag_false = False
+                else:
+                    # Not safe (in OVERTAKE) - set pending flag and wait
+                    if desired_flag:
+                        if not self.pending_flag_true:
+                            rospy.logwarn(f"[{self.name}] Want to activate flag but in OVERTAKE state - waiting...")
+                        self.pending_flag_true = True
+                        self.pending_flag_false = False
+                    else:
+                        if not self.pending_flag_false:
+                            rospy.logwarn(f"[{self.name}] Want to deactivate flag but in OVERTAKE state - waiting...")
+                        self.pending_flag_false = True
+                        self.pending_flag_true = False
+            # ===== HJ ADDED END =====
+
             # Sample data
             gb_scaled_wpnts = self.gb_scaled_wpnts.wpnts
             wpnts = OTWpntArray()
@@ -530,10 +560,8 @@ class ObstacleSpliner:
                     self.fixed_path_last_pub_time = rospy.Time.now()
             # ===== HJ MODIFIED END =====
 
-            # ===== HJ ADDED: Publish use_fixed_path flag every iteration =====
-            self.use_fixed_path_pub.publish(Bool(data=self.use_fixed_path))
-
-            # Publish SMART_ACTIVE marker next to STATE MARKER
+            # ===== HJ ADDED: Publish SMART_ACTIVE marker next to STATE MARKER =====
+            # NOTE: use_fixed_path flag is now published in state-aware section above (lines 419-446)
             self._publish_smart_active_marker()
             # ===== HJ ADDED END =====
             # ===== HJ EDITED END =====
@@ -1722,10 +1750,9 @@ class ObstacleSpliner:
                 self.fixed_path_last_pub_time = rospy.Time.now()
                 rospy.loginfo(f"[{self.name}] [THREAD] Published FIXED path ({len(self.fixed_path_wpnts.wpnts)} waypoints)")
 
-                # THEN publish flag (ordering critical!)
+                # Set internal flag - actual publish will happen in main loop after state check
                 self.use_fixed_path = True  # Dynamic flag: start using fixed path
-                self.use_fixed_path_pub.publish(Bool(data=True))
-                rospy.loginfo(f"[{self.name}] [THREAD] Published use_fixed_path=True")
+                rospy.loginfo(f"[{self.name}] [THREAD] Set use_fixed_path=True (will publish in main loop after state check)")
                 # ===== HJ MODIFIED END =====
 
                 # ===== HJ ADDED: Start adaptive timeout decay =====
@@ -4267,11 +4294,11 @@ class ObstacleSpliner:
         bg_marker.header.stamp = rospy.Time.now()
         bg_marker.pose.position.x = x_viz + 0.8
         bg_marker.pose.position.y = y_viz 
-        bg_marker.pose.position.z = 1.5  # Above STATE MARKER sphere (STATE is at z=0)
+        bg_marker.pose.position.z = 0  # Above STATE MARKER sphere (STATE is at z=0)
         bg_marker.pose.orientation.w = 1
         bg_marker.scale.x = 0.4  # Width (horizontal - long)
         bg_marker.scale.y = 1.0  # Depth
-        bg_marker.scale.z = 0.4  # Height (short - horizontal)
+        bg_marker.scale.z = 0.0  # Height (short - horizontal)
         bg_marker.color.a = 0.9
 
         # Text marker
@@ -4282,7 +4309,7 @@ class ObstacleSpliner:
         text_marker.header.stamp = rospy.Time.now()
         text_marker.pose.position.x = x_viz + 0.8
         text_marker.pose.position.y = y_viz
-        text_marker.pose.position.z = 1.5  # Same as background
+        text_marker.pose.position.z = 0  # Same as background
         text_marker.pose.orientation.w = 1
         text_marker.scale.z = 0.3  # Text height
         text_marker.color.r = 0.0  # Black text
@@ -4290,8 +4317,8 @@ class ObstacleSpliner:
         text_marker.color.b = 0.0
         text_marker.color.a = 1.0
 
-        # Set color and text based on use_fixed_path
-        if self.use_fixed_path:
+        # Set color and text based on published_flag (actual published value)
+        if self.published_flag:
             # SMART: Cyan background
             bg_marker.color.r = 0.0
             bg_marker.color.g = 1.0
