@@ -37,12 +37,17 @@ OPPOSITE_SPACE_THRESHOLD = 1.0  # meters, if opposite wall has > this space, shi
 # Safety width override
 OVERRIDE_SAFETY_WIDTH = True  # True: use SAFETY_WIDTH_VALUE, False: use ROS parameter
 SAFETY_WIDTH_VALUE = 1.0  # meters, used only if OVERRIDE_SAFETY_WIDTH is True
+
+# Fixed path post-smoothing (applied after optimization)
+SMOOTH_OPT_OUTPUT = True  # Enable Savitzky-Golay smoothing on optimizer output
+SMOOTH_WINDOW = 21  # Savitzky-Golay window size (must be odd, larger = smoother)
+SMOOTH_POLYORDER = 3  # Polynomial order (3 = cubic, lower = smoother but less accurate)
 # ===== HJ ADDED END =====
 
 # GB optimizer speed tuning parameters
 OPT_WIDTH_OPT = 0.8  # Optimization width factor (lower = faster, less aggressive)
 OPT_IQP_ITERS_MIN = 5  # Minimum IQP iterations (lower = faster, less precise)
-OPT_IQP_CURVERROR_ALLOWED = 0.05  # Allowed curvature error (higher = faster, less smooth) #--Very Important--#
+OPT_IQP_CURVERROR_ALLOWED = 0.025  # Allowed curvature error (higher = faster, less smooth) #--Very Important--#
 
 OPT_STEPSIZE_PREP = 0.3  # Spline fitting step size in meters (higher = faster)  #--Very Important--#
 OPT_STEPSIZE_REG = 0.3  # Optimization step size in meters (higher = faster)
@@ -200,6 +205,34 @@ class ObstacleSpliner:
             self.safety_width = rospy.get_param('~safety_width', 1.2)  # [m] safety width for GB optimizer
             rospy.loginfo(f"[{self.name}] Using ROS parameter safety_width={self.safety_width}m")
         # ===== HJ MODIFIED END =====
+
+        # ===== HJ ADDED: Load vehicle dynamics parameters for velocity calculation =====
+        import configparser
+        parser = configparser.ConfigParser()
+        ini_path = os.path.join(RosPack().get_path('stack_master'), 'config', self.racecar_version, 'racecar_f110.ini')
+        if not parser.read(ini_path):
+            rospy.logerr(f"[{self.name}] Failed to read {ini_path}")
+        else:
+            self.pars = {}
+            self.pars["veh_params"] = json.loads(parser.get('GENERAL_OPTIONS', 'veh_params'))
+            self.pars["vel_calc_opts"] = json.loads(parser.get('GENERAL_OPTIONS', 'vel_calc_opts'))
+
+            # Load vehicle dynamics info (ggv, ax_max_machines)
+            ggv_path = os.path.join(RosPack().get_path('stack_master'), 'config', self.racecar_version, "veh_dyn_info", "ggv.csv")
+            ax_max_path = os.path.join(RosPack().get_path('stack_master'), 'config', self.racecar_version, "veh_dyn_info", "ax_max_machines.csv")
+            b_ax_max_path = os.path.join(RosPack().get_path('stack_master'), 'config', self.racecar_version, "veh_dyn_info", "b_ax_max_machines.csv")
+
+            self.ggv, self.ax_max_machines = tph.import_veh_dyn_info.import_veh_dyn_info(
+                ggv_import_path=ggv_path,
+                ax_max_machines_import_path=ax_max_path
+            )
+            _, self.b_ax_max_machines = tph.import_veh_dyn_info.import_veh_dyn_info(
+                ggv_import_path=ggv_path,
+                ax_max_machines_import_path=b_ax_max_path
+            )
+
+            rospy.loginfo(f"[{self.name}] Loaded vehicle dynamics parameters from {ini_path}")
+        # ===== HJ ADDED END =====
 
         # Subscribe to the topics
         # ===== HJ EDITED START: Subscribe to tracking obstacles for smart static avoidance =====
@@ -1948,6 +1981,14 @@ class ObstacleSpliner:
                 else:
                     return False
 
+            # ===== HJ ADDED: Step 3.5: Apply post-smoothing if enabled =====
+            if SMOOTH_OPT_OUTPUT:
+                rospy.loginfo(f"[{self.name}] SMOOTH_OPT_OUTPUT=True, applying Savitzky-Golay smoothing...")
+                trajectory_opt = self._smooth_trajectory_output(trajectory_opt, target_stepsize=0.1)
+            else:
+                rospy.loginfo(f"[{self.name}] SMOOTH_OPT_OUTPUT=False, using original optimizer output")
+            # ===== HJ ADDED END =====
+
             # Step 4: Package into OTWpntArray with visualization markers
             self.fixed_path_wpnts, self.fixed_path_markers = self._package_to_otwpntarray(trajectory_opt)
             rospy.loginfo(f"[{self.name}] Packaged {len(self.fixed_path_wpnts.wpnts)} waypoints and {len(self.fixed_path_markers.markers)} markers")
@@ -2707,8 +2748,8 @@ class ObstacleSpliner:
         obs_d = float(obs_d_array[0])
 
         # Step 2: Define influence region
-        pre_dist = 1.5   # 앞 1.5m
-        post_dist = 1.5  # 뒤 1.5m
+        pre_dist = 1.5  
+        post_dist = 1.5 
 
         # d direction shift: OPPOSITE direction to avoid obstacle
         # If obstacle is on LEFT, shift centerline to RIGHT (negative d)
@@ -3170,6 +3211,171 @@ class ObstacleSpliner:
 
         return trajectory_opt, bound_r, bound_l, est_time
 
+    def _smooth_trajectory_output(
+        self,
+        trajectory_opt: np.ndarray,
+        target_stepsize: float = 0.1
+    ) -> np.ndarray:
+        """
+        Apply Savitzky-Golay smoothing to GB optimizer output trajectory.
+
+        Smooths x, y coordinates while maintaining constant arc length spacing,
+        then recalculates heading (psi) and curvature (kappa) analytically in ROS convention.
+
+        Args:
+            trajectory_opt: [s_m, x_m, y_m, psi_rad, kappa, vx_mps, ax_mps2] from GB optimizer
+            target_stepsize: Desired waypoint spacing in meters (default 0.1m)
+
+        Returns:
+            Smoothed trajectory [s_m, x_m, y_m, psi_rad_ROS, kappa, vx_mps, ax_mps2]
+            Note: psi_rad is already in ROS convention (no +90deg conversion needed)
+        """
+        if len(trajectory_opt) < SMOOTH_WINDOW:
+            rospy.logwarn(f"[{self.name}] Trajectory too short ({len(trajectory_opt)} < {SMOOTH_WINDOW}) for smoothing, skipping")
+            return trajectory_opt
+
+        rospy.loginfo(f"[{self.name}] Applying Savitzky-Golay smoothing (window={SMOOTH_WINDOW}, polyorder={SMOOTH_POLYORDER})...")
+
+        # Extract x, y coordinates
+        xy = trajectory_opt[:, 1:3].copy()  # columns 1, 2 are x, y
+
+        # Apply Savitzky-Golay filter with circular padding for closed loop
+        pad_size = SMOOTH_WINDOW // 2
+        xy_padded = np.vstack([
+            xy[-pad_size:],  # Add last points to beginning
+            xy,              # Original data
+            xy[:pad_size]    # Add first points to end
+        ])
+
+        # Smooth padded array
+        xy_smooth_padded = savgol_filter(xy_padded, window_length=SMOOTH_WINDOW, polyorder=SMOOTH_POLYORDER, axis=0)
+
+        # Remove padding to get smoothed closed loop
+        xy_smooth = xy_smooth_padded[pad_size:-pad_size]
+
+        rospy.loginfo(f"[{self.name}] Applied circular padding (pad_size={pad_size}) for closed loop smoothing")
+
+        # Re-interpolate to maintain constant arc length spacing
+        dxy = np.diff(xy_smooth, axis=0)
+        segment_lengths = np.sqrt(np.sum(dxy**2, axis=1))
+        arc_lengths = np.insert(np.cumsum(segment_lengths), 0, 0.0)
+
+        # Add closing segment (last point -> first point) to total length
+        closing_segment_length = np.linalg.norm(xy_smooth[0] - xy_smooth[-1])
+        total_length = arc_lengths[-1] + closing_segment_length
+        rospy.loginfo(f"[{self.name}] Path length: open={arc_lengths[-1]:.2f}m, closing={closing_segment_length:.2f}m, total={total_length:.2f}m")
+
+        # Create uniform arc length array
+        num_points = int(total_length / target_stepsize)
+        if num_points < 10:
+            rospy.logwarn(f"[{self.name}] Smoothed trajectory too short ({num_points} points), using original")
+            return trajectory_opt
+
+        s_uniform = np.linspace(0, total_length, num_points, endpoint=False)
+
+        # Interpolate smoothed x, y and velocity
+        from scipy.interpolate import interp1d
+        interp_x = interp1d(arc_lengths, xy_smooth[:, 0], kind='cubic', fill_value='extrapolate')
+        interp_y = interp1d(arc_lengths, xy_smooth[:, 1], kind='cubic', fill_value='extrapolate')
+        interp_vx = interp1d(trajectory_opt[:, 0], trajectory_opt[:, 5], kind='linear', fill_value='extrapolate')
+
+        xy_uniform = np.column_stack([interp_x(s_uniform), interp_y(s_uniform)])
+        vx_uniform = interp_vx(s_uniform)
+
+        # Recalculate segment lengths (closed loop: include last->first segment)
+        dxy_uniform = np.diff(xy_uniform, axis=0)
+        segment_lengths_uniform = np.sqrt(np.sum(dxy_uniform**2, axis=1))
+
+        # Add closing segment (last point -> first point)
+        closing_segment = np.linalg.norm(xy_uniform[0] - xy_uniform[-1])
+        segment_lengths_closed = np.append(segment_lengths_uniform, closing_segment)
+
+        # Calculate heading in ROS convention (0 = east/x-axis)
+        psi_uniform = np.zeros(len(xy_uniform))
+        psi_uniform[:-1] = np.arctan2(dxy_uniform[:, 1], dxy_uniform[:, 0])
+        # Last heading: from last point to first point (closing)
+        psi_uniform[-1] = np.arctan2(xy_uniform[0, 1] - xy_uniform[-1, 1],
+                                      xy_uniform[0, 0] - xy_uniform[-1, 0])
+
+        # Calculate curvature from heading changes (closed loop)
+        psi_closed = np.append(psi_uniform, psi_uniform[0])  # Close heading
+        dpsi = np.diff(psi_closed)
+        dpsi = np.arctan2(np.sin(dpsi), np.cos(dpsi))  # Handle wrapping
+        kappa_uniform = dpsi / segment_lengths_closed
+
+        # Recalculate velocity profile based on smoothed curvature
+        rospy.loginfo(f"[{self.name}] Recalculating velocity from smoothed curvature...")
+        vx_profile_new = self._recalculate_velocity_from_curvature(kappa_uniform, segment_lengths_closed)
+
+        # Calculate acceleration profile (closed loop)
+        vx_profile_cl = np.append(vx_profile_new, vx_profile_new[0])  # Close velocity loop
+        ax_profile = tph.calc_ax_profile.calc_ax_profile(
+            vx_profile=vx_profile_cl,
+            el_lengths=segment_lengths_closed,  # Use closed segment lengths
+            eq_length_output=False
+        )
+
+        # Assemble smoothed trajectory
+        # Note: endpoint=False means we don't have a duplicate closing point, so no need to remove last point
+        trajectory_smooth = np.column_stack([
+            s_uniform,           # s_m (placeholder, will be recalculated in packaging)
+            xy_uniform[:, 0],    # x_m
+            xy_uniform[:, 1],    # y_m
+            psi_uniform,         # psi_rad (ROS convention)
+            kappa_uniform,       # kappa (recalculated, closed)
+            vx_profile_new,      # vx_mps (recalculated from curvature)
+            ax_profile           # ax_mps2 (recalculated, closed)
+        ])
+
+        # ===== HJ ADDED: Add closing point (first point = last point, like GB waypoints) =====
+        # Makes Smart waypoints compatible with state_machine's rounding logic
+        # Note: s_m value doesn't matter since packaging recalculates arc_lengths from x,y
+        closing_row = trajectory_smooth[0].copy()
+        trajectory_smooth = np.vstack([trajectory_smooth, closing_row])
+        # ===== HJ ADDED END =====
+
+        rospy.loginfo(f"[{self.name}] Smoothing complete: {len(trajectory_opt)} → {len(trajectory_smooth)} waypoints (with closing point), "
+                     f"avg spacing={np.mean(segment_lengths_closed):.3f}m, "
+                     f"avg velocity={np.mean(vx_profile_new):.2f}m/s")
+
+        return trajectory_smooth
+
+    def _recalculate_velocity_from_curvature(
+        self,
+        kappa: np.ndarray,
+        el_lengths: np.ndarray
+    ) -> np.ndarray:
+        """
+        Recalculate velocity profile from curvature using vehicle dynamics.
+
+        Uses same method as state_machine's update_velocity and GB optimizer.
+
+        Args:
+            kappa: Curvature array [rad/m]
+            el_lengths: Element lengths array [m]
+
+        Returns:
+            vx_profile: Velocity array [m/s]
+        """
+        from vel_planner.vel_planner import calc_vel_profile
+
+        # Use same parameters as GB optimizer (closed track)
+        vx_profile = calc_vel_profile(
+            ggv=self.ggv,
+            ax_max_machines=self.ax_max_machines,
+            b_ax_max_machines=self.b_ax_max_machines,
+            v_max=self.pars["veh_params"]["v_max"],
+            kappa=kappa,
+            el_lengths=el_lengths,
+            closed=True,  # Fixed path is closed loop
+            filt_window=self.pars["vel_calc_opts"]["vel_profile_conv_filt_window"],
+            dyn_model_exp=self.pars["vel_calc_opts"]["dyn_model_exp"],
+            drag_coeff=self.pars["veh_params"]["dragcoeff"],
+            m_veh=self.pars["veh_params"]["mass"]
+        )
+
+        return vx_profile
+
     def _package_to_otwpntarray(
         self,
         trajectory_opt: np.ndarray
@@ -3229,14 +3435,19 @@ class ObstacleSpliner:
             wpnt.y_m = trajectory_opt[i, 2]  # Absolute Y
             wpnt.d_m = d_coord[i]  # ===== HJ MODIFIED: Fixed path d or GB d =====
 
-            # Convert psi from trajectory_planning_helpers convention (0 = north/y-axis)
-            # to ROS convention (0 = east/x-axis) by adding π/2
-            # Same conversion as in global_planner_node.py line 1242 (conv_psi function)
-            psi_tph = trajectory_opt[i, 3]  # tph output (0 = north)
-            psi_ros = psi_tph + np.pi / 2   # Convert to ROS (0 = east)
-            if psi_ros > np.pi:
-                psi_ros = psi_ros - 2 * np.pi
-            wpnt.psi_rad = psi_ros  # Absolute heading in ROS convention
+            # ===== HJ MODIFIED: Conditional psi conversion based on SMOOTH_OPT_OUTPUT =====
+            if SMOOTH_OPT_OUTPUT:
+                # Smoothed trajectory already has psi in ROS convention (no conversion needed)
+                wpnt.psi_rad = trajectory_opt[i, 3]
+            else:
+                # Original optimizer output: convert from tph convention to ROS convention
+                # tph: 0 = north/y-axis, ROS: 0 = east/x-axis → add π/2
+                psi_tph = trajectory_opt[i, 3]
+                psi_ros = psi_tph + np.pi / 2
+                if psi_ros > np.pi:
+                    psi_ros = psi_ros - 2 * np.pi
+                wpnt.psi_rad = psi_ros
+            # ===== HJ MODIFIED END =====
 
             wpnt.kappa_radpm = trajectory_opt[i, 4]  # Curvature
             wpnt.vx_mps = trajectory_opt[i, 5]  # Velocity

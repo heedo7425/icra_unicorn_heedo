@@ -31,9 +31,13 @@ rate_tracking: 40
 ratio_to_glob_path: 0.6
 sigma: 0.03
 ttl_dynamic: 40
+
 ttl_static: 3
+# ttl_static: 300000
+
 ttl_static_sector: 3
-# ttl_static_sector: 600  # TTL for static obstacles in smart static sector (600 = 15 seconds at 40Hz)
+# ttl_static_sector: 60000  # TTL for static obstacles in smart static sector ~ / 40hz = ~ sec
+
 var_pub: 1
 vs_reset: 0.1
 
