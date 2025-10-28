@@ -27,6 +27,14 @@ import configparser
 DEBUG_LOGGING_ENABLED = False  # Set to False to disable all debug logging
 _debug_log_cache = {}
 
+# ===== HJ ADDED: Global flag for static sector obstacle filtering =====
+# Set to True to enable stricter filtering for static obstacles in static sectors
+# Set to False to use original behavior (same as before TTL increase)
+ENABLE_STATIC_SECTOR_FILTERING = False
+HORIZON_FOR_TTL = 3.0
+MAX_VEL_RIGHT_BEFORE_STATIC_OT = 3.0
+# ===== HJ ADDED END =====
+
 def debug_log_on_change(tag, **kwargs):
     """Log only when any of the kwargs values change
 
@@ -437,8 +445,18 @@ class StateMachine:
     # ===== HJ ADDED: Smart static avoidance callbacks =====
     def smart_static_avoidance_cb(self, data: OTWpntArray):
         """Smart static avoidance waypoints from GB optimizer fixed path"""
-        self.smart_static_wpnts = data  # ===== HJ ADDED: Store raw message for _check_latest_wpnts =====
-        self.cur_smart_static_avoidance_wpnts.initialize_traj(data)
+        # ===== HJ ADDED: Only update if timestamp is newer than what we already have =====
+        # This prevents Smart node's old messages from overwriting global_velocity_planner's updates
+        # When global_velocity_planner is running: publishes with current timestamp -> always newer
+        # When global_velocity_planner stops: Smart's old timestamp is ignored -> keeps last velocity_planner result
+        if (self.smart_static_wpnts is None or
+            data.header.stamp > self.smart_static_wpnts.header.stamp):
+            self.smart_static_wpnts = data
+            self.cur_smart_static_avoidance_wpnts.initialize_traj(data)
+        else:
+            # Ignore older message (timestamp <= current)
+            return
+        # ===== HJ ADDED END =====
 
         # ===== HJ MODIFIED: Use s_m directly from OTWpntArray instead of FrenetConverter =====
         # OTWpntArray already contains s_m values, no need to create FrenetConverter
@@ -538,21 +556,55 @@ class StateMachine:
         self.graph_based_wpts = arr.reshape(data.layout.dim[0].size, data.layout.dim[1].size)
         self.graph_based_action = data.layout.dim[0].label
     
+    # ===== HJ COMMENTED: Original version without static sector filtering =====
+    # def obstacle_perception_cb(self, data):
+    #     if not self.timetrials_only:
+    #         self.obstacles_perception = data.obstacles[:]
+    #
+    #         self.obstacles = data.obstacles
+    #
+    #         # self.obstacles = data.obstacles + self.obstacles_prediction
+    #
+    #         obstacles_in_interest = []
+    #         for obs in data.obstacles:
+    #             gap = (obs.s_start - self.cur_s) % self.track_length
+    #             if gap < self.interest_horizon_m:
+    #                 obstacles_in_interest.append(obs)
+    #
+    #         self.obstacles_in_interest = obstacles_in_interest
+    # ===== HJ COMMENTED END =====
+
     def obstacle_perception_cb(self, data):
+        """Handle obstacle perception callback with stricter filtering for static sector obstacles"""
+        # ===== HJ ADDED: Apply stricter distance check for static obstacles in static sectors =====
         if not self.timetrials_only:
             self.obstacles_perception = data.obstacles[:]
-            
             self.obstacles = data.obstacles
-            
-            # self.obstacles = data.obstacles + self.obstacles_prediction
 
+            # Static obstacles in static sectors with high TTL should only be "in interest" when very close
+            # This prevents TRAILING state from engaging too early for these obstacles
             obstacles_in_interest = []
+
             for obs in data.obstacles:
                 gap = (obs.s_start - self.cur_s) % self.track_length
-                if gap < self.interest_horizon_m:
+
+                # Check if this is a static obstacle in a static sector
+                is_static_in_static_sector = obs.in_static_obs_sector and obs.is_static
+
+                # Apply different horizon based on obstacle type and global flag
+                if is_static_in_static_sector and ENABLE_STATIC_SECTOR_FILTERING:
+                    # Filtering enabled: Static obstacle in static sector uses strict 3m horizon
+                    # Only engage trailing/overtaking when close
+                    horizon = HORIZON_FOR_TTL
+                else:
+                    # Filtering disabled OR dynamic obstacle: use normal horizon (original behavior)
+                    horizon = self.interest_horizon_m
+
+                if gap < horizon:
                     obstacles_in_interest.append(obs)
-                    
+
             self.obstacles_in_interest = obstacles_in_interest
+        # ===== HJ ADDED END =====
 
     def ego_prediction_cb(self, data):
         if len(data.predictions) != 0:
@@ -792,16 +844,57 @@ class StateMachine:
         return False
     # ===== HJ MODIFIED END =====
 
-    def _check_getting_closer(self, threshold_m=3.0) -> bool:
-        obs = None
-        # return True
-        if (
-            len(self.obstacles_in_interest) != 0
-            and self.cur_vs - self.obstacles_in_interest[0].vs > -0.5
-        ):
-            return True
-        else:
+    # ===== HJ COMMENTED: Original version without distance check =====
+    # def _check_getting_closer(self, threshold_m=3.0) -> bool:
+    #     obs = None
+    #     # return True
+    #     if (
+    #         len(self.obstacles_in_interest) != 0
+    #         and self.cur_vs - self.obstacles_in_interest[0].vs > -0.5
+    #     ):
+    #         return True
+    #     else:
+    #         return False
+    # ===== HJ COMMENTED END =====
+
+    def _check_getting_closer(self, threshold_m=7.0) -> bool:
+        """Check if we are getting closer to obstacle in interest
+
+        For static obstacles in static sectors with high TTL:
+        - Only consider them "getting closer" when within 2m
+        - This prevents overtaking from engaging too early (far away)
+        - Coordinates with obstacles_in_interest filtering (also 2m for static sector obstacles)
+
+        Args:
+            threshold_m: Distance threshold (used for dynamic obstacles, static sector uses 2m)
+
+        Returns:
+            True if getting closer to obstacle (considering distance for static sector obs)
+        """
+        # ===== HJ MODIFIED: Add distance check for static obstacles in static sectors =====
+        if len(self.obstacles_in_interest) == 0:
             return False
+
+        obs = self.obstacles_in_interest[0]
+
+        # Check if this is a static obstacle in a static sector
+        is_static_in_static_sector = obs.in_static_obs_sector and obs.is_static
+
+        if is_static_in_static_sector and ENABLE_STATIC_SECTOR_FILTERING:
+            # Filtering enabled: apply distance check for static obstacles in static sectors
+            # Uses threshold_m parameter (10.0 for overtaking, 7.0 for static overtaking)
+            distance = (obs.s_start - self.cur_s) % self.track_length
+
+            if distance > HORIZON_FOR_TTL:
+            # if distance > threshold_m:
+
+                # Too far away - don't engage overtaking yet
+                return False
+
+        # Close enough (or filtering disabled or dynamic obstacle): check velocity difference
+        velocity_ok = self.cur_vs - obs.vs > -0.5
+        return velocity_ok
+        # ===== HJ MODIFIED END =====
 
 
     def _check_enemy_in_front(self) -> bool:
@@ -828,21 +921,25 @@ class StateMachine:
         if src_wpnts is None or len(src_wpnts.wpnts) == 0:
             return False
 
-        # ===== HJ ADDED: Relaxed timestamp check for Smart Static (published at 0.5Hz = 2sec) =====
+        # ===== HJ MODIFIED: Relaxed timestamp check for Smart Static =====
+        # Smart Static path is fixed and never changes, so timestamp doesn't matter after initialization
+        # Timestamp is set once at creation and kept constant to avoid conflicts with global_velocity_planner
         is_smart_static = (wpnts_data.name == 'static_avoidance_planner')
-        time_diff = (rospy.Time.now() - src_wpnts.header.stamp).to_sec()
 
         if is_smart_static:
-            # Smart Static: allow up to 5 seconds (0.5Hz publish rate = 2sec, allow 4 missed publishes)
-            if time_diff > 10.0:
+            # Smart Static: only check that timestamp is initialized (not zero)
+            # Once initialized, path is valid forever (never changes)
+            if src_wpnts.header.stamp.is_zero():
                 rospy.logwarn_throttle(2.0,
-                    f"[_check_latest_wpnts] Smart Static waypoints too old: {time_diff:.2f}s > 5.0s")
+                    f"[_check_latest_wpnts] Smart Static waypoints timestamp not initialized")
                 return False
+            # Otherwise always valid - path never changes
         else:
-            # Other planners: use normal threshold
+            # Other planners: use normal timestamp threshold check
+            time_diff = (rospy.Time.now() - src_wpnts.header.stamp).to_sec()
             if time_diff > wpnts_data.latest_threshold:
                 return False
-        # ===== HJ ADDED END =====
+        # ===== HJ MODIFIED END =====
 
         wpnts_data.initialize_traj(src_wpnts)
         on_spline = self._check_on_spline(wpnts_data)
@@ -851,7 +948,7 @@ class StateMachine:
         if not on_spline and is_smart_static:
             rospy.logwarn_throttle(2.0,
                 f"[_check_latest_wpnts] Smart Static _check_on_spline FAILED! "
-                f"(timestamp was OK: {time_diff:.2f}s)")
+                f"(timestamp check was OK)")
         # ===== HJ ADDED END =====
 
         return on_spline
@@ -1203,7 +1300,7 @@ class StateMachine:
         
     def _check_static_overtaking_mode(self) -> bool:
         # ===== HJ ADDED: Debug logging =====
-        vs_check = self.cur_vs < 3.0
+        vs_check = self.cur_vs < MAX_VEL_RIGHT_BEFORE_STATIC_OT
         closer_check = self._check_getting_closer(threshold_m = 7.0)
         latest_check = self._check_latest_wpnts(self.static_avoidance_wpnts, self.cur_static_avoidance_wpnts)
         free_check = self._check_free_frenet(self.cur_static_avoidance_wpnts)

@@ -215,13 +215,13 @@ Visualization Manager:
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /global_waypoints/markers
           Name: Global Waypoints
           Namespaces:
-            "": true
+            {}
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /local_waypoints/markers
@@ -531,7 +531,7 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: -1.5850002765655518
+      Angle: -1.5349996089935303
       Class: rviz/TopDownOrtho
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
@@ -541,10 +541,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 72.04396057128906
+      Scale: 54.73566436767578
       Target Frame: <Fixed Frame>
-      X: -0.7128244638442993
-      Y: 1.465514898300171
+      X: 5.288366317749023
+      Y: 3.214829683303833
     Saved: ~
 Window Geometry:
   Displays:

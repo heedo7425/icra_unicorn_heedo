@@ -437,8 +437,18 @@ class StateMachine:
     # ===== HJ ADDED: Smart static avoidance callbacks =====
     def smart_static_avoidance_cb(self, data: OTWpntArray):
         """Smart static avoidance waypoints from GB optimizer fixed path"""
-        self.smart_static_wpnts = data  # ===== HJ ADDED: Store raw message for _check_latest_wpnts =====
-        self.cur_smart_static_avoidance_wpnts.initialize_traj(data)
+        # ===== HJ ADDED: Only update if timestamp is newer than what we already have =====
+        # This prevents Smart node's old messages from overwriting global_velocity_planner's updates
+        # When global_velocity_planner is running: publishes with current timestamp -> always newer
+        # When global_velocity_planner stops: Smart's old timestamp is ignored -> keeps last velocity_planner result
+        if (self.smart_static_wpnts is None or
+            data.header.stamp > self.smart_static_wpnts.header.stamp):
+            self.smart_static_wpnts = data
+            self.cur_smart_static_avoidance_wpnts.initialize_traj(data)
+        else:
+            # Ignore older message (timestamp <= current)
+            return
+        # ===== HJ ADDED END =====
 
         # ===== HJ MODIFIED: Use s_m directly from OTWpntArray instead of FrenetConverter =====
         # OTWpntArray already contains s_m values, no need to create FrenetConverter
@@ -828,21 +838,25 @@ class StateMachine:
         if src_wpnts is None or len(src_wpnts.wpnts) == 0:
             return False
 
-        # ===== HJ ADDED: Relaxed timestamp check for Smart Static (published at 0.5Hz = 2sec) =====
+        # ===== HJ MODIFIED: Relaxed timestamp check for Smart Static =====
+        # Smart Static path is fixed and never changes, so timestamp doesn't matter after initialization
+        # Timestamp is set once at creation and kept constant to avoid conflicts with global_velocity_planner
         is_smart_static = (wpnts_data.name == 'static_avoidance_planner')
-        time_diff = (rospy.Time.now() - src_wpnts.header.stamp).to_sec()
 
         if is_smart_static:
-            # Smart Static: allow up to 5 seconds (0.5Hz publish rate = 2sec, allow 4 missed publishes)
-            if time_diff > 10.0:
+            # Smart Static: only check that timestamp is initialized (not zero)
+            # Once initialized, path is valid forever (never changes)
+            if src_wpnts.header.stamp.is_zero():
                 rospy.logwarn_throttle(2.0,
-                    f"[_check_latest_wpnts] Smart Static waypoints too old: {time_diff:.2f}s > 5.0s")
+                    f"[_check_latest_wpnts] Smart Static waypoints timestamp not initialized")
                 return False
+            # Otherwise always valid - path never changes
         else:
-            # Other planners: use normal threshold
+            # Other planners: use normal timestamp threshold check
+            time_diff = (rospy.Time.now() - src_wpnts.header.stamp).to_sec()
             if time_diff > wpnts_data.latest_threshold:
                 return False
-        # ===== HJ ADDED END =====
+        # ===== HJ MODIFIED END =====
 
         wpnts_data.initialize_traj(src_wpnts)
         on_spline = self._check_on_spline(wpnts_data)
@@ -851,7 +865,7 @@ class StateMachine:
         if not on_spline and is_smart_static:
             rospy.logwarn_throttle(2.0,
                 f"[_check_latest_wpnts] Smart Static _check_on_spline FAILED! "
-                f"(timestamp was OK: {time_diff:.2f}s)")
+                f"(timestamp check was OK)")
         # ===== HJ ADDED END =====
 
         return on_spline

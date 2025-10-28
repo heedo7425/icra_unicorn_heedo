@@ -40,14 +40,14 @@ SAFETY_WIDTH_VALUE = 1.0  # meters, used only if OVERRIDE_SAFETY_WIDTH is True
 
 # Fixed path post-smoothing (applied after optimization)
 SMOOTH_OPT_OUTPUT = True  # Enable Savitzky-Golay smoothing on optimizer output
-SMOOTH_WINDOW = 21  # Savitzky-Golay window size (must be odd, larger = smoother)
-SMOOTH_POLYORDER = 3  # Polynomial order (3 = cubic, lower = smoother but less accurate)
+SMOOTH_WINDOW = 51 # Savitzky-Golay window size (must be odd, larger = smoother)
+SMOOTH_POLYORDER = 2  # Polynomial order (3 = cubic, lower = smoother but less accurate)
 # ===== HJ ADDED END =====
 
 # GB optimizer speed tuning parameters
 OPT_WIDTH_OPT = 0.8  # Optimization width factor (lower = faster, less aggressive)
 OPT_IQP_ITERS_MIN = 5  # Minimum IQP iterations (lower = faster, less precise)
-OPT_IQP_CURVERROR_ALLOWED = 0.025  # Allowed curvature error (higher = faster, less smooth) #--Very Important--#
+OPT_IQP_CURVERROR_ALLOWED = 0.05  # Allowed curvature error (higher = faster, less smooth) #--Very Important--#
 
 OPT_STEPSIZE_PREP = 0.3  # Spline fitting step size in meters (higher = faster)  #--Very Important--#
 OPT_STEPSIZE_REG = 0.3  # Optimization step size in meters (higher = faster)
@@ -607,10 +607,12 @@ class ObstacleSpliner:
             if self.fixed_path_generated:
                 time_since_last_pub = (rospy.Time.now() - self.fixed_path_last_pub_time).to_sec()
                 if time_since_last_pub > self.fixed_path_pub_rate:
-                    # ===== HJ ADDED: Update timestamp before publishing =====
-                    self.fixed_path_wpnts.header.stamp = rospy.Time.now()
-                    self.fixed_path_markers.markers[0].header.stamp = rospy.Time.now() if len(self.fixed_path_markers.markers) > 0 else rospy.Time.now()
-                    # ===== HJ ADDED END =====
+                    # ===== HJ REMOVED: Don't update timestamp on republish (Smart path never changes) =====
+                    # Timestamp is set once at creation (line 3398), then kept constant
+                    # This prevents conflicts with global_velocity_planner republishing with same timestamp
+                    # self.fixed_path_wpnts.header.stamp = rospy.Time.now()
+                    # self.fixed_path_markers.markers[0].header.stamp = rospy.Time.now() if len(self.fixed_path_markers.markers) > 0 else rospy.Time.now()
+                    # ===== HJ REMOVED END =====
                     # rospy.loginfo(f"[{self.name}] Publishing FIXED optimized path ({len(self.fixed_path_wpnts.wpnts)} waypoints) at {1.0/self.fixed_path_pub_rate:.1f}Hz")
                     self.fixed_path_pub.publish(self.fixed_path_wpnts)
                     self.fixed_path_mrks_pub.publish(self.fixed_path_markers)
@@ -1796,10 +1798,8 @@ class ObstacleSpliner:
 
                 # ===== HJ MODIFIED: Publish fixed path IMMEDIATELY before flag =====
                 # Critical: state_machine must receive waypoints BEFORE use_fixed_path flag
-                # Update timestamps
-                self.fixed_path_wpnts.header.stamp = rospy.Time.now()
-                if len(self.fixed_path_markers.markers) > 0:
-                    self.fixed_path_markers.markers[0].header.stamp = rospy.Time.now()
+                # NOTE: Timestamp is already set at packaging (line 3398), don't update here
+                # This keeps timestamp constant across republishes to avoid conflicts with global_velocity_planner
 
                 # Publish waypoints FIRST
                 self.fixed_path_pub.publish(self.fixed_path_wpnts)
@@ -2011,12 +2011,15 @@ class ObstacleSpliner:
 
             rospy.loginfo(f"[{self.name}] Fixed path packaged: {len(self.fixed_path_wpnts.wpnts)} waypoints, {len(self.fixed_path_markers.markers)} markers")
 
-            # ===== HJ ADDED: Remove last waypoint to prevent closed loop issues =====
-            if len(self.fixed_path_wpnts.wpnts) > 0:
-                original_count = len(self.fixed_path_wpnts.wpnts)
-                self.fixed_path_wpnts.wpnts = self.fixed_path_wpnts.wpnts[:-1]
-                rospy.loginfo(f"[{self.name}] Removed last waypoint for open loop: {original_count} → {len(self.fixed_path_wpnts.wpnts)} waypoints")
-            # ===== HJ ADDED END =====
+            # ===== HJ REMOVED: No longer needed - smoothing doesn't add closing point anymore =====
+            # Since smoothing (line 3354-3360) no longer adds a duplicate closing point,
+            # we don't need to remove the last waypoint here
+            # State machine will handle closed loop with modulo wrapping: (min_idx + i) % num_wpnts
+            # if len(self.fixed_path_wpnts.wpnts) > 0:
+            #     original_count = len(self.fixed_path_wpnts.wpnts)
+            #     self.fixed_path_wpnts.wpnts = self.fixed_path_wpnts.wpnts[:-1]
+            #     rospy.loginfo(f"[{self.name}] Removed last waypoint for open loop: {original_count} → {len(self.fixed_path_wpnts.wpnts)} waypoints")
+            # ===== HJ REMOVED END =====
 
             # Step 4.5: Create FrenetConverter for fixed path (for interference checking)
             x_array = np.array([w.x_m for w in self.fixed_path_wpnts.wpnts])
@@ -3290,6 +3293,12 @@ class ObstacleSpliner:
         closing_segment = np.linalg.norm(xy_uniform[0] - xy_uniform[-1])
         segment_lengths_closed = np.append(segment_lengths_uniform, closing_segment)
 
+        # ===== HJ ADDED: Debug closing segment =====
+        rospy.logwarn(f"[{self.name}] Closing segment: {closing_segment:.4f}m, "
+                     f"avg other segments: {np.mean(segment_lengths_uniform):.4f}m, "
+                     f"min: {np.min(segment_lengths_uniform):.4f}m, max: {np.max(segment_lengths_uniform):.4f}m")
+        # ===== HJ ADDED END =====
+
         # Calculate heading in ROS convention (0 = east/x-axis)
         psi_uniform = np.zeros(len(xy_uniform))
         psi_uniform[:-1] = np.arctan2(dxy_uniform[:, 1], dxy_uniform[:, 0])
@@ -3303,9 +3312,21 @@ class ObstacleSpliner:
         dpsi = np.arctan2(np.sin(dpsi), np.cos(dpsi))  # Handle wrapping
         kappa_uniform = dpsi / segment_lengths_closed
 
+        # ===== HJ ADDED: Debug curvature at connection =====
+        rospy.logwarn(f"[{self.name}] Curvature at connection: kappa[-1]={kappa_uniform[-1]:.4f}, "
+                     f"kappa[0]={kappa_uniform[0]:.4f}, "
+                     f"avg kappa: {np.mean(np.abs(kappa_uniform)):.4f}")
+        # ===== HJ ADDED END =====
+
         # Recalculate velocity profile based on smoothed curvature
         rospy.loginfo(f"[{self.name}] Recalculating velocity from smoothed curvature...")
         vx_profile_new = self._recalculate_velocity_from_curvature(kappa_uniform, segment_lengths_closed)
+
+        # ===== HJ ADDED: Debug velocity at connection =====
+        rospy.logwarn(f"[{self.name}] Velocity at connection: vx[-1]={vx_profile_new[-1]:.2f}, "
+                     f"vx[0]={vx_profile_new[0]:.2f}, vx[1]={vx_profile_new[1]:.2f}, "
+                     f"avg vx: {np.mean(vx_profile_new):.2f}m/s")
+        # ===== HJ ADDED END =====
 
         # Calculate acceleration profile (closed loop)
         vx_profile_cl = np.append(vx_profile_new, vx_profile_new[0])  # Close velocity loop
@@ -3314,6 +3335,12 @@ class ObstacleSpliner:
             el_lengths=segment_lengths_closed,  # Use closed segment lengths
             eq_length_output=False
         )
+
+        # ===== HJ ADDED: Debug acceleration at connection =====
+        rospy.logwarn(f"[{self.name}] Acceleration at connection: ax[-1]={ax_profile[-1]:.2f}, "
+                     f"ax[0]={ax_profile[0]:.2f}, ax[1]={ax_profile[1]:.2f}, "
+                     f"avg |ax|: {np.mean(np.abs(ax_profile)):.2f}m/s^2")
+        # ===== HJ ADDED END =====
 
         # Assemble smoothed trajectory
         # Note: endpoint=False means we don't have a duplicate closing point, so no need to remove last point
@@ -3327,14 +3354,15 @@ class ObstacleSpliner:
             ax_profile           # ax_mps2 (recalculated, closed)
         ])
 
-        # ===== HJ ADDED: Add closing point (first point = last point, like GB waypoints) =====
-        # Makes Smart waypoints compatible with state_machine's rounding logic
-        # Note: s_m value doesn't matter since packaging recalculates arc_lengths from x,y
-        closing_row = trajectory_smooth[0].copy()
-        trajectory_smooth = np.vstack([trajectory_smooth, closing_row])
-        # ===== HJ ADDED END =====
+        # ===== HJ REMOVED: Don't add closing point - state_machine removes it anyway =====
+        # State machine (like GB callback) removes last point: data.wpnts[:-1]
+        # So we should NOT add a closing point here - just keep N points without duplication
+        # State machine uses modulo wrapping for closed loop: index % num_waypoints
+        # closing_row = trajectory_smooth[0].copy()
+        # trajectory_smooth = np.vstack([trajectory_smooth, closing_row])
+        # ===== HJ REMOVED END =====
 
-        rospy.loginfo(f"[{self.name}] Smoothing complete: {len(trajectory_opt)} → {len(trajectory_smooth)} waypoints (with closing point), "
+        rospy.loginfo(f"[{self.name}] Smoothing complete: {len(trajectory_opt)} → {len(trajectory_smooth)} waypoints, "
                      f"avg spacing={np.mean(segment_lengths_closed):.3f}m, "
                      f"avg velocity={np.mean(vx_profile_new):.2f}m/s")
 
@@ -3465,6 +3493,16 @@ class ObstacleSpliner:
             )
             mrks.markers.append(mrk)
             # ===== HJ MODIFIED END =====
+
+        # ===== HJ ADDED: Debug first and last waypoints =====
+        if len(wpnt_array.wpnts) > 0:
+            first_wp = wpnt_array.wpnts[0]
+            last_wp = wpnt_array.wpnts[-1]
+            dist = np.sqrt((first_wp.x_m - last_wp.x_m)**2 + (first_wp.y_m - last_wp.y_m)**2)
+            rospy.logwarn(f"[{self.name}] First wpnt: s={first_wp.s_m:.2f}, x={first_wp.x_m:.2f}, y={first_wp.y_m:.2f}, vx={first_wp.vx_mps:.2f}")
+            rospy.logwarn(f"[{self.name}] Last wpnt:  s={last_wp.s_m:.2f}, x={last_wp.x_m:.2f}, y={last_wp.y_m:.2f}, vx={last_wp.vx_mps:.2f}")
+            rospy.logwarn(f"[{self.name}] Distance between first and last: {dist:.4f}m")
+        # ===== HJ ADDED END =====
 
         rospy.loginfo(f"[{self.name}] Packaged {len(wpnt_array.wpnts)} waypoints and {len(mrks.markers)} markers")
         return wpnt_array, mrks
