@@ -1,5 +1,13 @@
 #!/bin/bash
-cd /home/unicorn/catkin_ws/src/race_stack/bag
+
+# HJ ADD: Create record directory if it doesn't exist
+BAG_DIR="/home/hj/catkin_ws/src/race_stack/stack_master/bag"
+RECORD_DIR="$BAG_DIR/record"
+
+mkdir -p "$RECORD_DIR"
+
+cd "$RECORD_DIR"
+
 rosbag record \
     /scan \
     /imu/data \

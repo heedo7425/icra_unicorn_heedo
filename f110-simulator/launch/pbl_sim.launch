@@ -17,6 +17,8 @@
 
   <!-- Launch a map from the maps folder-->
   <arg name="map" default="hangar"/>
+  <!-- Enable smart waypoints velocity scaling -->
+  <arg name="enable_smart_scaling" default="False"/>
   <node pkg="map_server" name="map_server" type="map_server" args="$(arg base_map_dir)/maps/$(arg map)/$(arg map).yaml"/>
 
   <!-- Launch the racecar model -->
@@ -76,6 +78,7 @@
     <!--  launch Velocity Interpolator for dynamic sector -->
     <include file="$(find sector_tuner)/launch/velocity_scaler.launch">
         <arg name="debug_plot" value="False" />
+        <arg name="enable_smart_scaling" value="$(arg enable_smart_scaling)" />
     </include>
 
     <!--  launch Overtaking Interpolator for dynamic ot_sector -->

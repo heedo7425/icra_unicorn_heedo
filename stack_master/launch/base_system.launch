@@ -13,6 +13,7 @@
   <arg name="scanalign" default="False"
     doc="Whether to launch the scan-align node that calculates localization accuracy." />
   <arg name="use_vesc_imu" default="False" doc="whether use built-in vesc imu or microstrain" />
+  <arg name="enable_smart_scaling" default="False" doc="Enable smart waypoints velocity scaling" />
 
   <param name="racecar_version" value="$(arg racecar_version)" />
   <param name="map" value="$(arg map)" />
@@ -35,7 +36,9 @@
     <!--  launch Speed Sector Server && Scaler-->
     <rosparam ns="map_params" command="load" file="$(find stack_master)/maps/$(arg map)/speed_scaling.yaml"/>
     <node pkg="sector_tuner" type="sector_server.py" name="dyn_sector_speed" output="screen" />
-    <node pkg="sector_tuner" type="vel_scaler_node.py" name="velocity_scaler" output="screen"/>
+    <node pkg="sector_tuner" type="vel_scaler_node.py" name="velocity_scaler" output="screen">
+      <param name="enable_smart_scaling" value="$(arg enable_smart_scaling)" />
+    </node>
 
     <!--  Launch Overtaking Sector Server && Interpolator-->
     <rosparam ns="ot_map_params" command="load" file="$(find stack_master)/maps/$(arg map)/ot_sectors.yaml" />
@@ -56,6 +59,7 @@
       <arg name="map" value="$(arg map)" />
       <arg name="racecar_version" value="$(arg racecar_version)" />
       <arg name="tire_model" value="$(arg tire_model)" />
+      <arg name="enable_smart_scaling" value="$(arg enable_smart_scaling)" />
     </include>
 
     <!-- republishes car state odom in frenet frame -->

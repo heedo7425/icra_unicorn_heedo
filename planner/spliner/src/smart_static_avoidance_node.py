@@ -43,7 +43,7 @@ SMOOTH_POLYORDER = 2  # Polynomial order (3 = cubic, lower = smoother but less a
 
 # Set to True to use conservative bounds from _for_spliner.png and obstacle-added map
 # Set to False to use original GB waypoint bounds (d_left, d_right from optimization)
-USE_SAFE_GRID = True
+USE_SAFE_GRID = False
 # Set to True to visualize d_left/d_right endpoints as spheres in RViz
 # GB mode: Blue spheres, Smart mode: Cyan spheres
 DEBUG_MORE_SPACE = True

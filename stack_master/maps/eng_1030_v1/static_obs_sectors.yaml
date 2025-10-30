@@ -12,7 +12,7 @@ Static_Obs_sector1:
   s_start: 12.371275874443926
   s_end: 16.86085179662116
   name: sector_2
-  static_obs_section: false
+  static_obs_section: true
 Static_Obs_sector2:
   start: 169
   end: 244
@@ -26,7 +26,7 @@ Static_Obs_sector3:
   s_start: 24.34347833358321
   s_end: 28.23444413280348
   name: sector_4
-  static_obs_section: false
+  static_obs_section: true
 Static_Obs_sector4:
   start: 283
   end: 344

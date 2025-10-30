@@ -81,7 +81,7 @@
     </group> -->
 
     <!-- GP Opp Trajectory Predictor  -->
-
+    
     <!-- <node pkg="gp_traj_predictor" type="dynamic_prediction_server.py" name="dynamic_prediction_tuner_node" output="screen"/>
     <node pkg="gp_traj_predictor" type="opp_prediction.py" name="opponent_propagation_predictor" output="screen"/>
     <node pkg="gp_traj_predictor" type="opponent_trajectory.py" name="OpponentHalflap" output="screen"/>

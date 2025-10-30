@@ -18,6 +18,8 @@ from global_racetrajectory_optimization.trajectory_optimizer import trajectory_o
 from global_racetrajectory_optimization import helper_funcs_glob
 import trajectory_planning_helpers as tph
 
+from geometry_msgs.msg import PoseWithCovarianceStamped  # HJ ADD: For RViz 2D Pose Estimate
+
 from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped
 from f110_msgs.msg import Wpnt, WpntArray
@@ -74,6 +76,7 @@ class GlobalPlanner:
 
         self.current_position = None
         self.initial_position = None
+        self.rviz_initial_pose = None  # HJ ADD: For RViz 2D Pose Estimate
 
         self.map_ready = False
 
@@ -107,6 +110,7 @@ class GlobalPlanner:
         rospy.Subscriber('/map', OccupancyGrid, self.map_cb)
         # rospy.Subscriber('/car_state/pose', PoseStamped, self.pose_cb)
         rospy.Subscriber('/base_link_pose_with_cov', PoseWithCovarianceStamped, self.pose_cb)
+        rospy.Subscriber('/initialpose', PoseWithCovarianceStamped, self.rviz_initial_pose_cb)  # HJ ADD: Subscribe to RViz 2D Pose Estimate
 
         # publisher for local planner
         self.wpnt_global_iqp_pub = rospy.Publisher('global_waypoints', WpntArray, queue_size=10)
@@ -167,6 +171,29 @@ class GlobalPlanner:
             else:
                 self.cent_driven = np.append(self.cent_driven, [self.current_position], axis=0)
 
+    # HJ ADD: Callback function for RViz 2D Pose Estimate
+    def rviz_initial_pose_cb(self, data):
+        """
+        Callback function for RViz 2D Pose Estimate.
+        Allows user to manually set the starting point via RViz.
+
+        Parameters
+        ----------
+        data : PoseWithCovarianceStamped
+            Pose data from RViz /initialpose topic
+        """
+        x = data.pose.pose.position.x
+        y = data.pose.pose.position.y
+        theta = euler_from_quaternion([data.pose.pose.orientation.x, data.pose.pose.orientation.y,
+                                       data.pose.pose.orientation.z, data.pose.pose.orientation.w])[2]
+
+        self.rviz_initial_pose = [x, y, theta]
+        rospy.logwarn("=" * 80)
+        rospy.logwarn(f"[GB Planner]: RViz initial pose received: ({x:.2f}, {y:.2f}, {theta:.2f})")
+        rospy.logwarn("[GB Planner]: This will be used as the starting point for trajectory optimization")
+        rospy.logwarn("[GB Planner]: Press ENTER in the terminal to continue...")
+        rospy.logwarn("=" * 80)
+
     def global_plan_loop(self):
         rate_pos = rospy.Rate(self.rate)
 
@@ -181,7 +208,41 @@ class GlobalPlanner:
                 self.map_origin.position.y = data['origin'][1]
                 self.map_origin.position.z = data['origin'][2]
                 # self.initial_position = [self.map_origin.position.x, self.map_origin.position.y, 0]
-                self.initial_position = [0, 0, 0]
+
+                # HJ ADD: Launch RViz for user to select starting point
+                rospy.logwarn("=" * 80)
+                rospy.logwarn("[GB Planner]: WAITING FOR USER INPUT")
+                rospy.logwarn("[GB Planner]: RViz will open automatically.")
+                rospy.logwarn("[GB Planner]: Please click '2D Pose Estimate' and select starting point on the map.")
+                rospy.logwarn("[GB Planner]: Press ENTER in this terminal when done...")
+                rospy.logwarn("=" * 80)
+
+                # HJ ADD: Launch RViz with custom config
+                rospack = RosPack()
+                rviz_config_path = os.path.join(rospack.get_path('gb_optimizer'), 'rviz', 'select_start_point.rviz')
+
+                if os.path.exists(rviz_config_path):
+                    rviz_process = subprocess.Popen(['rosrun', 'rviz', 'rviz', '-d', rviz_config_path])
+                else:
+                    rospy.logwarn("[GB Planner]: RViz config not found, launching default RViz")
+                    rviz_process = subprocess.Popen(['rosrun', 'rviz', 'rviz'])
+
+                # HJ ADD: Wait for user to select pose in RViz
+                input()  # Wait for ENTER key
+
+                # HJ ADD: Kill RViz
+                rviz_process.terminate()
+                rospy.loginfo("[GB Planner]: RViz closed. Proceeding with optimization...")
+
+                # HJ ADD: Set initial position
+                # Priority: RViz 2D Pose Estimate > Default [0,0,0]
+                # User can click "2D Pose Estimate" in RViz to manually set starting point
+                if self.rviz_initial_pose is not None:
+                    self.initial_position = self.rviz_initial_pose
+                    rospy.logwarn(f"[GB Planner]: Using RViz pose as initial_position: {self.initial_position}")
+                else:
+                    self.initial_position = [0, 0, 0]  # Default: closest to origin
+                    rospy.logwarn(f"[GB Planner]: No RViz pose received, using default initial_position: [0, 0, 0]")
             # compute global trajectory from img only and return
             self.compute_global_trajectory(cent_length=0.0, save_map=False, save_pf_copy=False)
             # pb_dir = os.path.join(self.map_dir, self.map_name + '.pbstream')
@@ -463,10 +524,23 @@ class GlobalPlanner:
         # print("Number of interpolated centerline points: ", centerline_int_len)
 
         # get distance to initial position for every point on centerline
+        rospy.logerr(f"[GB Planner]: Finding start point closest to initial_position = {self.initial_position}")
         cent_distance = np.sqrt(np.power(centerline_meter_int[:, 0] - self.initial_position[0], 2)
                                 + np.power(centerline_meter_int[:, 1] - self.initial_position[1], 2))
 
         min_dist_ind = np.argmin(cent_distance)
+        rospy.logerr(f"[GB Planner]: Closest point found at centerline index {min_dist_ind}, position = ({centerline_meter_int[min_dist_ind, 0]:.2f}, {centerline_meter_int[min_dist_ind, 1]:.2f})")
+
+        # HJ ADD: CRITICAL FIX - Rotate centerline so that min_dist_ind becomes index 0
+        # This ensures the optimized trajectory starts at the point closest to initial_position
+        # Previously, initial_position only checked direction, didn't reorder the centerline
+        roll_amount = -min_dist_ind
+        centerline_smooth = np.roll(centerline_smooth, roll_amount, axis=0)
+        centerline_meter_int = np.roll(centerline_meter_int, roll_amount, axis=0)
+        rospy.logerr(f"[GB Planner]: Centerline rotated by {roll_amount} positions. New start point: ({centerline_meter_int[0, 0]:.2f}, {centerline_meter_int[0, 1]:.2f})")
+
+        # After rotation, the target point is now at index 0
+        min_dist_ind = 0
 
         cent_direction = np.angle([complex(centerline_meter_int[min_dist_ind, 0] -
                                            centerline_meter_int[min_dist_ind - 1, 0],

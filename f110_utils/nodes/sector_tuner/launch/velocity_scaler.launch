@@ -1,11 +1,13 @@
 <?xml version="1.0"?>
 <launch>
     <arg name="debug_plot" default="False"/>
+    <arg name="enable_smart_scaling" default="False"/>
 
     <!--  launch velocity scaler -->
     <node pkg="sector_tuner" type="vel_scaler_node.py" name="velocity_scaler" output="screen">
         <param name="debug_plot" value="$(arg debug_plot)"/>
+        <param name="enable_smart_scaling" value="$(arg enable_smart_scaling)"/>
     </node>
-    
+
 </launch>
 
