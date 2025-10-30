@@ -5,15 +5,21 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Planning1
+        - /Planning1/Spliner1
         - /Planning1/Spliner1/AvoidanceMarkers1
-        - /Perception1
+        - /MarkerArray2
         - /MarkerArray4
-        - /Map2
-        - /Map2/Status1
+        - /MarkerArray5
         - /MarkerArray6
         - /Marker2
         - /Marker3
+        - /MarkerArray7
         - /MarkerArray8
+        - /MarkerArray8/Status1
+        - /Marker4
+        - /Marker5
+        - /Marker6
+        - /MarkerArray9
       Splitter Ratio: 0.646532416343689
     Tree Height: 1520
   - Class: rviz/Selection
@@ -63,18 +69,56 @@ Visualization Manager:
     - Alpha: 1
       Class: rviz/RobotModel
       Collision Enabled: false
-      Enabled: false
+      Enabled: true
       Links:
         All Links Enabled: true
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
         Link Tree Style: Links in Alphabetic Order
+        back_left_wheel:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        back_right_wheel:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        front_left_hinge:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        front_left_wheel:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        front_right_hinge:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        front_right_wheel:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        laser_model:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
       Name: RobotModel
       Robot Description: /racecar/robot_description
       TF Prefix: ""
       Update Interval: 0
-      Value: false
+      Value: true
       Visual Enabled: true
     - Class: rviz/Group
       Displays:
@@ -215,13 +259,13 @@ Visualization Manager:
           Queue Size: 100
           Value: false
         - Class: rviz/MarkerArray
-          Enabled: false
+          Enabled: true
           Marker Topic: /global_waypoints/markers
           Name: Global Waypoints
           Namespaces:
-            {}
+            "": true
           Queue Size: 100
-          Value: false
+          Value: true
         - Class: rviz/MarkerArray
           Enabled: true
           Marker Topic: /local_waypoints/markers
@@ -372,13 +416,13 @@ Visualization Manager:
       Queue Size: 100
       Value: true
     - Class: rviz/MarkerArray
-      Enabled: true
+      Enabled: false
       Marker Topic: /planner/recovery/markers
       Name: MarkerArray
       Namespaces:
-        "": true
+        {}
       Queue Size: 100
-      Value: true
+      Value: false
     - Class: rviz/MarkerArray
       Enabled: true
       Marker Topic: /static_obs_sector_markers
@@ -412,16 +456,6 @@ Visualization Manager:
         "": true
       Queue Size: 100
       Value: true
-    - Alpha: 0.699999988079071
-      Class: rviz/Map
-      Color Scheme: map
-      Draw Behind: false
-      Enabled: false
-      Name: Map
-      Topic: /map_with_obs
-      Unreliable: false
-      Use Timestamp: false
-      Value: false
     - Class: rviz/MarkerArray
       Enabled: true
       Marker Topic: /planner/avoidance/temp_do_spline_markers
@@ -504,6 +538,24 @@ Visualization Manager:
         lap_info: true
       Queue Size: 100
       Value: true
+    - Alpha: 0.699999988079071
+      Class: rviz/Map
+      Color Scheme: map
+      Draw Behind: false
+      Enabled: true
+      Name: Map
+      Topic: /map_with_obs
+      Unreliable: false
+      Use Timestamp: false
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: false
+      Marker Topic: /planner/avoidance/more_space_debug
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Queue Size: 100
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -531,7 +583,7 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: -1.5349996089935303
+      Angle: -1.5600000619888306
       Class: rviz/TopDownOrtho
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
@@ -541,10 +593,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 54.73566436767578
+      Scale: 64.77375030517578
       Target Frame: <Fixed Frame>
-      X: 5.288366317749023
-      Y: 3.214829683303833
+      X: 6.182919025421143
+      Y: 2.0249297618865967
     Saved: ~
 Window Geometry:
   Displays:

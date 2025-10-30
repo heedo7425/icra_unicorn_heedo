@@ -12,7 +12,7 @@
       <arg name="vesc_config" default="$(find stack_master)/config/$(arg racecar_version)/devices/vesc.yaml" />
       <rosparam file="$(arg vesc_config)" command="load" />
       <node name="dyn_wheel_odom" pkg="vesc_ackermann" type="dynamic_wheel_odom_server.py" output="screen"/>
-      <node pkg="vesc_ackermann" type="vesc_to_odom_node" name="vesc_to_odom" />
+      <node pkg="vesc_ackermann" type="adaptive_vesc_to_odom_node" name="vesc_to_odom" />
     </group>
 
   

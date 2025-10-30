@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
- 
+
 import logging
- 
+
 import yaml
 import rospkg
 import os
 import copy
- 
+
 import numpy as np
 from steering_lookup.lookup_steer_angle import LookupSteerAngle
- 
+
 import rospy
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
- 
+
+# ===== HJ ADDED: Global flag for differential trailing control for static sector obstacles =====
+
+DISABLE_TRAILING_CONTROL_FOR_STATIC_SECTOR = False
+
+# Speed multiplier for static sector obstacles when trailing control is disabled
+# 1.0 = use global_speed as-is (no deceleration)
+# 0.8 = use 80% of global_speed (slight deceleration)
+# Values < 1.0 allow tuning deceleration amount
+STATIC_SECTOR_SPEED_MULTIPLIER = 1.0
+# ===== HJ ADDED END =====
+
 class Controller:
     """This class implements a MAP controller for autonomous driving.
     Input and output topics are managed by the controller manager
@@ -434,12 +445,28 @@ class Controller:
         else:
             self.boost_mode = False
  
+        # ===== HJ MODIFIED: Differential trailing control for static sector obstacles =====
         if((self.state == "TRAILING") and (self.opponent is not None)): #Trailing controller
-            speed_command = self.trailing_controller(global_speed)
+            # Check if opponent is static obstacle in static sector
+            is_static_in_static_sector = (len(self.opponent) > 5 and
+                                         self.opponent[3] and  # is_static
+                                         self.opponent[5])     # in_static_obs_sector
+
+            # Apply trailing control based on flag and obstacle type
+            if is_static_in_static_sector and DISABLE_TRAILING_CONTROL_FOR_STATIC_SECTOR:
+                # Static obstacle in static sector + flag disabled → NO trailing control
+                # Use global speed with tunable multiplier (allows partial deceleration)
+                self.trailing_speed = global_speed * STATIC_SECTOR_SPEED_MULTIPLIER
+                self.i_gap = 0
+                speed_command = global_speed * STATIC_SECTOR_SPEED_MULTIPLIER
+            else:
+                # Dynamic obstacle OR flag enabled → normal trailing control
+                speed_command = self.trailing_controller(global_speed)
         else:
             self.trailing_speed = global_speed
             self.i_gap = 0
             speed_command = global_speed
+        # ===== HJ MODIFIED END =====
  
         speed_command = self.speed_adjust_lat_err(speed_command, lat_e_norm)
  

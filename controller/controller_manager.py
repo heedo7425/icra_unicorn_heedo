@@ -470,7 +470,11 @@ class Controller_manager:
             opponent_vs = opponent.vs
             opponent_visible = opponent.is_visible
             opponent_static = opponent.is_static
-            self.opponent = [opponent_s, opponent_d, opponent_vs, opponent_static, opponent_visible]
+            # ===== HJ ADDED: Add static sector info for differential trailing control =====
+            opponent_in_static_sector = opponent.in_static_obs_sector
+            self.opponent = [opponent_s, opponent_d, opponent_vs, opponent_static, opponent_visible, opponent_in_static_sector]
+            # Index:          [0]        [1]        [2]       [3]              [4]               [5]
+            # ===== HJ ADDED END =====
         else:
             self.opponent = None
 

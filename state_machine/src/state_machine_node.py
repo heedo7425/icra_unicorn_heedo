@@ -30,9 +30,11 @@ _debug_log_cache = {}
 # ===== HJ ADDED: Global flag for static sector obstacle filtering =====
 # Set to True to enable stricter filtering for static obstacles in static sectors
 # Set to False to use original behavior (same as before TTL increase)
+
 ENABLE_STATIC_SECTOR_FILTERING = False
 HORIZON_FOR_TTL = 3.0
-MAX_VEL_RIGHT_BEFORE_STATIC_OT = 3.0
+
+MAX_VEL_RIGHT_BEFORE_STATIC_OT = 5.0
 # ===== HJ ADDED END =====
 
 def debug_log_on_change(tag, **kwargs):
@@ -1483,6 +1485,24 @@ class StateMachine:
             wpnts = self.cur_static_avoidance_wpnts
         else:
             wpnts = self.cur_avoidance_wpnts
+
+        # ===== HJ ADDED: Safety check - fallback if spliner fails =====
+        if wpnts is None or not hasattr(wpnts, 'array') or wpnts.array is None or len(wpnts.array) == 0:
+            rospy.logwarn_throttle(1.0, "[state_machine] Spliner waypoints invalid, using fallback")
+            # Fallback based on smart_static_active flag
+            if self.smart_static_active and self.cur_smart_static_avoidance_wpnts.is_init:
+                # Use Fixed path with Fixed Frenet cur_s
+                rospy.logwarn_throttle(1.0, "[state_machine] Fallback: Using Fixed path")
+                cur_s_fixed = self.smart_helper.cur_s
+                s = int(cur_s_fixed / self.smart_wpnt_dist + 0.5)
+                num_smart = len(self.cur_smart_static_avoidance_wpnts.list)
+                return [self.cur_smart_static_avoidance_wpnts.list[(s + i) % num_smart] for i in range(self.n_loc_wpnts)]
+            else:
+                # Use GB path with GB Frenet cur_s
+                rospy.logwarn_throttle(1.0, "[state_machine] Fallback: Using GB path")
+                s = int(self.cur_s / self.waypoints_dist + 0.5)
+                return [self.cur_gb_wpnts.list[(s + i) % self.num_glb_wpnts] for i in range(self.n_loc_wpnts)]
+        # ===== HJ ADDED END =====
 
         diff = np.linalg.norm(wpnts.array[:, 0:2] - self.current_position[:2], axis=1)
         min_idx = np.argmin(diff)

@@ -47,9 +47,6 @@ USE_SAFE_GRID = True
 # Set to True to visualize d_left/d_right endpoints as spheres in RViz
 # GB mode: Blue spheres, Smart mode: Cyan spheres
 DEBUG_MORE_SPACE = True
-
-# Set to True to disable Fixed path optimization entirely (use only GB path with dynamic avoidance)
-USE_ONLY_GB = False
 # ===== HJ ADDED END =====
 
 # GB optimizer speed tuning parameters
@@ -147,14 +144,6 @@ class ObstacleSpliner:
         # Phase B: Memory structure - (sector_id, obs_id) tuple keys for individual obstacle tracking
         self.static_obs_memory = {}  # {(sector_id, obs_id): {'s_history': [], 'd_history': [], 's_history_fixed': [], 'd_history_fixed': [], 'obs_count': 0, 'interferes': bool, 'interferes_fixed': bool, 'last_seen': rospy.Time}}
         self.fixed_path_generated = False  # Static flag: Has fixed path been generated? (Once True, stays True)
-        # If USE_ONLY_GB=True, skip optimization entirely by marking as already attempted
-        self.fixed_path_generation_attempted = USE_ONLY_GB  # Static flag: Has generation been attempted? (prevent infinite retry)
-        if USE_ONLY_GB:
-            rospy.logwarn(f"[{self.name}] ===== USE_ONLY_GB = True =====")
-            rospy.logwarn(f"[{self.name}] Fixed path optimization DISABLED")
-            rospy.logwarn(f"[{self.name}] Will use GB path only with dynamic obstacle avoidance (do_spline)")
-        else:
-            rospy.loginfo(f"[{self.name}] USE_ONLY_GB = False (Fixed path optimization enabled)")
         self.use_fixed_path = False  # Dynamic flag: Currently using fixed path? (Can toggle based on obstacles)
         self.fixed_path_generating = False  # Flag to track if generation is in progress
         self.fixed_path_wpnts = OTWpntArray()
@@ -593,8 +582,8 @@ class ObstacleSpliner:
             mrks = MarkerArray()
 
             # ===== HJ EDITED START: Smart static avoidance mode switching =====
-            # Check if we should generate fixed path (only if not attempted AND not generating)
-            if not self.fixed_path_generation_attempted and not self.fixed_path_generating and self._check_obs_is_ready_for_path_gen():
+            # Check if we should generate fixed path (only if not generated AND not generating)
+            if not self.fixed_path_generated and not self.fixed_path_generating and self._check_obs_is_ready_for_path_gen():
                 rospy.loginfo(f"[{self.name}] ========================================")
                 rospy.loginfo(f"[{self.name}] OBSTACLES VERIFIED! Starting fixed path generation in background...")
                 rospy.loginfo(f"[{self.name}] ========================================")
@@ -1975,6 +1964,103 @@ class ObstacleSpliner:
                 pass  # All checks passed, wpnts already populated
         return wpnts, mrks
 
+    def _obs_filtering(self, obstacles: ObstacleArray) -> List[Obstacle]:
+        # Only use obstacles that are within a threshold of the raceline, else we don't care about them
+        obs_on_traj = [obs for obs in obstacles.obstacles if abs(obs.d_center) < self.obs_traj_tresh]
+
+        # Only use obstacles that within self.lookahead in front of the car
+        close_obs = []
+        for obs in obs_on_traj:
+            obs = self._predict_obs_movement(obs)
+            # Handle wraparound
+            dist_in_front = (obs.s_center - self.cur_s) % self.gb_max_s
+            # dist_in_back = abs(dist_in_front % (-self.gb_max_s)) # distance from ego to obstacle in the back
+            if dist_in_front < self.lookahead:
+                close_obs.append(obs)
+                # Not within lookahead
+            else:
+                pass
+        return close_obs
+
+    def _predict_obs_movement(self, obs: Obstacle, mode: str = "constant") -> Obstacle:
+        """
+        Predicts the movement of an obstacle based on the current state and mode.
+        
+        TODO: opponent prediction should be completely isolated for added modularity       
+
+        Args:
+            obs (Obstacle): The obstacle to predict the movement for.
+            mode (str, optional): The mode for predicting the movement. Defaults to "constant".
+
+        Returns:
+            Obstacle: The updated obstacle with the predicted movement.
+        """
+        # propagate opponent by time dependent on distance
+        if (obs.s_center - self.cur_s) % self.gb_max_s < 10:  # TODO make param
+            if mode == "adaptive":
+                # distance in s coordinate
+                cur_s = self.cur_s
+                ot_distance = (obs.s_center - cur_s) % self.gb_max_s
+                rel_speed = np.clip(self.gb_scaled_wpnts.wpnts[int(cur_s * 10)].vx_mps - obs.vs, 0.1, 10)
+                ot_time_distance = np.clip(ot_distance / rel_speed, 0, 5) * 0.5
+
+                delta_s = ot_time_distance * obs.vs
+                delta_d = ot_time_distance * obs.vd
+                delta_d = -(obs.d_center + delta_d) * np.exp(-np.abs(self.kd_obs_pred * obs.d_center))
+
+            elif mode == "adaptive_velheuristic":
+                opponent_scaler = 0.7
+                cur_s = self.cur_s
+                ego_speed = self.gb_scaled_wpnts.wpnts[int(cur_s * 10)].vx_mps
+
+                # distance in s coordinate
+                ot_distance = (obs.s_center - cur_s) % self.gb_max_s
+                rel_speed = (1 - opponent_scaler) * ego_speed
+                ot_time_distance = np.clip(ot_distance / rel_speed, 0, 5)
+
+                delta_s = ot_time_distance * opponent_scaler * ego_speed
+                delta_d = -(obs.d_center) * np.exp(-np.abs(self.kd_obs_pred * obs.d_center))
+
+            # propagate opponent by constant time
+            elif mode == "constant":
+                delta_s = self.fixed_pred_time * obs.vs
+                delta_d = self.fixed_pred_time * obs.vd
+                # delta_d = -(obs.d_center+delta_d)*np.exp(-np.abs(self.kd_obs_pred*obs.d_center))
+
+            elif mode == "heuristic":
+                # distance in s coordinate
+                ot_distance = (obs.s_center - self.cur_s) % self.gb_max_s
+                rel_speed = 3
+                ot_time_distance = ot_distance / rel_speed
+
+                delta_d = ot_time_distance * obs.vd
+                delta_d = -(obs.d_center + delta_d) * np.exp(-np.abs(self.kd_obs_pred * obs.d_center))
+
+            # update
+            obs.s_start += delta_s
+            obs.s_center += delta_s
+            obs.s_end += delta_s
+            obs.s_start %= self.gb_max_s
+            obs.s_center %= self.gb_max_s
+            obs.s_end %= self.gb_max_s
+
+            obs.d_left += delta_d
+            obs.d_center += delta_d
+            obs.d_right += delta_d
+
+            resp = self.converter.get_cartesian([obs.s_center], [obs.d_center])
+
+            marker = self.xy_to_point(resp[0], resp[1], opponent=True)
+            self.pub_propagated.publish(marker)
+
+        return obs
+    
+    def _check_ot_side_possible(self, more_space) -> bool:
+        if abs(self.cur_d) > 0.25 and more_space != self.last_ot_side: # TODO make rosparam for cur_d threshold
+            rospy.loginfo(f"[{self.name}]: Can't switch sides, because we are not on the raceline")
+            return False
+        return True
+
     ######################
     # VIZ + MSG WRAPPING #
     ######################
@@ -2066,7 +2152,6 @@ class ObstacleSpliner:
             if success:
                 rospy.loginfo(f"[{self.name}] [THREAD] Fixed path generated successfully!")
                 self.fixed_path_generated = True  # Static flag: generation completed
-                self.fixed_path_generation_attempted = True  # Mark as attempted to prevent retry
 
                 # ===== HJ MODIFIED: Publish fixed path IMMEDIATELY before flag =====
                 # Critical: state_machine must receive waypoints BEFORE use_fixed_path flag
@@ -2090,19 +2175,12 @@ class ObstacleSpliner:
                 # ===== HJ ADDED END =====
             else:
                 rospy.logerr(f"[{self.name}] [THREAD] Fixed path generation FAILED")
-                # ===== HJ MODIFIED: Mark as attempted to prevent infinite retry =====
-                self.fixed_path_generation_attempted = True
-                rospy.logwarn(f"[{self.name}] [THREAD] Marked generation as attempted. Will NOT retry.")
-                rospy.logwarn(f"[{self.name}] [THREAD] Continuing with GB mode for this session.")
-                # ===== HJ MODIFIED END =====
+                # Don't set generated flag, will retry next iteration
 
         except Exception as e:
             rospy.logerr(f"[{self.name}] [THREAD] Exception in path generation thread: {e}")
             import traceback
             traceback.print_exc()
-            # ===== HJ ADDED: Also mark as attempted on exception =====
-            self.fixed_path_generation_attempted = True
-            # ===== HJ ADDED END =====
 
         finally:
             # Always clear generating flag when done (success or fail)
@@ -2214,8 +2292,7 @@ class ObstacleSpliner:
 
             # Step 3: Retry with progressively reduced safety_width ratios if optimization fails
             # Reftrack is prepared ONCE above, only safety_width changes in retry loop
-            # ===== HJ MODIFIED: Only try down to 0.9 ratio, then give up and use GB mode =====
-            safety_width_ratios = [1.0, 0.95, 0.9]  # Stop at 0.9 (was: 0.85, 0.8, 0.75, 0.7)
+            safety_width_ratios = [1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7]
 
             trajectory_opt = None
             last_error = None
@@ -2255,12 +2332,11 @@ class ObstacleSpliner:
 
             # Check if all attempts failed
             if trajectory_opt is None:
-                rospy.logerr(f"[{self.name}] ===== OPTIMIZATION FAILED =====")
-                rospy.logerr(f"[{self.name}] All {len(safety_width_ratios)} optimization attempts failed (down to {safety_width_ratios[-1]} ratio)")
-                rospy.logwarn(f"[{self.name}] Falling back to GB mode (Fixed path generation skipped)")
-                rospy.logwarn(f"[{self.name}] Will use GB path with dynamic obstacle avoidance (do_spline)")
-                # Return False to skip Fixed path usage (continue with GB mode)
-                return False
+                rospy.logerr(f"[{self.name}] GB optimizer failed with all {len(safety_width_ratios)} configurations")
+                if last_error:
+                    raise last_error
+                else:
+                    return False
 
             # ===== HJ ADDED: Step 3.5: Apply post-smoothing if enabled =====
             if SMOOTH_OPT_OUTPUT:
