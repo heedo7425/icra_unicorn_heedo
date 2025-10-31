@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>spliner</name>
+  <name>eth_spliner</name>
   <version>0.0.0</version>
-  <description>The spliner package</description>
+  <description>The eth_spliner package</description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->
   <!-- Example:  -->
