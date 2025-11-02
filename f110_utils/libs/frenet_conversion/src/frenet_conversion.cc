@@ -49,9 +49,9 @@ namespace frenet_conversion{
     }
 
     has_occupancy_map_ = true;
-    ROS_INFO("[FrenetConverter] Occupancy map loaded from ROS: %dx%d pixels, resolution=%.3f m/pixel",
-             width, height, map_resolution_);
-    ROS_INFO("[FrenetConverter] Map origin: (%.2f, %.2f)", map_origin_x_, map_origin_y_);
+    ROS_DEBUG("[FrenetConverter] Occupancy map loaded from ROS: %dx%d pixels, resolution=%.3f m/pixel",
+              width, height, map_resolution_);
+    ROS_DEBUG("[FrenetConverter] Map origin: (%.2f, %.2f)", map_origin_x_, map_origin_y_);
   }
   // ===== HJ ADDED END =====
 

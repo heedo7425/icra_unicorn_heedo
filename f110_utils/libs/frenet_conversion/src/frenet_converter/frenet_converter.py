@@ -317,8 +317,8 @@ class FrenetConverter:
                     self.occupancy_grid[y, x] = 255
 
         self.has_occupancy_map = True
-        rospy.loginfo(f"[FrenetConverter] Occupancy map loaded from ROS: {self.map_width}x{self.map_height} pixels, resolution={self.map_resolution:.3f} m/pixel")
-        rospy.loginfo(f"[FrenetConverter] Map origin: ({self.map_origin_x:.2f}, {self.map_origin_y:.2f})")
+        rospy.logdebug(f"[FrenetConverter] Occupancy map loaded from ROS: {self.map_width}x{self.map_height} pixels, resolution={self.map_resolution:.3f} m/pixel")
+        rospy.logdebug(f"[FrenetConverter] Map origin: ({self.map_origin_x:.2f}, {self.map_origin_y:.2f})")
 
     def is_line_crossing_obstacle(self, x1, y1, x2, y2):
         """

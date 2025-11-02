@@ -53,7 +53,7 @@ void FrenetRepublisher::FixedPathTrajectoryCallback(
 
 // ===== HJ ADDED: Map callback for wall filtering =====
 void FrenetRepublisher::MapCallback(const nav_msgs::OccupancyGridConstPtr &map_msg) {
-  ROS_INFO("[FrenetRepublisher] Received occupancy map, setting up wall filtering");
+  ROS_DEBUG("[FrenetRepublisher] Received occupancy map, setting up wall filtering");
   frenet_converter_.SetOccupancyMap(map_msg);
   frenet_converter_fixed_.SetOccupancyMap(map_msg);
 }

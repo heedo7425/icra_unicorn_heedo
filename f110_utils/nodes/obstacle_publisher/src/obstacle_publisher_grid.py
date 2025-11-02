@@ -54,6 +54,17 @@ class ObstaclePublisherGrid:
         # ===== Smart Static mode enable/disable =====
         self.enable_smart = rospy.get_param("~enable_smart", False)  # Enable Smart Static trajectory
 
+        # ===== Reactive mode parameters =====
+        self.reactive = rospy.get_param("~reactive", False)  # Enable reactive mode
+
+        # Reactive mode state variables
+        self.reactive_phase = 0.0  # Phase of sine wave (radians)
+        self.reactive_amplitude = 0.0  # Current amplitude (randomly varies per cycle)
+        self.reactive_frequency = 0.6  # Frequency (cycles per second in time domain) - lower = slower oscillation
+        self.prev_phase = 0.0  # Track phase to detect cycle completion
+        self.max_amplitude_limit = 0.5  # Maximum allowed amplitude in meters
+        self.prev_d_perturbation = 0.0  # Previous d perturbation for derivative calculation
+
         # ===== HJ MODIFIED: Rectangular obstacle dimensions =====
         self.obstacle_length_m = rospy.get_param("~obstacle_length_m", 0.65)  # Heading direction
         self.obstacle_width_m = rospy.get_param("~obstacle_width_m", 0.35)    # Normal direction
@@ -96,7 +107,7 @@ class ObstaclePublisherGrid:
         rospy.Subscriber("/racecar_sim/feedback", InteractiveMarkerFeedback, self.clear_obstacles_cb, queue_size=1)
 
         # ===== HJ MODIFIED: Store both GB and Fixed trajectories =====
-        # Each trajectory is a list of dicts: {'x_m', 'y_m', 's_m', 'd_m', 'vx_mps', 'heading'}
+        # Each trajectory is a list of dicts: {'x_m', 'y_m', 's_m', 'd_m', 'vx_mps', 'heading', 'd_left', 'd_right'}
         self.trajectory_gb = None
         self.trajectory_fixed = None
         self.trajectory_gb_s_array = None
@@ -121,6 +132,9 @@ class ObstaclePublisherGrid:
         rospy.loginfo(f"  - Starting s (Fixed): {self.starting_s_fixed}")
         rospy.loginfo(f"  - Obstacle size: {self.obstacle_length_m}m x {self.obstacle_width_m}m")
         rospy.loginfo(f"  - Update rate: {self.update_rate}Hz")
+        rospy.loginfo(f"  - Reactive mode: {self.reactive}")
+        if self.reactive:
+            rospy.loginfo(f"    - Frequency: {self.reactive_frequency} Hz")
         rospy.loginfo(f"  - Map: {self.map_name}")
 
     def smart_static_cb(self, msg: Bool):
@@ -144,6 +158,8 @@ class ObstaclePublisherGrid:
         y_array = np.array([wpnt.y_m for wpnt in msg.wpnts])
         heading_array = np.array([wpnt.psi_rad for wpnt in msg.wpnts])
         d_array = np.array([wpnt.d_m for wpnt in msg.wpnts])
+        d_left_array = np.array([wpnt.d_left for wpnt in msg.wpnts])
+        d_right_array = np.array([wpnt.d_right for wpnt in msg.wpnts])
 
         self.max_s_fixed = s_array[-1]
 
@@ -167,7 +183,9 @@ class ObstaclePublisherGrid:
                 's_m': s_array[i],
                 'd_m': d_array[i],
                 'vx_mps': speed_array[i],
-                'heading': heading_array[i]
+                'heading': heading_array[i],
+                'd_left': d_left_array[i],
+                'd_right': d_right_array[i]
             }
             self.trajectory_fixed.append(wpnt)
 
@@ -259,10 +277,12 @@ class ObstaclePublisherGrid:
         else:
             speed_array = np.array([wpnt.vx_mps * self.speed_scaler for wpnt in global_wpnts])
 
-        # Extract x, y, heading
+        # Extract x, y, heading, d_left, d_right
         x_array = np.array([wpnt.x_m for wpnt in global_wpnts])
         y_array = np.array([wpnt.y_m for wpnt in global_wpnts])
         heading_array = np.array([wpnt.psi_rad for wpnt in global_wpnts])
+        d_left_array = np.array([wpnt.d_left for wpnt in global_wpnts])
+        d_right_array = np.array([wpnt.d_right for wpnt in global_wpnts])
 
         # Convert to Frenet for d values
         frenet_result = self.glob2frenet(x_array.tolist(), y_array.tolist())
@@ -277,7 +297,9 @@ class ObstaclePublisherGrid:
                 's_m': s_array[i],
                 'd_m': d_array[i],
                 'vx_mps': speed_array[i],
-                'heading': heading_array[i]
+                'heading': heading_array[i],
+                'd_left': d_left_array[i],
+                'd_right': d_right_array[i]
             }
             self.trajectory_gb.append(wpnt)
 
@@ -316,7 +338,54 @@ class ObstaclePublisherGrid:
         idx = np.abs(s_array - current_s).argmin()
         wpnt = trajectory[idx]
 
-        return wpnt['x_m'], wpnt['y_m'], wpnt['heading'], wpnt['vx_mps'], mode
+        x_m = wpnt['x_m']
+        y_m = wpnt['y_m']
+        heading = wpnt['heading']
+
+        # Apply reactive mode perturbation if enabled
+        if self.reactive:
+            # Get track boundaries at current waypoint
+            d_left = wpnt['d_left']   # Positive (left side)
+            d_right = wpnt['d_right']  # Negative (right side)
+
+            # Update phase based on time
+            phase_increment = 2.0 * np.pi * self.reactive_frequency * self.looptime
+            new_phase = self.reactive_phase + phase_increment
+
+            # Detect cycle completion (phase wraps from 2π to 0)
+            if new_phase >= 2.0 * np.pi:
+                # Start new cycle with random amplitude
+                # Limit to smaller of boundaries and max 1.0 meter
+                max_amplitude = min(abs(d_left), abs(d_right), self.max_amplitude_limit)
+                self.reactive_amplitude = np.random.uniform(0.3 * max_amplitude, max_amplitude)
+                new_phase = new_phase % (2.0 * np.pi)
+                rospy.loginfo_throttle(5.0, f"[ObstaclePublisherGrid] New cycle: amplitude={self.reactive_amplitude:.3f}m, range=[{d_right:.3f}, {d_left:.3f}]")
+
+            self.reactive_phase = new_phase
+
+            # Calculate d perturbation using sine wave
+            d_perturbation = self.reactive_amplitude * np.sin(self.reactive_phase)
+
+            # Apply perturbation in Frenet frame: convert (s, d) to (x, y)
+            # Normal vector is perpendicular to heading (rotated by 90 degrees)
+            normal_x = -np.sin(heading)  # Normal direction (left is positive)
+            normal_y = np.cos(heading)
+
+            x_m += d_perturbation * normal_x
+            y_m += d_perturbation * normal_y
+
+            # Adjust heading based on rate of change of lateral position
+            # Calculate derivative of d perturbation (how fast we're moving laterally)
+            d_dot = (d_perturbation - self.prev_d_perturbation) / self.looptime
+            self.prev_d_perturbation = d_perturbation
+
+            # Add small heading adjustment proportional to lateral velocity
+            # Positive d_dot (moving left) should rotate heading left (counterclockwise)
+            # The adjustment is small to keep motion smooth
+            heading_adjustment = np.arctan2(d_dot, wpnt['vx_mps']) if wpnt['vx_mps'] > 0.1 else 0.0
+            heading += heading_adjustment
+
+        return x_m, y_m, heading, wpnt['vx_mps'], mode
 
     def update_obstacle_on_map(self, x_m, y_m, heading):
         """Update occupancy grid with rectangular obstacle at new position

@@ -5,21 +5,10 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Planning1
-        - /Planning1/Spliner1
+        - /Planning1/Predictive Spliner1
+        - /Planning1/Predictive Spliner1/MarkerArray1
+        - /Planning1/Predictive Spliner1/Marker2
         - /Planning1/Spliner1/AvoidanceMarkers1
-        - /MarkerArray2
-        - /MarkerArray4
-        - /MarkerArray5
-        - /MarkerArray6
-        - /Marker2
-        - /Marker3
-        - /MarkerArray7
-        - /MarkerArray8
-        - /MarkerArray8/Status1
-        - /Marker4
-        - /Marker5
-        - /Marker6
-        - /MarkerArray9
       Splitter Ratio: 0.646532416343689
     Tree Height: 1520
   - Class: rviz/Selection
@@ -157,23 +146,47 @@ Visualization Manager:
               Marker Topic: /opponent_traj_markerarray
               Name: OpponentTrajectory
               Namespaces:
-                {}
+                "": true
               Queue Size: 100
               Value: true
             - Class: rviz/Marker
-              Enabled: true
+              Enabled: false
               Marker Topic: /collision_predict/end
               Name: CollisionEnd
               Namespaces:
                 {}
               Queue Size: 100
-              Value: true
+              Value: false
             - Class: rviz/Marker
-              Enabled: true
+              Enabled: false
               Marker Topic: /collision_predict/beginn
               Name: CollisionBeginn
               Namespaces:
                 {}
+              Queue Size: 100
+              Value: false
+            - Class: rviz/MarkerArray
+              Enabled: true
+              Marker Topic: /opponent_prediction_markerarray
+              Name: MarkerArray
+              Namespaces:
+                "": true
+              Queue Size: 100
+              Value: true
+            - Class: rviz/Marker
+              Enabled: true
+              Marker Topic: /opponent_predict/beginn
+              Name: Marker
+              Namespaces:
+                "": true
+              Queue Size: 100
+              Value: true
+            - Class: rviz/Marker
+              Enabled: true
+              Marker Topic: /opponent_predict/end
+              Name: Marker
+              Namespaces:
+                "": true
               Queue Size: 100
               Value: true
           Enabled: true
@@ -185,7 +198,7 @@ Visualization Manager:
               Marker Topic: /planner/avoidance/markers
               Name: AvoidanceMarkers
               Namespaces:
-                "": true
+                {}
               Queue Size: 100
               Value: true
             - Class: rviz/Marker
@@ -196,7 +209,7 @@ Visualization Manager:
                 {}
               Queue Size: 100
               Value: true
-          Enabled: true
+          Enabled: false
           Name: Spliner
         - Class: rviz/Group
           Displays:
@@ -228,14 +241,6 @@ Visualization Manager:
           Value: false
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /sector_markers
-          Name: Sector Names
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
-        - Class: rviz/MarkerArray
-          Enabled: false
           Marker Topic: /global_waypoints/overtaking/markers
           Name: GlobalWaypointsOvertakingMarkers
           Namespaces:
@@ -246,14 +251,6 @@ Visualization Manager:
           Enabled: false
           Marker Topic: /trackbounds/markers
           Name: Track Bounds Markers
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
-        - Class: rviz/MarkerArray
-          Enabled: false
-          Marker Topic: /ot_sector_markers
-          Name: OT Sector Names
           Namespaces:
             {}
           Queue Size: 100
@@ -274,6 +271,22 @@ Visualization Manager:
             "": true
           Queue Size: 100
           Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /planner/avoidance/smart_markers
+          Name: Smart Waypoints
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /planner/recovery/markers
+          Name: Recovery Wapoints
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
       Enabled: true
       Name: Planning
     - Class: rviz/Group
@@ -388,9 +401,49 @@ Visualization Manager:
         - Class: rviz/Marker
           Enabled: true
           Marker Topic: /state_marker
-          Name: Sombrero
+          Name: State
           Namespaces:
             "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /state_machine/overtaking_target
+          Name: Overtaking Targets
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /state_machine/trailing_target
+          Name: Trailing Targets
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /state_wpnts_src_marker
+          Name: Loc Wpnts Src
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /planner/avoidance/smart_active_marker
+          Name: Smart Static Active
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /emergency_marker
+          Name: Battery Volt Low
+          Namespaces:
+            {}
           Queue Size: 100
           Value: true
       Enabled: true
@@ -407,155 +460,82 @@ Visualization Manager:
           Value: true
       Enabled: true
       Name: Control
-    - Class: rviz/MarkerArray
-      Enabled: true
-      Marker Topic: /detect/obstacles_markers_new
-      Name: MarkerArray
-      Namespaces:
-        "": true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/MarkerArray
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /ot_sector_markers
+          Name: OT Sector Names
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /sector_markers
+          Name: Sector Names
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /static_obs_sector_markers
+          Name: Static Obs Sector
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
       Enabled: false
-      Marker Topic: /planner/recovery/markers
-      Name: MarkerArray
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: false
-    - Class: rviz/MarkerArray
-      Enabled: true
-      Marker Topic: /static_obs_sector_markers
-      Name: MarkerArray
-      Namespaces:
-        "": true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/MarkerArray
+      Name: Sector
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /lap_marker
+          Name: Lap Time
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /lap_data_vis
+          Name: Lap Trajectory
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: true
       Enabled: false
-      Marker Topic: /trackbounds/markers
-      Name: MarkerArray
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: false
-    - Alpha: 1
-      Class: rviz/Axes
+      Name: Lap Data
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /planner/avoidance/temp_do_spline_markers
+          Name: do spline
+          Namespaces:
+            spline_samples: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /centerline_modification_viz
+          Name: smart debug
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /planner/avoidance/more_space_debug
+          Name: more space debug
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
       Enabled: true
-      Length: 1
-      Name: Axes
-      Radius: 0.10000000149011612
-      Reference Frame: <Fixed Frame>
-      Show Trail: false
-      Value: true
-    - Class: rviz/MarkerArray
-      Enabled: true
-      Marker Topic: /planner/avoidance/smart_markers
-      Name: MarkerArray
-      Namespaces:
-        "": true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/MarkerArray
-      Enabled: true
-      Marker Topic: /planner/avoidance/temp_do_spline_markers
-      Name: MarkerArray
-      Namespaces:
-        spline_samples: true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /state_machine/overtaking_target
-      Name: Marker
-      Namespaces:
-        "": true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /state_machine/trailing_target
-      Name: Marker
-      Namespaces:
-        "": true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /state_wpnts_src_marker
-      Name: Marker
-      Namespaces:
-        "": true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/MarkerArray
-      Enabled: true
-      Marker Topic: /centerline_modification_viz
-      Name: MarkerArray
-      Namespaces:
-        modified_bound_l: true
-        modified_bound_r: true
-        modified_centerline: true
-        obstacles: true
-        original_bound_l: true
-        original_bound_r: true
-        original_centerline: true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/MarkerArray
-      Enabled: true
-      Marker Topic: /planner/avoidance/smart_active_marker
-      Name: MarkerArray
-      Namespaces:
-        "": true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /emergency_marker
-      Name: Marker
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /lap_marker
-      Name: Marker
-      Namespaces:
-        lap_max_d: true
-        lap_max_d_text: true
-        lap_min_dist: true
-        lap_min_dist_text: true
-        lap_trajectory: true
-      Queue Size: 100
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /lap_data_vis
-      Name: Marker
-      Namespaces:
-        lap_info: true
-      Queue Size: 100
-      Value: true
-    - Alpha: 0.699999988079071
-      Class: rviz/Map
-      Color Scheme: map
-      Draw Behind: false
-      Enabled: true
-      Name: Map
-      Topic: /map_with_obs
-      Unreliable: false
-      Use Timestamp: false
-      Value: true
-    - Class: rviz/MarkerArray
-      Enabled: false
-      Marker Topic: /planner/avoidance/more_space_debug
-      Name: MarkerArray
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: false
+      Name: Debug
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -583,7 +563,7 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: -1.5600000619888306
+      Angle: -4.715003490447998
       Class: rviz/TopDownOrtho
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
@@ -593,10 +573,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 64.77375030517578
+      Scale: -55.44692611694336
       Target Frame: <Fixed Frame>
-      X: 6.182919025421143
-      Y: 2.0249297618865967
+      X: -0.9401983022689819
+      Y: 3.0090956687927246
     Saved: ~
 Window Geometry:
   Displays:

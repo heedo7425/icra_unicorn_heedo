@@ -55,6 +55,9 @@ class SQPAvoidanceNode:
         # OT params
         self.last_ot_side = ""
         self.ot_section_check = False
+
+        # Smart Static mode
+        self.smart_static_active = False
         
         # Solver params
         self.min_radius = 0.55  # wheelbase / np.tan(max_steering)
@@ -93,6 +96,7 @@ class SQPAvoidanceNode:
         rospy.Subscriber("/global_waypoints_updated", WpntArray, self.updated_wpnts_cb)
         rospy.Subscriber("/opponent_trajectory", OpponentTrajectory, self.opponent_trajectory_cb)
         rospy.Subscriber("/ot_section_check", Bool, self.ot_sections_check_cb)
+        rospy.Subscriber("/planner/avoidance/smart_static_active", Bool, self.smart_static_active_cb)
         # Publishers
         self.mrks_pub = rospy.Publisher("/planner/avoidance/markers_sqp", MarkerArray, queue_size=10)
         self.evasion_pub = rospy.Publisher("/planner/avoidance/otwpnts", OTWpntArray, queue_size=10)
@@ -159,6 +163,10 @@ class SQPAvoidanceNode:
     def ot_sections_check_cb(self, data: Bool):
         self.ot_section_check = data.data
 
+    def smart_static_active_cb(self, data: Bool):
+        """Callback for Smart Static mode activation"""
+        self.smart_static_active = data.data
+
     # Callback triggered by dynamic spline reconf
     def dyn_param_cb(self, params: Config):
         self.evasion_dist = rospy.get_param("dynamic_sqp_tuner_node/evasion_dist", 0.65)
@@ -206,8 +214,8 @@ class SQPAvoidanceNode:
                 if abs(obs.d_center) < self.obs_traj_tresh and (obs.s_start - self.cur_s) % self.scaled_max_s < self.lookahead:
                     considered_obs.append(obs)
             
-            # If there is an obstacle and we are in OT section
-            if len(considered_obs) > 0 and self.ot_section_check == True:             
+            # If there is an obstacle and we are in OT section and smart_static is NOT active
+            if len(considered_obs) > 0 and self.ot_section_check == True and self.smart_static_active == False:             
                 evasion_x, evasion_y, evasion_s, evasion_d, evasion_v = self.sqp_solver(considered_obs, frenet_state.pose.pose.position.x)
                 # Publish merge reagion if evasion track has been found
                 if len(evasion_s) > 0:

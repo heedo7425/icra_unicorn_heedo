@@ -108,10 +108,7 @@ class Opponent_state:
                          Opponent_state.track_length),x[1], x[2], x[3]])
 
     def target_velocity(self) :
-        # Wrap s-coordinate first, then convert to waypoint index
-        s_wrapped = self.dynamic_kf.x[0] % Opponent_state.track_length
-        idx_closest_waypoint = int(s_wrapped * 10)  # Convert meters to waypoint index (0.1m spacing)
-        idx_closest_waypoint = min(idx_closest_waypoint, len(Opponent_state.waypoints) - 1)  # Clamp to array bounds
+        idx_closest_waypoint =  int((self.dynamic_kf.x[0]*10)%Opponent_state.track_length)
         return Opponent_state.ratio_to_glob_path*Opponent_state.waypoints[idx_closest_waypoint].vx_mps
 
     # ---------------------------------------
@@ -130,10 +127,8 @@ class Opponent_state:
 
     def update(self, tracked_obstacle: ObstacleSD):
 
-        # Calculate velocity with wrapping consideration
-        ds_1 = normalize_s(tracked_obstacle.measurments_s[-1] - tracked_obstacle.measurments_s[-2], Opponent_state.track_length)
-        ds_2 = normalize_s(tracked_obstacle.measurments_s[-2] - tracked_obstacle.measurments_s[-3], Opponent_state.track_length)
-        vs = ((2/3 * ds_1 * self.rate) + (1/3 * ds_2 * self.rate))
+        vs = ((2/3 * (tracked_obstacle.measurments_s[-1] - tracked_obstacle.measurments_s[-2])*self.rate) 
+              + (1/3 * (tracked_obstacle.measurments_s[-2] - tracked_obstacle.measurments_s[-3])*self.rate))
 
         if not (vs > -1 and vs < 8):
             self.isInitialised = False
@@ -310,7 +305,6 @@ class StaticDynamic:
         # ===== HJ ADDED: Fixed path Frenet converter =====
         self.fixed_converter = None
         self.fixed_converter_initialized = False
-        self.fixed_track_length = None
         # ===== HJ ADDED END =====
 
         # --- Subscribers ---
@@ -438,9 +432,8 @@ class StaticDynamic:
         if not self.fixed_converter_initialized:
             fixed_waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
             self.fixed_converter = FrenetConverter(fixed_waypoints[:, 0], fixed_waypoints[:, 1])
-            self.fixed_track_length = data.wpnts[-1].s_m
             self.fixed_converter_initialized = True
-            rospy.loginfo('[Tracking] Fixed path Frenet converter initialized: %d waypoints, track_length: %.2f', len(data.wpnts), self.fixed_track_length)
+            rospy.loginfo('[Tracking] Fixed path Frenet converter initialized: %d waypoints', len(data.wpnts))
 
     def convert_frenet_velocity(self, s_gb, d_gb, vs_gb, vd_gb, x_m, y_m):
         """
@@ -882,8 +875,8 @@ class StaticDynamic:
                     obs_msg.s_center = obs.measurments_s[-1]%self.track_length
                     obs_msg.d_center = obs.measurments_d[-1]
 
-            obs_msg.s_start = (obs_msg.s_center-obs_msg.size/2)%self.track_length
-            obs_msg.s_end   = (obs_msg.s_center+obs_msg.size/2)%self.track_length
+            obs_msg.s_start = obs_msg.s_center-obs_msg.size/2%self.track_length
+            obs_msg.s_end   = obs_msg.s_center+obs_msg.size/2%self.track_length
             obs_msg.d_right = obs_msg.d_center-obs_msg.size/2
             obs_msg.d_left  = obs_msg.d_center+obs_msg.size/2
 
@@ -895,8 +888,8 @@ class StaticDynamic:
                 s_fixed, d_fixed = self.fixed_converter.get_frenet(np.array([obs_msg.x_m]), np.array([obs_msg.y_m]))
                 obs_msg.s_center_fixed = float(s_fixed[0])
                 obs_msg.d_center_fixed = float(d_fixed[0])
-                obs_msg.s_start_fixed = (obs_msg.s_center_fixed - obs_msg.size / 2) % self.fixed_track_length
-                obs_msg.s_end_fixed = (obs_msg.s_center_fixed + obs_msg.size / 2) % self.fixed_track_length
+                obs_msg.s_start_fixed = obs_msg.s_center_fixed - obs_msg.size / 2
+                obs_msg.s_end_fixed = obs_msg.s_center_fixed + obs_msg.size / 2
                 obs_msg.d_right_fixed = obs_msg.d_center_fixed - obs_msg.size / 2
                 obs_msg.d_left_fixed = obs_msg.d_center_fixed + obs_msg.size / 2
 

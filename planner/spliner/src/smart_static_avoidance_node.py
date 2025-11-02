@@ -191,6 +191,7 @@ class ObstacleSpliner:
 
         # Detection zone monitoring: track if vehicle has passed through zone without obstacles
         self.sector_monitoring = {}  # {sector_id: {'in_zone': bool, 'had_obstacles': bool, 'entered_at_s': float}}
+        self.consecutive_cleared_sectors = 0  # Track how many consecutive sectors were cleared without obstacles
 
         # Sector-specific interference tracking: remember which sectors had interfering obstacles during path generation
         self.sectors_with_interfering_obs = set()  # Set of sector_ids that had interfering obstacles when fixed path was generated
@@ -1226,6 +1227,9 @@ class ObstacleSpliner:
                         # Mark if obstacles detected
                         if interfering_obs:
                             monitor['had_obstacles'] = True
+                            # ===== HJ ADDED: Reset counter when obstacles detected =====
+                            self.consecutive_cleared_sectors = 0
+                            # ===== HJ ADDED END =====
 
                         # Warn only when flag changes (or first time)
                         if monitor['had_obstacles'] != prev_had_obstacles:
@@ -1244,11 +1248,21 @@ class ObstacleSpliner:
                             monitor['in_zone'] = False
 
                             if not monitor['had_obstacles']:
-                                # Passed through entire zone without obstacles → revert to GB
-                                self.use_fixed_path = False
+                                # ===== HJ MODIFIED: Require 2+ consecutive cleared sectors =====
+                                # Passed through zone without obstacles → increment counter
+                                self.consecutive_cleared_sectors += 1
                                 rospy.logwarn(
                                     f"[{self.name}] POST-FIX: Vehicle EXITED sector {sector_id} zone "
-                                    f"(s={self.cur_s:.2f}m) WITHOUT obstacles detected during passage → Reverting to GB")
+                                    f"(s={self.cur_s:.2f}m) WITHOUT obstacles detected during passage "
+                                    f"→ Consecutive cleared sectors: {self.consecutive_cleared_sectors}")
+
+                                # Only revert to GB after 2+ consecutive cleared sectors
+                                if self.consecutive_cleared_sectors >= 2:
+                                    self.use_fixed_path = False
+                                    rospy.logwarn(
+                                        f"[{self.name}] POST-FIX: {self.consecutive_cleared_sectors} consecutive sectors cleared "
+                                        f"→ Reverting to GB")
+                                # ===== HJ MODIFIED END =====
                             # else:
                             #     rospy.loginfo(
                             #         f"[{self.name}] Vehicle exited sector {sector_id} zone, "

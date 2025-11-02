@@ -40,6 +40,12 @@ MAX_VEL_RIGHT_BEFORE_STATIC_OT = 5.0
 DEBUG_STATE_TRANSITION = False  # Set to True to see state transition warnings
 # ===== HJ ADDED END =====
 
+# ===== HJ ADDED: Global flag for forcing trailing when no prediction data available =====
+# Set to True to force trailing behavior when dynamic obstacle is detected but prediction is not available yet
+# Set to False to use original behavior (may attempt overtaking before prediction data is ready)
+FORCE_TRAILING_FOR_NEW_OBS = True
+# ===== HJ ADDED END =====
+
 def debug_log_on_change(tag, **kwargs):
     """Log only when any of the kwargs values change
 
@@ -437,6 +443,22 @@ class StateMachine:
 
     def avoidance_cb(self, data: OTWpntArray):
         """splini waypoints"""
+        # ===== HJ ADDED: Limit trajectory length to prevent overly long trajectories =====
+        # Assuming 0.1m spacing, 240 waypoints = ~24m max trajectory length
+        MAX_AVOIDANCE_WPNTS = 240
+        if len(data.wpnts) > MAX_AVOIDANCE_WPNTS:
+            rospy.logwarn_throttle(2.0, f"[State Machine] Avoidance trajectory too long ({len(data.wpnts)} wpnts), truncating to {MAX_AVOIDANCE_WPNTS}")
+            # Create truncated copy
+            truncated_data = OTWpntArray()
+            truncated_data.header = data.header
+            truncated_data.last_switch_time = data.last_switch_time
+            truncated_data.side_switch = data.side_switch
+            truncated_data.ot_side = data.ot_side
+            truncated_data.ot_line = data.ot_line
+            truncated_data.wpnts = data.wpnts[:MAX_AVOIDANCE_WPNTS]
+            data = truncated_data
+        # ===== HJ ADDED END =====
+
         if len(data.wpnts) !=0:
             self.update_velocity(data, self.cur_avoidance_wpnts.vel_planner_safety_factor)
         self.avoidance_wpnts = data
@@ -1093,8 +1115,7 @@ class StateMachine:
                                 min_gap = gap
                             # break
                 else:
-                    # gap = (obs.s_center - self.cur_s) % self.max_s
-                    # rospy.logwarn(len(obstacle_predictions))
+
                     if len(obstacle_predictions) != 0 and self.obstacles_prediction_id == obs.id:
 
                         start_idx = 0
@@ -1116,52 +1137,47 @@ class StateMachine:
                             free_dist = min_dist - obs.size/2 - self.gb_ego_width_m/2
                             scaling_factor = np.clip(gap / free_scaling_reference_distance_m, 0.0, 1.0)
                             if is_ot_wpnts:
-                                rospy.logwarn(f"free_dist: {free_dist}, lateral_width_m: {lateral_width_m}, scaling_factor: {scaling_factor}, obs.size: {obs.size}, wpnt_d:{wpnt_d}, obs_pred.pred_d: {obs_pred.pred_d} " )
+                                rospy.logdebug(f"free_dist: {free_dist}, lateral_width_m: {lateral_width_m}, scaling_factor: {scaling_factor}, obs.size: {obs.size}, wpnt_d:{wpnt_d}, obs_pred.pred_d: {obs_pred.pred_d} " )
                             if free_dist < lateral_width_m * scaling_factor:
                                 is_free = False
                                 if closest_obs is None or min_gap > gap:
                                     closest_obs = obs
                                     min_gap = gap
 
-                        # if is_gb_track_wpnts:
-                        #     for i in range(int(len(obstacle_predictions)/2)):
-                        #         d_gap = abs(obstacle_predictions[i].pred_d)
-                        #         if d_gap < 0.4 and closest_obs is None:
-                        #             is_free = False
-                        #             closest_obs = obs
-                        # else:
-                        #     for obs_pred in obstacle_predictions[int(len(obstacle_predictions)*0.5):]:
-                        #         avoid_wpnt_idx = np.argmin(abs(wpnts_data.array[:,2] - obs_pred.pred_s))
-                        #         ot_d = wpnts_data.list[avoid_wpnt_idx].d_m
-                        #         min_dist = abs(ot_d - obs_pred.pred_d)
-                        #         free_dist = min_dist - obs.size/2 - self.gb_ego_width_m/2
-                        #         scaling_factor = np.clip(gap / free_scaling_reference_distance_m, 0.0, 1.0)
-                        #         if free_dist < lateral_width_m * scaling_factor:
-                        #             is_free = False
-                        #             if closest_obs is None or min_gap > gap:
-                        #                 closest_obs = obs
-                        #                 min_gap = gap
                     else:
-                        if not wpnts_data.is_closed and gap > max_gap:
+                        # ===== HJ ADDED: Force trailing if FORCE_TRAILING_FOR_NEW_OBS is enabled =====
+                        if FORCE_TRAILING_FOR_NEW_OBS:
+                            # If dynamic obstacle exists but no prediction is available yet,
+                            # conservatively set is_free=False to force trailing behavior.
+                            # This prevents aggressive overtaking attempts before prediction system has sufficient data.
+                            rospy.loginfo_throttle(1.0, "[State Machine] Dynamic obstacle detected but no prediction available - forcing trailing")
                             is_free = False
                             if closest_obs is None or min_gap > gap:
                                 closest_obs = obs
                                 min_gap = gap
-                        elif gap < max_horizon:
-                            ot_d = 0
-                            if not is_gb_track_wpnts:
-                                avoid_wpnt_idx = np.argmin(abs(wpnts_data.array[:,2] - obs.s_center))
-                                ot_d = wpnts_data.list[avoid_wpnt_idx].d_m
-                            min_dist = abs(ot_d - obs.d_center)
-                            
-                            free_dist = min_dist - obs.size/2 - self.gb_ego_width_m/2
-                            
-                            scaling_factor = np.clip(gap / free_scaling_reference_distance_m, 0.0, 1.0)
-                            if free_dist < lateral_width_m * scaling_factor:
+                        # ===== ORIGINAL BEHAVIOR (when FORCE_TRAILING_FOR_NEW_OBS is False) =====
+                        else:
+                            if not wpnts_data.is_closed and gap > max_gap:
                                 is_free = False
                                 if closest_obs is None or min_gap > gap:
                                     closest_obs = obs
                                     min_gap = gap
+                            elif gap < max_horizon:
+                                ot_d = 0
+                                if not is_gb_track_wpnts:
+                                    avoid_wpnt_idx = np.argmin(abs(wpnts_data.array[:,2] - obs.s_center))
+                                    ot_d = wpnts_data.list[avoid_wpnt_idx].d_m
+                                min_dist = abs(ot_d - obs.d_center)
+
+                                free_dist = min_dist - obs.size/2 - self.gb_ego_width_m/2
+
+                                scaling_factor = np.clip(gap / free_scaling_reference_distance_m, 0.0, 1.0)
+                                if free_dist < lateral_width_m * scaling_factor:
+                                    is_free = False
+                                    if closest_obs is None or min_gap > gap:
+                                        closest_obs = obs
+                                        min_gap = gap
+                        # ===== HJ ADDED END =====
         else:
             is_free = True
         
@@ -1350,7 +1366,7 @@ class StateMachine:
             # if self._check_ot_sector():
             if True:
                 if self._check_availability(self.avoidance_wpnts, self.cur_avoidance_wpnts):
-                    rospy.logwarn("AVAILABLE")
+                    rospy.logdebug("AVAILABLE")
                     if self._check_free_frenet(self.cur_avoidance_wpnts):
                         # rospy.logwarn("OFREE")
                         return True
@@ -1507,17 +1523,52 @@ class StateMachine:
                 return [self.cur_gb_wpnts.list[(s + i) % self.num_glb_wpnts] for i in range(self.n_loc_wpnts)]
         # ===== HJ ADDED END =====
 
-        diff = np.linalg.norm(wpnts.array[:, 0:2] - self.current_position[:2], axis=1)
-        min_idx = np.argmin(diff)
-        avoidance_wpnts = wpnts.list[min_idx:min_idx + self.n_loc_wpnts]
+        # ===== HJ FIX: Filter by s-coordinate to only use waypoints AHEAD of current position =====
+        # Get s-coordinates from wpnts array (3rd column is s_m)
+        s_coords = wpnts.array[:, 2]
 
+        # Determine track length and current s for wrap-around calculation
+        if self.smart_static_active and self.cur_smart_static_avoidance_wpnts.is_init:
+            track_length = self.cur_smart_static_avoidance_wpnts.list[-1].s_m
+            cur_s = self.smart_helper.cur_s
+        else:
+            track_length = self.max_s
+            cur_s = self.cur_s
+
+        # Calculate forward distance with wrap-around: (s_wpnt - s_cur) % track_length
+        forward_dist = (s_coords - cur_s) % track_length
+
+        # Only consider waypoints ahead (forward_dist > 0 and < track_length/2 to handle wrap correctly)
+        ahead_mask = (forward_dist > 0) & (forward_dist < track_length / 2)
+
+        # If all waypoints are behind current position, fallback to GB/SMART from current position
+        if not np.any(ahead_mask):
+            rospy.logwarn_throttle(1.0, "[state_machine] All avoidance waypoints behind current position, using fallback")
+            if self.smart_static_active and self.cur_smart_static_avoidance_wpnts.is_init:
+                s_idx = int(cur_s / self.smart_wpnt_dist + 0.5)
+                num_smart = len(self.cur_smart_static_avoidance_wpnts.list)
+                return [self.cur_smart_static_avoidance_wpnts.list[(s_idx + i) % num_smart] for i in range(self.n_loc_wpnts)]
+            else:
+                s_idx = int(cur_s / self.waypoints_dist + 0.5)
+                return [self.cur_gb_wpnts.list[(s_idx + i) % self.num_glb_wpnts] for i in range(self.n_loc_wpnts)]
+
+        # Find closest waypoint among those ahead (using Cartesian distance)
+        ahead_indices = np.where(ahead_mask)[0]
+        ahead_dists = np.linalg.norm(wpnts.array[ahead_indices, 0:2] - self.current_position[:2], axis=1)
+        closest_ahead_idx = ahead_indices[np.argmin(ahead_dists)]
+
+        # Extract waypoints starting from closest ahead
+        avoidance_wpnts = wpnts.list[closest_ahead_idx:closest_ahead_idx + self.n_loc_wpnts]
+
+        # If not enough waypoints (< 80), fill with GB/SMART using helper function
         if len(avoidance_wpnts) < self.n_loc_wpnts:
             # Use helper function to get extra waypoints (Smart or GB based on flag)
             last_s_m = wpnts.list[-1].s_m
             num_needed = self.n_loc_wpnts - len(avoidance_wpnts)
             extra_wpnts = self.get_extra_waypoints(last_s_m, num_needed)
             avoidance_wpnts.extend(extra_wpnts)
-        # rospy.logwarn(f"WORK WELL {self.last_valid_avoidance_wpnts.wpnts[-1].s_m}")
+        # ===== HJ FIX END =====
+
         return avoidance_wpnts
         
     def get_recovery_wpts(self) -> WpntArray:
