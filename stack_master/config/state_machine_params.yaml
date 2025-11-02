@@ -3,7 +3,7 @@ emergency_break_horizon: 0.5
 force_GBTRACK: false
 ftg_active: true
 ftg_speed_mps: 0.5
-ftg_timer_sec: 0.7
+ftg_timer_sec: 1.0
 gb_ego_width_m: 0.4
 gb_horizon_m: 15.0
 lateral_width_gb_m: 0.3

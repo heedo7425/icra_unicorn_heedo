@@ -444,8 +444,8 @@ class StateMachine:
     def avoidance_cb(self, data: OTWpntArray):
         """splini waypoints"""
         # ===== HJ ADDED: Limit trajectory length to prevent overly long trajectories =====
-        # Assuming 0.1m spacing, 240 waypoints = ~24m max trajectory length
-        MAX_AVOIDANCE_WPNTS = 240
+        # Assuming 0.1m spacing, 200 waypoints = ~20m max trajectory length
+        MAX_AVOIDANCE_WPNTS = 200
         if len(data.wpnts) > MAX_AVOIDANCE_WPNTS:
             rospy.logwarn_throttle(2.0, f"[State Machine] Avoidance trajectory too long ({len(data.wpnts)} wpnts), truncating to {MAX_AVOIDANCE_WPNTS}")
             # Create truncated copy
@@ -457,6 +457,12 @@ class StateMachine:
             truncated_data.ot_line = data.ot_line
             truncated_data.wpnts = data.wpnts[:MAX_AVOIDANCE_WPNTS]
             data = truncated_data
+        # ===== HJ ADDED END =====
+
+        # ===== HJ ADDED: Set timestamp in message header using rospy.Time.now() =====
+        # Publisher node might not set data.header.stamp reliably, so we set it here
+        # This timestamp will be copied to cur_avoidance_wpnts.stamp later via initialize_traj()
+        data.header.stamp = rospy.Time.now()
         # ===== HJ ADDED END =====
 
         if len(data.wpnts) !=0:
@@ -1067,7 +1073,9 @@ class StateMachine:
         # ego_prediction = self.ego_prediction
         safety_factor_sec = 0.5
 
-        if wpnts_data.is_init:
+        # ===== HJ ADDED: Safety check for None/empty array after pop_passed_avoidance_wpnts() =====
+        if wpnts_data.is_init and wpnts_data.array is not None and len(wpnts_data.array) > 0:
+        # ===== HJ ADDED END =====
             max_gap = (wpnts_data.array[-1,2] - self.cur_s) % self.max_s
             for obs in obstacles:
                 obs_s = obs.s_center
@@ -1503,7 +1511,12 @@ class StateMachine:
         if self.static_overtaking_mode:
             wpnts = self.cur_static_avoidance_wpnts
         else:
-            wpnts = self.cur_avoidance_wpnts
+            # ===== HJ ADDED: Disable dynamic overtaking when in SMART mode =====
+            if self.smart_static_active:
+                wpnts = None  # Force fallback to GB/SMART path, disable dynamic overtaking
+            else:
+                wpnts = self.cur_avoidance_wpnts
+            # ===== HJ ADDED END =====
 
         # ===== HJ ADDED: Safety check - fallback if spliner fails =====
         if wpnts is None or not hasattr(wpnts, 'array') or wpnts.array is None or len(wpnts.array) == 0:
@@ -1523,10 +1536,7 @@ class StateMachine:
                 return [self.cur_gb_wpnts.list[(s + i) % self.num_glb_wpnts] for i in range(self.n_loc_wpnts)]
         # ===== HJ ADDED END =====
 
-        # ===== HJ FIX: Filter by s-coordinate to only use waypoints AHEAD of current position =====
-        # Get s-coordinates from wpnts array (3rd column is s_m)
-        s_coords = wpnts.array[:, 2]
-
+        # ===== HJ FIX: Find closest waypoint by s-distance and use from there onwards =====
         # Determine track length and current s for wrap-around calculation
         if self.smart_static_active and self.cur_smart_static_avoidance_wpnts.is_init:
             track_length = self.cur_smart_static_avoidance_wpnts.list[-1].s_m
@@ -1535,35 +1545,18 @@ class StateMachine:
             track_length = self.max_s
             cur_s = self.cur_s
 
-        # Calculate forward distance with wrap-around: (s_wpnt - s_cur) % track_length
-        forward_dist = (s_coords - cur_s) % track_length
+        # Calculate forward distance for each waypoint: (wpnt.s_m - cur_s) % track_length
+        forward_dists = [(w.s_m - cur_s) % track_length for w in wpnts.list]
 
-        # Only consider waypoints ahead (forward_dist > 0 and < track_length/2 to handle wrap correctly)
-        ahead_mask = (forward_dist > 0) & (forward_dist < track_length / 2)
+        # Find index with minimum forward distance (closest ahead in s-coordinate)
+        closest_idx = int(np.argmin(forward_dists))
 
-        # If all waypoints are behind current position, fallback to GB/SMART from current position
-        if not np.any(ahead_mask):
-            rospy.logwarn_throttle(1.0, "[state_machine] All avoidance waypoints behind current position, using fallback")
-            if self.smart_static_active and self.cur_smart_static_avoidance_wpnts.is_init:
-                s_idx = int(cur_s / self.smart_wpnt_dist + 0.5)
-                num_smart = len(self.cur_smart_static_avoidance_wpnts.list)
-                return [self.cur_smart_static_avoidance_wpnts.list[(s_idx + i) % num_smart] for i in range(self.n_loc_wpnts)]
-            else:
-                s_idx = int(cur_s / self.waypoints_dist + 0.5)
-                return [self.cur_gb_wpnts.list[(s_idx + i) % self.num_glb_wpnts] for i in range(self.n_loc_wpnts)]
+        # Extract waypoints from closest_idx onwards (up to n_loc_wpnts, or until end of array)
+        avoidance_wpnts = wpnts.list[closest_idx:closest_idx + self.n_loc_wpnts]
 
-        # Find closest waypoint among those ahead (using Cartesian distance)
-        ahead_indices = np.where(ahead_mask)[0]
-        ahead_dists = np.linalg.norm(wpnts.array[ahead_indices, 0:2] - self.current_position[:2], axis=1)
-        closest_ahead_idx = ahead_indices[np.argmin(ahead_dists)]
-
-        # Extract waypoints starting from closest ahead
-        avoidance_wpnts = wpnts.list[closest_ahead_idx:closest_ahead_idx + self.n_loc_wpnts]
-
-        # If not enough waypoints (< 80), fill with GB/SMART using helper function
+        # If not enough waypoints, fill remainder with GB/SMART from last waypoint's s position
         if len(avoidance_wpnts) < self.n_loc_wpnts:
-            # Use helper function to get extra waypoints (Smart or GB based on flag)
-            last_s_m = wpnts.list[-1].s_m
+            last_s_m = avoidance_wpnts[-1].s_m if len(avoidance_wpnts) > 0 else cur_s
             num_needed = self.n_loc_wpnts - len(avoidance_wpnts)
             extra_wpnts = self.get_extra_waypoints(last_s_m, num_needed)
             avoidance_wpnts.extend(extra_wpnts)
@@ -1631,6 +1624,61 @@ class StateMachine:
 
         return extra
     # ===== HJ ADDED END =====
+
+    # # ===== HJ ADDED: Cleanup function to remove passed waypoints =====
+    # def pop_passed_avoidance_wpnts(self, max_age_sec=5.0):
+    #     """Remove waypoints that vehicle has already passed from cur_avoidance_wpnts.
+
+    #     This prevents old waypoints from being reused when they are no longer valid.
+    #     For example, if the vehicle was at s=50m and received overtaking trajectory s=50~70m,
+    #     then moves to s=60m, the waypoints s=50~59m should be deleted.
+
+    #     Args:
+    #         max_age_sec: Maximum age in seconds before clearing all waypoints
+    #     """
+    #     if not self.cur_avoidance_wpnts.list or len(self.cur_avoidance_wpnts.list) == 0:
+    #         return
+
+    #     # Safety check: ensure cur_s and max_s are initialized
+    #     if self.cur_s is None or self.max_s is None or self.max_s <= 0:
+    #         return
+
+    #     # ===== HJ ADDED: Time-based fallback safety check =====
+    #     if self.cur_avoidance_wpnts.stamp is not None:
+    #         age_sec = (rospy.Time.now() - self.cur_avoidance_wpnts.stamp).to_sec()
+    #         if age_sec > max_age_sec:
+    #             rospy.logwarn(f"[{self.name}] Avoidance waypoints too old ({age_sec:.2f}s > {max_age_sec}s), clearing storage")
+    #             self.cur_avoidance_wpnts.list = []
+    #             self.cur_avoidance_wpnts.array = None
+    #             return
+    #     # ===== HJ ADDED END =====
+
+    #     cur_s = self.cur_s
+    #     track_length = self.max_s
+
+    #     # Find first waypoint ahead of vehicle
+    #     first_ahead_idx = None
+    #     for i, wpnt in enumerate(self.cur_avoidance_wpnts.list):
+    #         forward_dist = (wpnt.s_m - cur_s) % track_length
+    #         # Waypoint is ahead if forward_dist <= track_length/2 (includes forward_dist=0 edge case)
+    #         # Use <= instead of < to handle exact position match
+    #         if forward_dist <= track_length / 2:
+    #             first_ahead_idx = i
+    #             break
+
+    #     # Delete waypoints behind vehicle
+    #     if first_ahead_idx is not None and first_ahead_idx > 0:
+    #         rospy.loginfo(f"[{self.name}] Removing {first_ahead_idx} passed avoidance waypoints from storage")
+    #         self.cur_avoidance_wpnts.list = self.cur_avoidance_wpnts.list[first_ahead_idx:]
+    #         # Also update array if it exists
+    #         if self.cur_avoidance_wpnts.array is not None:
+    #             self.cur_avoidance_wpnts.array = self.cur_avoidance_wpnts.array[first_ahead_idx:]
+    #     elif first_ahead_idx is None:
+    #         # All waypoints are behind vehicle, clear everything
+    #         rospy.logwarn(f"[{self.name}] All avoidance waypoints behind vehicle, clearing storage")
+    #         self.cur_avoidance_wpnts.list = []
+    #         self.cur_avoidance_wpnts.array = None
+    # # ===== HJ ADDED END =====
 
     # ===== HJ ADDED: Get smart static avoidance waypoints =====
     def get_smart_static_wpts(self) -> WpntArray:
@@ -1929,10 +1977,21 @@ class StateMachine:
                     closest_gap = smart_helper.cur_avoidance_wpnts.closest_gap
                     closest_target = smart_helper.cur_avoidance_wpnts.closest_target
                     local_wpnts_src = StateType.OVERTAKE
-                if smart_helper.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < smart_helper.cur_static_avoidance_wpnts.closest_gap:
-                    closest_gap = smart_helper.cur_static_avoidance_wpnts.closest_gap
-                    closest_target = smart_helper.cur_static_avoidance_wpnts.closest_target
-                    local_wpnts_src = StateType.OVERTAKE
+
+                # # HJ MODIFIED: Add distance check for static avoidance
+
+                # static_avoidance_closest_dist = float('inf')
+                # if len(smart_helper.cur_static_avoidance_wpnts.list) > 0:
+                #     forward_dists = [(w.s_m - smart_helper.cur_s) % smart_helper.max_s for w in smart_helper.cur_static_avoidance_wpnts.list]
+                #     static_avoidance_closest_dist = min(forward_dists)
+
+                # if smart_helper.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < smart_helper.cur_static_avoidance_wpnts.closest_gap and static_avoidance_closest_dist < 1.0:
+                #     closest_gap = smart_helper.cur_static_avoidance_wpnts.closest_gap
+                #     closest_target = smart_helper.cur_static_avoidance_wpnts.closest_target
+                #     local_wpnts_src = StateType.OVERTAKE
+
+                # # HJ MODIFIED End #####################################
+
                 if smart_helper.cur_start_wpnts.closest_target is not None and closest_gap < smart_helper.cur_start_wpnts.closest_gap:
                     closest_gap = smart_helper.cur_start_wpnts.closest_gap
                     closest_target = smart_helper.cur_start_wpnts.closest_target
@@ -1946,10 +2005,21 @@ class StateMachine:
                     closest_gap = smart_helper.cur_avoidance_wpnts.closest_gap
                     closest_target = smart_helper.cur_avoidance_wpnts.closest_target
                     local_wpnts_src = StateType.OVERTAKE
-                if smart_helper.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < smart_helper.cur_static_avoidance_wpnts.closest_gap:
-                    closest_gap = smart_helper.cur_static_avoidance_wpnts.closest_gap
-                    closest_target = smart_helper.cur_static_avoidance_wpnts.closest_target
-                    local_wpnts_src = StateType.OVERTAKE
+
+                # # HJ MODIFIED: Add distance check for static avoidance
+
+                # static_avoidance_closest_dist = float('inf')
+                # if len(smart_helper.cur_static_avoidance_wpnts.list) > 0:
+                #     forward_dists = [(w.s_m - smart_helper.cur_s) % smart_helper.max_s for w in smart_helper.cur_static_avoidance_wpnts.list]
+                #     static_avoidance_closest_dist = min(forward_dists)
+
+                # if smart_helper.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < smart_helper.cur_static_avoidance_wpnts.closest_gap and static_avoidance_closest_dist < 1.0:
+                #     closest_gap = smart_helper.cur_static_avoidance_wpnts.closest_gap
+                #     closest_target = smart_helper.cur_static_avoidance_wpnts.closest_target
+                #     local_wpnts_src = StateType.OVERTAKE
+
+                # # HJ MODIFIED End #####################################
+
                 if smart_helper.cur_start_wpnts.closest_target is not None and closest_gap < smart_helper.cur_start_wpnts.closest_gap:
                     closest_gap = smart_helper.cur_start_wpnts.closest_gap
                     closest_target = smart_helper.cur_start_wpnts.closest_target
@@ -1961,14 +2031,36 @@ class StateMachine:
             if local_wpnts_src == StateType.GB_TRACK and self.cur_gb_wpnts.closest_target is not None:
                 closest_target = self.cur_gb_wpnts.closest_target
                 closest_gap = self.cur_gb_wpnts.closest_gap
-                if self.cur_avoidance_wpnts.closest_target is not None and closest_gap <= self.cur_avoidance_wpnts.closest_gap:
-                    closest_gap = self.cur_avoidance_wpnts.closest_gap
-                    closest_target = self.cur_avoidance_wpnts.closest_target
-                    local_wpnts_src = StateType.OVERTAKE
-                if self.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < self.cur_static_avoidance_wpnts.closest_gap:
-                    closest_gap = self.cur_static_avoidance_wpnts.closest_gap
-                    closest_target = self.cur_static_avoidance_wpnts.closest_target
-                    local_wpnts_src = StateType.OVERTAKE
+
+
+                # # ===== HJ MODIFIED: Add distance check to prevent using far trajectories =====
+                # # Check distance to closest waypoint in overtaking trajectory (same logic as get_splini_wpts)
+                # avoidance_closest_dist = float('inf')
+                # if len(self.cur_avoidance_wpnts.list) > 0:
+                #     forward_dists = [(w.s_m - self.cur_s) % self.max_s for w in self.cur_avoidance_wpnts.list]
+                #     avoidance_closest_dist = min(forward_dists)
+
+                # # Only use overtaking trajectory if closest waypoint is < 1m ahead
+                # if self.cur_avoidance_wpnts.closest_target is not None and closest_gap <= self.cur_avoidance_wpnts.closest_gap and avoidance_closest_dist < 1.0:
+                # # ===== HJ MODIFIED END =====
+                #     closest_gap = self.cur_avoidance_wpnts.closest_gap
+                #     closest_target = self.cur_avoidance_wpnts.closest_target
+                #     local_wpnts_src = StateType.OVERTAKE
+
+                # # HJ MODIFIED: Add distance check for static avoidance
+
+                # static_avoidance_closest_dist = float('inf')
+                # if len(self.cur_static_avoidance_wpnts.list) > 0:
+                #     forward_dists = [(w.s_m - self.cur_s) % self.max_s for w in self.cur_static_avoidance_wpnts.list]
+                #     static_avoidance_closest_dist = min(forward_dists)
+
+                # if self.cur_static_avoidance_wpnts.closest_target is not None and closest_gap < self.cur_static_avoidance_wpnts.closest_gap and static_avoidance_closest_dist < 1.0:
+                #     closest_gap = self.cur_static_avoidance_wpnts.closest_gap
+                #     closest_target = self.cur_static_avoidance_wpnts.closest_target
+                #     local_wpnts_src = StateType.OVERTAKE
+
+                # # HJ MODIFIED End #####################################
+
                 if self.cur_start_wpnts.closest_target is not None and closest_gap < self.cur_start_wpnts.closest_gap:
                     closest_gap = self.cur_start_wpnts.closest_gap
                     closest_target = self.cur_start_wpnts.closest_target
@@ -2027,7 +2119,11 @@ class StateMachine:
         # do state transition (unless we want to force it into GB_TRACK via dynamic reconfigure)
         if self.measuring:
             start = time.perf_counter()
-            
+
+        # ===== HJ ADDED: Cleanup old avoidance waypoints that vehicle has passed =====
+        # self.pop_passed_avoidance_wpnts()
+        # ===== HJ ADDED END =====
+
         self.update_waypoints()
         # if len(self.cur_obstacles_in_interest) == 0:
         self.gb_closest_target = None

@@ -363,9 +363,17 @@ class SQPAvoidanceNode:
             resp = resp.transpose()
             smoothed_xy_points = self.ccma.filter(resp)
             smoothed_sd_points = self.converter.get_frenet(smoothed_xy_points[:, 0], smoothed_xy_points[:, 1])
-            evasion_s, evasion_d = zip(*sorted(zip(smoothed_sd_points[0], smoothed_sd_points[1])))
+
+            # HJ FIX: Don't sort - keep the original trajectory order
+            # Sorting was causing s,d to be mismatched with x,y,psi,kappa,v
+
+            evasion_s = smoothed_sd_points[0]
+            evasion_d = smoothed_sd_points[1]
             evasion_x = smoothed_xy_points[:, 0]
             evasion_y = smoothed_xy_points[:, 1]
+            
+            # HJ FIX: Don't sort - keep the original trajectory order
+
             evasion_coords = np.column_stack((evasion_x, evasion_y))
             evasion_psi, evasion_kappa = tph.calc_head_curv_num.calc_head_curv_num(
                 path=evasion_coords,
