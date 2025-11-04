@@ -30,7 +30,22 @@ relay_topics:
   - input: "/planner/start_wpnts/markers"
     type: "visualization_msgs/MarkerArray"
 
+  - input: "/state_wpnts_src_marker"
+    type: "visualization_msgs/Marker"
+
   - input: "/planner/recovery/markers"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/static_obs_sector_markers"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/centerline_modification_viz"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/planner/avoidance/smart_markers"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/planner/avoidance/smart_active_marker"
     type: "visualization_msgs/MarkerArray"
 
   - input: "/detect/breakpoints_markers"
