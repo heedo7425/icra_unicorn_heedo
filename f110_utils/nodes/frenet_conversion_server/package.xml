@@ -53,6 +53,7 @@
   <depend>roscpp</depend>
   <depend>f110_msgs</depend>
   <depend>frenet_conversion</depend>
+  <depend>cv_bridge</depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>

@@ -11,6 +11,7 @@ find_package(catkin REQUIRED
     roscpp
     frenet_conversion
     f110_msgs
+    cv_bridge
 )
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -115,6 +116,7 @@ catkin_package(
 include_directories(
     include
     ${catkin_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
 )
 
 ## Declare a C++ library
@@ -145,6 +147,7 @@ add_executable(${PROJECT_NAME}_node src/frenet_conversion_server_node.cc)
 ## Specify libraries to link a library or executable target against
 target_link_libraries(${PROJECT_NAME}_node
   ${catkin_LIBRARIES}
+  ${OpenCV_LIBS}
 )
 
 #############
