@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!--
+    Dynamic Segmentation for localization_lab_converted.bag
+    Sensor: Livox MID-360 (frame: livox_frame)
+    Pointcloud topic: /livox/lidar (~10Hz)
+    Sensor height: ~0.15m (roboracer)
+
+    Usage:
+      roslaunch tsdf_detection_ros localization_lab.launch
+      roslaunch tsdf_detection_ros localization_lab.launch play_bag:=true
+      roslaunch tsdf_detection_ros localization_lab.launch play_bag:=true bag_rate:=0.5
+  -->
+
+  <!-- Bag replay args -->
+  <arg name="bag_file"  default="/media/chg/T7/roboracer/localization_lab_converted.bag"/>
+  <arg name="play_bag"  default="false"/>
+  <arg name="bag_rate"  default="1.0"/>
+  <arg name="bag_start" default="0.0"/>
+
+  <!-- Visualization -->
+  <arg name="rviz"        default="true"/>
+  <arg name="rviz_config" default="$(find tsdf_detection_ros)/cfg/localization_lab.rviz"/>
+
+  <!-- Bag Player -->
+  <node name="rosbag_player" pkg="rosbag" type="play" output="screen"
+        if="$(arg play_bag)"
+        args="--clock
+              --rate $(arg bag_rate)
+              --start $(arg bag_start)
+              --quiet
+              $(arg bag_file)
+              --topics /livox/lidar /tf /tf_static">
+  </node>
+
+  <!-- Static TF: livox_frame → imu (from glim config T_lidar_imu) -->
+  <!-- T_lidar_imu = [-0.011, -0.02329, 0.04412, 0, 0, 0, 1] -->
+  <!-- static_transform_publisher: x y z qx qy qz qw frame_id child_frame_id -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="livox_to_imu"
+        args="-0.011 -0.02329 0.04412 0 0 0 1 imu livox_frame"/>
+
+  <!-- Voxblox TSDF Server -->
+  <node name="voxblox_node" pkg="tsdf_detection_ros" type="tsdf_server"
+        output="screen" args="--alsologtostderr" clear_params="true">
+
+    <remap from="pointcloud" to="/glim_ros/points_corrected"/>
+    <remap from="odom_transform" to="/glim_ros/imu_odom"/>
+
+    <!-- Load parameters from YAML -->
+    <rosparam command="load" file="$(find tsdf_detection_ros)/cfg/localization_lab.yaml" />
+
+  </node>
+
+  <!-- RViz -->
+  <node name="rviz" pkg="rviz" type="rviz" output="screen"
+        if="$(arg rviz)"
+        args="-d $(arg rviz_config)"/>
+
+
+</launch>

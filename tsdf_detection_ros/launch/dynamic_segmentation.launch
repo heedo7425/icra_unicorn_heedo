@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!--
+    Dynamic Object Segmentation Pipeline
+    Pipeline: rosbag -> /glim_ros/points_corrected -> voxblox (TSDF + DynamicSegmenter)
+
+    Usage:
+      Default (lab_detection.bag):
+        roslaunch tsdf_detection_ros dynamic_segmentation.launch
+
+      Specific bag:
+        roslaunch tsdf_detection_ros dynamic_segmentation.launch bag_file:=/path/to/file.bag
+
+      Live mode (glim_ros running separately):
+        roslaunch tsdf_detection_ros dynamic_segmentation.launch play_bag:=false
+
+      Half speed replay:
+        roslaunch tsdf_detection_ros dynamic_segmentation.launch bag_rate:=0.5
+
+      Headless (no rviz):
+        roslaunch tsdf_detection_ros dynamic_segmentation.launch rviz:=false
+  -->
+
+  <!-- Bag replay args -->
+  <arg name="bag_file"  default="/home/chg/ws_glil_ros1/lab_detection.bag"/>
+  <arg name="play_bag"  default="true"/>
+  <arg name="bag_rate"  default="1.0"/>
+  <arg name="bag_start" default="0.0"/>
+
+  <!-- TSDF map args -->
+  <arg name="voxel_size"       default="0.10"/>
+  <arg name="voxels_per_side"  default="16"/>
+  <arg name="max_ray_length_m" default="20.0"/>
+  <arg name="min_ray_length_m" default="0.1"/>
+
+  <!-- Frame IDs (must match glim_ros TF output) -->
+  <arg name="world_frame"  default="map"/>
+  <arg name="sensor_frame" default="imu"/>
+
+  <!--
+    EverFreeIntegrator args (voxblox::dynamic::EverFreeIntegrator::Config)
+      burn_in_period     : free 연속 관측 횟수 -> ever-free 승격 (high-confidence free)
+      counter_to_reset   : occupied 연속 관측 횟수 -> ever-free 해제
+      temporal_buffer    : occupied 관측 사이 허용 gap (LiDAR sparsity 보정)
+      tsdf_occ_threshold : TSDF distance 이 값 미만이면 occupied 판정 [m]
+      ef_neighbor_conn   : ever-free 제거 시 neighbor connectivity (6/18/26)
+  -->
+  <arg name="burn_in_period"     default="5"/>
+  <arg name="counter_to_reset"   default="50"/>
+  <arg name="temporal_buffer"    default="2"/>
+  <arg name="tsdf_occ_threshold" default="0.35"/>
+  <arg name="ef_neighbor_conn"   default="18"/>
+
+  <!--
+    DynamicSegmenter args (voxblox::dynamic::DynamicSegmenter::Config)
+      min/max_cluster_size  : 클러스터 포인트 수 필터
+      min/max_extent        : 클러스터 AABB 대각선 길이 필터 [m]
+      ds_neighbor_conn      : 클러스터 성장 connectivity (6/18/26)
+      grow_clusters_twice   : ever-free 경계 밖으로 2 voxel 추가 성장
+      min_cluster_sep       : 이 거리 이하 클러스터 병합 [m]
+  -->
+  <arg name="enable_dynamic_segmenter" default="true"/>
+  <arg name="min_cluster_size"   default="25"/>
+  <arg name="max_cluster_size"   default="2500"/>
+  <arg name="min_extent"         default="0.25"/>
+  <arg name="max_extent"         default="2.5"/>
+  <arg name="ds_neighbor_conn"   default="6"/>
+  <arg name="grow_clusters_twice"    default="true"/>
+  <arg name="min_cluster_sep"    default="0.2"/>
+  <arg name="check_cluster_separation_exact" default="false"/>
+
+  <!-- Tracking (dynablox defaults) -->
+  <arg name="min_track_duration"     default="0"/>
+  <arg name="max_tracking_distance"  default="1.0"/>
+
+  <!-- Patchwork++ ground segmentation -->
+  <arg name="enable_ground_segmentation" default="true"/>
+  <arg name="pw_sensor_height"  default="0.3"/>
+  <arg name="pw_max_range"      default="20.0"/>
+  <arg name="pw_min_range"      default="0.5"/>
+  <arg name="pw_th_seeds"       default="0.125"/>
+  <arg name="pw_th_dist"        default="0.125"/>
+
+  <!-- Slice settings -->
+  <arg name="slice_level"             default="-0.1"/>
+  <arg name="slice_relative_to_robot" default="false"/>
+
+  <!-- Confidence 2D grid Z projection range [m] -->
+  <arg name="grid_z_min"  default="0.1"/>
+  <arg name="grid_z_max"  default="0.3"/>
+
+  <!-- Input pointcloud Z filter in world frame [m] (disabled by default) -->
+  <arg name="pointcloud_min_z" default="0.05"/>
+  <arg name="pointcloud_max_z" default="0.3"/>
+
+  <!-- Confidence visualization on/off per category -->
+  <arg name="vis_high_conf_free" default="true"/>
+  <arg name="vis_low_conf_free"  default="true"/>
+  <arg name="vis_occupied"       default="true"/>
+
+  <!-- Visualization -->
+  <arg name="rviz"        default="true"/>
+  <arg name="rviz_config" default="$(find tsdf_detection_ros)/cfg/dynamic_segmentation.rviz"/>
+
+  <!-- Bag Player -->
+  <node name="rosbag_player" pkg="rosbag" type="play" output="screen"
+        if="$(arg play_bag)"
+        args="--clock
+              --rate $(arg bag_rate)
+              --start $(arg bag_start)
+              $(arg bag_file)
+              --topics /glim_ros/points_corrected /tf /tf_static">
+  </node>
+
+  <!-- Voxblox TSDF Server with DynamicSegmenter parameters -->
+  <node name="voxblox_node" pkg="tsdf_detection_ros" type="tsdf_server"
+        output="screen" args="--alsologtostderr" clear_params="true">
+
+    <remap from="pointcloud" to="/glim_ros/points_corrected"/>
+
+    <!-- TSDF core -->
+    <param name="tsdf_voxel_size"        value="$(arg voxel_size)"/>
+    <param name="tsdf_voxels_per_side"   value="$(arg voxels_per_side)"/>
+    <param name="method"                 value="fast"/>
+    <param name="voxel_carving_enabled"  value="true"/>
+    <param name="allow_clear"            value="true"/>
+    <param name="color_mode"             value="normals"/>
+    <param name="use_tf_transforms"      value="true"/>
+    <param name="world_frame"            value="$(arg world_frame)"/>
+    <param name="sensor_frame"           value="$(arg sensor_frame)"/>
+    <param name="max_ray_length_m"       value="$(arg max_ray_length_m)"/>
+    <param name="min_ray_length_m"       value="$(arg min_ray_length_m)"/>
+    <param name="verbose"                value="false"/>
+
+    <!-- Mesh -->
+    <param name="update_mesh_every_n_sec" value="0.0"/>
+
+    <!-- Output -->
+    <param name="publish_pointclouds_on_update" value="true"/>
+    <param name="publish_tsdf_map"              value="false"/>
+
+    <!-- EverFreeIntegrator config -->
+    <param name="ever_free_integrator/burn_in_period"          value="$(arg burn_in_period)"/>
+    <param name="ever_free_integrator/counter_to_reset"        value="$(arg counter_to_reset)"/>
+    <param name="ever_free_integrator/temporal_buffer"         value="$(arg temporal_buffer)"/>
+    <param name="ever_free_integrator/tsdf_occupancy_threshold" value="$(arg tsdf_occ_threshold)"/>
+    <param name="ever_free_integrator/neighbor_connectivity"   value="$(arg ef_neighbor_conn)"/>
+
+    <!-- Slice -->
+    <param name="slice_level"             value="$(arg slice_level)"/>
+    <param name="slice_relative_to_robot" value="$(arg slice_relative_to_robot)"/>
+
+    <!-- Confidence 2D grid -->
+    <param name="grid_z_min"  value="$(arg grid_z_min)"/>
+    <param name="grid_z_max"  value="$(arg grid_z_max)"/>
+
+    <!-- Pointcloud Z filter -->
+    <param name="pointcloud_min_z" value="$(arg pointcloud_min_z)"/>
+    <param name="pointcloud_max_z" value="$(arg pointcloud_max_z)"/>
+
+    <!-- Confidence visualization on/off -->
+    <param name="vis_high_conf_free" value="$(arg vis_high_conf_free)"/>
+    <param name="vis_low_conf_free"  value="$(arg vis_low_conf_free)"/>
+    <param name="vis_occupied"       value="$(arg vis_occupied)"/>
+
+    <!-- DynamicSegmenter config -->
+    <param name="enable_dynamic_segmenter"                  value="$(arg enable_dynamic_segmenter)"/>
+    <param name="dynamic_segmenter/min_cluster_size"        value="$(arg min_cluster_size)"/>
+    <param name="dynamic_segmenter/max_cluster_size"        value="$(arg max_cluster_size)"/>
+    <param name="dynamic_segmenter/min_extent"              value="$(arg min_extent)"/>
+    <param name="dynamic_segmenter/max_extent"              value="$(arg max_extent)"/>
+    <param name="dynamic_segmenter/neighbor_connectivity"   value="$(arg ds_neighbor_conn)"/>
+    <param name="dynamic_segmenter/grow_clusters_twice"     value="$(arg grow_clusters_twice)"/>
+    <param name="dynamic_segmenter/min_cluster_separation"  value="$(arg min_cluster_sep)"/>
+    <param name="dynamic_segmenter/check_cluster_separation_exact" value="$(arg check_cluster_separation_exact)"/>
+
+    <!-- Tracking config -->
+    <param name="tracking/min_track_duration"    value="$(arg min_track_duration)"/>
+    <param name="tracking/max_tracking_distance" value="$(arg max_tracking_distance)"/>
+
+    <!-- Patchwork++ config -->
+    <param name="enable_ground_segmentation"  value="$(arg enable_ground_segmentation)"/>
+    <param name="patchwork/sensor_height"     value="$(arg pw_sensor_height)"/>
+    <param name="patchwork/max_range"         value="$(arg pw_max_range)"/>
+    <param name="patchwork/min_range"         value="$(arg pw_min_range)"/>
+    <param name="patchwork/th_seeds"          value="$(arg pw_th_seeds)"/>
+    <param name="patchwork/th_dist"           value="$(arg pw_th_dist)"/>
+
+  </node>
+
+  <!-- RViz -->
+  <node name="rviz" pkg="rviz" type="rviz" output="screen"
+        if="$(arg rviz)"
+        args="-d $(arg rviz_config)"/>
+
+</launch>

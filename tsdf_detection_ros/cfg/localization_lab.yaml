@@ -1,0 +1,249 @@
+# ==============================================================================
+# Voxblox TSDF Server — localization_lab (Livox MID-360, indoor lab)
+# ==============================================================================
+# Sensor: Livox MID-360 (frame: imu via glim TF)
+# Pointcloud topic: /livox/lidar (~10Hz, 411 msgs / 41.2s)
+# ==============================================================================
+# ==============================================================================
+# Voxblox TSDF Server & Dynamic Segmentation Configuration
+# ==============================================================================
+#
+# [Parameter Descriptions]
+#
+# 1. TSDF Map Core Parameters
+#    - tsdf_voxel_size:       [m] 맵의 해상도를 결정. 작을수록 정밀하지만 메모리/연산량 증가.
+#    - tsdf_voxels_per_side:  블록당 복셀 수 (보통 16).
+#    - truncation_distance:   [m] 표면 근처에서 TSDF 값을 저장할 범위 (보통 voxel_size * 2~4).
+#    - max_weight:            통합 시 누적되는 가중치의 상한선 (동적 환경 적응력 결정).
+#    - method:                통합 방식 ('simple', 'merged', 'fast', 'projective').
+#    - voxel_carving_enabled: 빈 공간(Free Space) 업데이트 여부 (동적 객체 탐지에 필수).
+#    - allow_clear:           서비스 호출을 통한 맵 초기화 허용 여부.
+#    - color_mode:            메쉬 색상 모드 ('color', 'normals', 'height' 등).
+#    - use_tf_transforms:     TF 트리 사용 여부.
+#    - world_frame:           월드 좌표계 프레임 ID.
+#    - sensor_frame:          센서 좌표계 프레임 ID.
+#    - max_ray_length_m:      [m] 맵에 반영할 최대 거리 (길면 바닥 파먹힘 현상 심화).
+#    - min_ray_length_m:      [m] 무시할 최소 거리 (본체 노이즈 방지).
+#    - use_const_weight:      거리 무관 상수 가중치 사용 여부.
+#    - verbose:               상세 로그 출력 여부.
+#
+# 2. Mesh Generation
+#    - update_mesh_every_n_sec: [초] 메쉬 업데이트 주기 (0.0 = 주기적 업데이트 안 함).
+#
+# 3. Output Settings
+#    - publish_pointclouds_on_update: 업데이트 시 포인트클라우드 발행 여부.
+#    - publish_tsdf_map:              전체 TSDF 맵 발행 여부 (디버깅용, 부하 큼).
+#
+# 4. EverFreeIntegrator (Dynamic Object Detection Core)
+#    - burn_in_period:           EverFree(항상 빈 공간) 승격을 위한 연속 Free 관측 프레임.
+#    - counter_to_reset:         EverFree 해제를 위한 연속 Occupied 관측 횟수 (노이즈 방어).
+#    - temporal_buffer:          Occupied 관측 사이의 허용 Gap (LiDAR Sparsity 보정).
+#    - tsdf_occupancy_threshold: [m] 장애물로 간주할 TSDF 거리 임계값 (보통 voxel_size * 1.5).
+#    - neighbor_connectivity:    EverFree 전파/검사 시 이웃 연결성 (6, 18, 26).
+#
+# 5. Slice & Projection Settings
+#    - slice_level:             [m] 슬라이스 컷오프 높이.
+#    - slice_relative_to_robot: 로봇 센서 높이 기준 슬라이스 적용 여부.
+#    - grid_z_min/max:          [m] 2D 그리드 생성 시 투영할 높이 범위.
+#    - pointcloud_min/max_z:    [m] 입력 포인트 높이 하드 필터 (범위 밖은 강제 무시).
+#
+# 6. Visualization & Evaluation
+#    - vis_high_conf_free: High confidence free (EverFree) 복셀 시각화 여부.
+#    - vis_low_conf_free:  Low confidence free 복셀 시각화 여부.
+#    - vis_occupied:       Occupied 복셀 시각화 여부.
+#    - eval_max_range:     [m] 평가(TP/FP/TN/FN) 시 고려할 최대 탐지 거리.
+#
+# 7. Dynamic Segmenter
+#    - enable_dynamic_segmenter:       동적 객체 세그멘테이션 활성화 여부.
+#    - min/max_cluster_size:           클러스터를 형성할 최소/최대 포인트 개수 제한.
+#    - min/max_extent:                 [m] 클러스터 크기(AABB 대각선) 물리적 제한.
+#    - neighbor_connectivity:          클러스터링 연결성 (6, 18, 26).
+#    - grow_clusters_twice:            EverFree 경계 밖으로 2 복셀 추가 확장 여부.
+#    - min_cluster_separation:         [m] 클러스터 간 병합(Merge)을 허용할 최소 거리.
+#    - check_cluster_separation_exact: 거리를 Voxel이 아닌 Point 기준으로 정확히 계산 여부.
+#
+# 8. Tracking
+#    - min_track_duration:    최소 추적 지속 시간 (노이즈 필터링용 프레임 수).
+#    - max_tracking_distance: [m] 프레임 간 동일 객체로 매칭할 최대 허용 이동 거리.
+#
+# ==============================================================================
+# 9. Ground Segmentation (Patchwork++) 파라미터
+# ==============================================================================
+#    - enable_ground_segmentation: 지면 제거 노드 활성화 여부.
+#    - sensor_height: [m] 라이다 센서 중심부부터 지면까지의 실제 물리적 장착 높이.
+#    - max_range:     [m] 지면 탐지를 수행할 최대 반경 거리.
+#    - min_range:     [m] 지면 탐지를 수행할 최소 반경 거리 (차량 본체 스캔 방지용).
+#    - th_seeds:      [m] 초기 시드(Seed) 임계값. 탐색 구역 내 '가장 낮은 점'을 기준으로, 
+#                         위로 몇 m까지의 점들을 초기 바닥면 후보로 간주할지 결정.
+#    - th_dist:       [m] 지면 거리 임계값. Seed로 추정된 가상의 바닥(평면)으로부터 
+#                         수직으로 몇 m 이내의 점들까지를 최종 지면으로 확정할지 결정.
+#
+# ------------------------------------------------------------------------------
+# Patchwork++ 튜닝 가이드
+# ------------------------------------------------------------------------------
+# 1) 높이와 거리의 현실화
+#    - sensor_height : 0.1 ~ 0.2 (실제 장착 높이를 자로 정확히 재서 기입 필수)
+#    - max_range     : 5.0 ~ 8.0 (연산 속도 비약적 상승 및 먼 거리의 바닥 노이즈 원천 차단)
+# 
+# 2) th_seeds 와 th_dist 빡빡하게 조이기 (연석 및 장애물 보호)
+#    - th_seeds & th_dist : 0.05 ~ 0.08 (5~8cm 수준으로 타이트하게 설정하여, 
+#                           트랙의 작은 연석이나 라바콘을 바닥으로 오인해 깎아버리지 않도록 보호)
+#
+# 3) 트랙 곡면(경사로/뱅크각) 추종을 위한 구역(CZM) 잘게 쪼개기
+#    - num_rings & num_sectors : 공간을 나누는 피자 조각의 개수. 기본값보다 
+#                                1.5배 ~ 2배 늘려서 트랙 곡면을 섬세하게 분할 및 추정
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. TSDF Map Core Parameters
+# ------------------------------------------------------------------------------
+# General Map Parameters
+min_time_between_msgs_sec: 0.0
+pointcloud_queue_size: 10
+max_block_distance_from_body: 3.40282e+38
+
+# 1. TSDF Map Core Parameters
+tsdf_voxel_size: 0.05
+tsdf_voxels_per_side: 16
+truncation_distance: 0.1 
+max_weight: 10000.0
+method: "simple"
+voxel_carving_enabled: true
+allow_clear: true
+color_mode: "normals"
+use_tf_transforms: false
+world_frame: "map"
+sensor_frame: "imu"
+max_ray_length_m: 20.0
+min_ray_length_m: 0.01
+use_const_weight: false
+verbose: false
+
+# IF Method is Fast, the following parameters are used:
+start_voxel_subsampling_factor: 2
+max_consecutive_ray_collisions: 2
+max_integration_time_s: 3.40282e+38
+clear_checks_every_n_frames: 1
+
+enable_icp: false
+
+# Prior map → ever-free instant initialization (skip burn-in for non-prior voxels)
+enable_prior_map_ever_free: true
+# ------------------------------------------------------------------------------
+# 2. Mesh Generation
+# ------------------------------------------------------------------------------
+update_mesh_every_n_sec: 0.0
+
+# ------------------------------------------------------------------------------
+# 3. Output Settings
+# ------------------------------------------------------------------------------
+publish_pointclouds_on_update: true
+publish_tsdf_map: false
+publish_map_every_n_sec: 0.1
+
+# ------------------------------------------------------------------------------
+# 4. EverFreeIntegrator
+# ------------------------------------------------------------------------------
+ever_free_integrator:
+  burn_in_period: 2
+  counter_to_reset: 10
+  temporal_buffer: 2
+  tsdf_occupancy_threshold: 0.075
+  neighbor_connectivity: 26
+
+# ------------------------------------------------------------------------------
+# 5. Slice & Projection Settings
+# ------------------------------------------------------------------------------
+slice_level: 0.0
+slice_relative_to_robot: false
+grid_z_min: 0.0
+grid_z_max: 1.0
+pointcloud_min_z: -1.0
+pointcloud_max_z: 0.5
+
+# ------------------------------------------------------------------------------
+# 6. Visualization & Evaluation
+# ------------------------------------------------------------------------------
+vis_high_conf_free: false
+vis_low_conf_free: false
+vis_occupied: true
+eval_max_range: 130.0
+
+# ------------------------------------------------------------------------------
+# 7. Dynamic Segmenter
+# ------------------------------------------------------------------------------
+enable_dynamic_segmenter: true
+
+dynamic_segmenter:
+  min_cluster_size: 30
+  max_cluster_size: 5000
+  min_extent: 0.2
+  max_extent: 0.7
+  neighbor_connectivity: 6
+  grow_clusters_twice: false
+  min_cluster_separation: 0.2
+  check_cluster_separation_exact: true
+
+# ------------------------------------------------------------------------------
+# 8. Tracking
+# ------------------------------------------------------------------------------
+tracking:
+  min_track_duration: 0
+  max_tracking_distance: 1.0
+
+# ------------------------------------------------------------------------------
+# 9. Point-Based Pipeline (DBSCAN + UKF)
+# ------------------------------------------------------------------------------
+use_point_based_pipeline: true
+
+dbscan:
+  eps: 0.5
+  min_points: 5
+  min_cluster_size: 10
+  max_cluster_size: 2500
+  min_extent: 0.25
+  max_extent: 2.5
+
+ukf:
+  alpha: 0.001
+  beta: 2.0
+  kappa: 0.0
+  process_noise_pos: 0.1
+  process_noise_vel: 1.0
+  measurement_noise: 0.15
+  gate_distance: 2.0
+  min_hits_to_confirm: 3
+  max_misses_to_delete: 5
+  min_track_duration: 0
+
+# ------------------------------------------------------------------------------
+# 10. Ground Segmentation (Patchwork++)
+# ------------------------------------------------------------------------------
+enable_ground_segmentation: true
+
+patchwork:
+  sensor_height: 0.15
+  max_range: 25.0
+  min_range: 0.05
+  th_seeds: 0.1
+  th_dist: 0.1
+
+  num_zones: 4
+  num_sectors_each_zone: [16, 48, 80, 120]
+  num_rings_each_zone: [4, 8, 12, 16]
+
+  elevation_thresholds:  [-0.05, -0.05, -0.05, -0.05]
+  flatness_thresholds:   [0.05, 0.05, 0.05, 0.05]
+  uprightness_thresholds: [0.707, 0.707, 0.707, 0.707]
+  num_iter: 1
+  num_lpr: 10
+  uprightness_thr: 0.707
+  max_flatness: 0.05
+  max_elevation: 0.5
+  adaptive_seed_selection_margin: -1.2
+
+  verbose: false
+  display_time: true
+
+  enable_voxelization: false
+  voxel_size: 0.05

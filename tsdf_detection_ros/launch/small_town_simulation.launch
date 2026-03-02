@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!--
+    Dynamic Segmentation for small_town_simulation.bag
+    Sensor: Ouster OS1 (frame: os1_sensor), TF: map -> odom -> base_footprint -> base_link -> os1_sensor
+    Pointcloud topic: /os1_cloud_node/points
+    Sensor height: ~1.5m
+
+    Usage:
+      roslaunch tsdf_detection_ros small_town_simulation.launch
+      roslaunch tsdf_detection_ros small_town_simulation.launch bag_rate:=0.5
+      roslaunch tsdf_detection_ros small_town_simulation.launch enable_dynamic_segmenter:=false
+  -->
+
+  <!-- Bag replay args -->
+  <arg name="bag_file"  default="/media/chg/T7/Dataset/object\ detection/small_town_simulation/small_town_simulation.bag"/>
+  <arg name="play_bag"  default="true"/>
+  <arg name="bag_rate"  default="5.0"/>
+  <arg name="bag_start" default="0.0"/>
+
+  <!-- Visualization -->
+  <arg name="rviz"        default="true"/>
+  <arg name="rviz_config" default="$(find tsdf_detection_ros)/cfg/small_town_eval.rviz"/>
+
+  <!-- Bag Player -->
+  <node name="rosbag_player" pkg="rosbag" type="play" output="screen"
+        if="$(arg play_bag)"
+        args="--clock
+              --rate $(arg bag_rate)
+              --start $(arg bag_start)
+              --quiet
+              $(arg bag_file)
+              --topics /os1_cloud_node/points /tf /tf_static">
+  </node>
+<!-- ================================================================================= -->
+  <!-- Voxblox TSDF Server -->
+  <node name="voxblox_node" pkg="tsdf_detection_ros" type="tsdf_server"
+        output="screen" args="--alsologtostderr" clear_params="true">
+
+    <remap from="pointcloud" to="/os1_cloud_node/points"/>
+
+    <!-- Load parameters from YAML -->
+    <rosparam command="load" file="$(find tsdf_detection_ros)/cfg/small_town_simulation.yaml" />
+
+  </node>
+
+  <!-- RViz -->
+  <node name="rviz" pkg="rviz" type="rviz" output="screen"
+        if="$(arg rviz)"
+        args="-d $(arg rviz_config)"/>
+
+</launch>

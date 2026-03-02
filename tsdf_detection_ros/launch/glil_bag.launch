@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <arg name="bag_file" default="/home/chg/ws_glil_ros1/lab_detection.bag"/>
+  <arg name="voxel_size" default="0.10"/>
+  <arg name="play_bag" default="true"/>
+  <arg name="z_min" default="0.0"/>
+  <arg name="z_max" default="0.01"/>
+  <arg name="prior_map_topic" default=""/>
+  <arg name="prior_map_only"  default="false"/>
+
+  <node name="player" pkg="rosbag" type="play" output="screen"
+        args="--clock $(arg bag_file) --topics /glim_ros/points_corrected /tf /tf_static" if="$(arg play_bag)"/>
+
+  <!-- Z passthrough filter: z_min ~ z_max (only used when prior_map_only:=false) -->
+  <node name="pcl_filter" pkg="nodelet" type="nodelet" args="standalone pcl/PassThrough" output="screen"
+        unless="$(arg prior_map_only)">
+    <remap from="~input" to="/glim_ros/points_corrected"/>
+    <remap from="~output" to="/glim_ros/points_filtered"/>
+    <param name="filter_field_name" value="z"/>
+    <param name="filter_limit_min"  value="$(arg z_min)"/>
+    <param name="filter_limit_max"  value="$(arg z_max)"/>
+  </node>
+
+  <node name="voxblox_node" pkg="tsdf_detection_ros" type="tsdf_server"
+        output="screen" args="--alsologtostderr" clear_params="true">
+
+    <!-- prior_map_only: subscribe to dummy topic (no real-time scan integration) -->
+    <remap from="pointcloud" to="/glim_ros/points_filtered" unless="$(arg prior_map_only)"/>
+    <remap from="pointcloud" to="/unused/pointcloud"        if="$(arg prior_map_only)"/>
+
+    <!-- TSDF settings -->
+    <param name="tsdf_voxel_size"        value="$(arg voxel_size)"/>
+    <param name="tsdf_voxels_per_side"   value="16"/>
+    <param name="method"                 value="fast"/>
+    <param name="voxel_carving_enabled"  value="true"/>
+    <param name="color_mode"             value="none"/>
+    <param name="use_tf_transforms"      value="true"/>
+    <param name="world_frame"            value="map"/>
+    <param name="sensor_frame"           value="imu"/>
+    <param name="max_ray_length_m"       value="20.0"/>
+    <param name="min_ray_length_m"       value="0.1"/>
+    <param name="verbose"                value="true"/>
+
+    <!-- Mesh OFF -->
+    <param name="update_mesh_every_n_sec" value="0.0"/>
+
+    <!-- Prior map: gated by enable_prior_map (only true when prior_map_only:=true) -->
+    <param name="enable_prior_map" value="$(arg prior_map_only)"/>
+    <param name="prior_map_topic"  value="$(arg prior_map_topic)"/>
+
+    <!-- Publish TSDF pointcloud on every scan update (prior_map_only: prior map callback handles publish) -->
+    <param name="publish_pointclouds_on_update" value="true" unless="$(arg prior_map_only)"/>
+    <param name="publish_pointclouds_on_update" value="false" if="$(arg prior_map_only)"/>
+    <param name="publish_tsdf_map"              value="false"/>
+  </node>
+
+  <node name="rviz" pkg="rviz" type="rviz" output="screen"
+        args="-d $(find tsdf_detection_ros)/cfg/glil_rviz.rviz"/>
+</launch>
