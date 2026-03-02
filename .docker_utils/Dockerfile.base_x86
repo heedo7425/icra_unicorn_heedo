@@ -44,7 +44,7 @@ RUN apt-get install -y --no-install-recommends wget ca-certificates && \
     rm /tmp/cmake.tar.gz
 
 # GLIL thirdparty superbuild (GTSAM, ROBIN, gtsam_points, KISS-Matcher)
-COPY state_estimation/glim/thirdparty /glil_thirdparty_src
+COPY state_estimation/glim/src/glim/thirdparty /glil_thirdparty_src
 RUN . /.install_utils/glil_thirdparty_build.sh && rm -rf /glil_thirdparty_src
 
 ENTRYPOINT [ "bash", "/.install_utils/ros_entrypoint.sh" ]
