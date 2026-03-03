@@ -17,7 +17,7 @@ WORKDIR /home/${USER}/catkin_ws
 RUN mkdir -p /home/${USER}/catkin_ws/src
 
 # initialize workspace and make sure no sim packages are built
-RUN catkin init && . /opt/ros/noetic/setup.bash && . /.install_utils/catkin_skiplist_sim.sh
+RUN catkin init && . /opt/ros/noetic/setup.bash && catkin config --merge-devel && . /.install_utils/catkin_skiplist_sim.sh
 
 # complete cartographer installation and rosdeps
 RUN . /.install_utils/cartographer_dep.sh

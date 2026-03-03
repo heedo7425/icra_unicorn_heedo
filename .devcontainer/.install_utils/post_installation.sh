@@ -10,13 +10,7 @@ source /opt/ros/noetic/setup.bash && source /home/${USER}/catkin_ws/devel/setup.
 pip install ~/catkin_ws/src/race_stack/f110_utils/libs/ccma
 # pip install ~/catkin_ws/src/race_stack/planner/graph_based_planner/src/GraphBasedPlanner
 
-# GLIL build (thirdparty libs already installed in Docker image)
-cd /home/${USER}/catkin_ws
-catkin build glim
-source /opt/ros/noetic/setup.bash && source /home/${USER}/catkin_ws/devel/setup.bash
-catkin build glim_ros1 glim_ext
-
-# build
+# build (includes GLIL: glim, glim_ros - thirdparty libs already in Docker image)
 cd /home/${USER}/catkin_ws
 catkin build
 
