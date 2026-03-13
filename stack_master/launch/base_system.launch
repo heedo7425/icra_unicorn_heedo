@@ -4,8 +4,8 @@
   <arg name="map"                                        doc="Will search stack_master/maps for a map of the same name." />
   <arg name="sim" default="False"                        doc="launching  from F110 Simulator." />
   <arg name="algo" default="slam"                        doc="Localization algorithm to use. Possible values: slam/pf2 " />
-  <arg name="SE" default="carto_only"
-    doc="Localization algorithm to use. carto_only, carto_PF, carto_icp, PF_carto, PF_vesc, " />
+  <arg name="SE" default="glil_only"
+    doc="Localization algorithm to use. glil_only, carto_only, carto_PF, carto_icp, PF_carto, PF_vesc, " />
   <arg name="pf_covariance" default="True"
     doc="If using the pf2 localization algorithm, whether or not to propagate the computed covariance." />
   <arg name="tire_model" default="pacejka"

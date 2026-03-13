@@ -11,3 +11,6 @@
 	path = state_estimation/GLIL_unicorn_racing
 	url = git@github.com:HangyoCho/GLIL_unicorn_racing.git
 	branch = feature/thirdparty-integration
+[submodule "perception/2.5d-detection"]
+	path = perception/2.5d-detection
+	url = git@github.com:HangyoCho/2.5d_detection.git
