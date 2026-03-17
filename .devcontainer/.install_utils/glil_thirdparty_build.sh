@@ -19,6 +19,7 @@ cmake .. \
     -DINSTALL_PREFIX=${INSTALL_DIR} \
     -DNUM_JOBS=$(nproc)
 make -j$(nproc)
+sudo make install
 ldconfig
 
 echo "=== GLIL thirdparty build complete ==="

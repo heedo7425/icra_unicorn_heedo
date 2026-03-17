@@ -1,5 +1,5 @@
 {
-    "name": "UNICORN ICCAS 2025 ROS Development Container",
+    "name": "UNICORN ICRA 2026 ROS Development Container",
     "containerUser": "${localEnv:USER}",
     "privileged": true,
     "initializeCommand": "/bin/bash -c 'source ${localWorkspaceFolder}/.devcontainer/.install_utils/xauth_setup.sh'",
@@ -27,7 +27,7 @@
         "ROS_HOSTNAME" : "${localEnv:ROS_HOSTNAME}"
     },
     "runArgs": [
-            "--name", "iccas2025",
+            "--name", "icra2026",
             "--net", "host",
             "--privileged",
             "--ipc", "host",       
