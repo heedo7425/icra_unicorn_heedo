@@ -1,6 +1,6 @@
 debug: false
 emergency_break_horizon: 0.5
-force_GBTRACK: false
+force_GBTRACK: true
 ftg_active: false
 ftg_speed_mps: 0.5
 ftg_timer_sec: 0.7

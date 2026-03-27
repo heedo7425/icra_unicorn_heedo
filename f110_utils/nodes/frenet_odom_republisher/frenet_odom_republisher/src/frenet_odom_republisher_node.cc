@@ -6,7 +6,6 @@ namespace frenet_odom_republisher{
 
 FrenetRepublisher::FrenetRepublisher(ros::NodeHandle& nh):
   nh_(nh){
-
   InitSubscribersPublishers();
   ros::spin();
 }
@@ -22,11 +21,6 @@ void FrenetRepublisher::InitSubscribersPublishers() {
 
   odom_sub_ = nh_.subscribe<nav_msgs::Odometry>
       ("/odom", 10, &FrenetRepublisher::OdomCallback, this);
-
-  // ===== HJ ADDED: Subscribe to map topic for wall filtering =====
-  map_sub_ = nh_.subscribe<nav_msgs::OccupancyGrid>
-      ("/map", 1, &FrenetRepublisher::MapCallback, this);
-  // ===== HJ ADDED END =====
 
   frenet_odom_pub_ = nh_.advertise<nav_msgs::Odometry>
       ("/odom_frenet", 1);
@@ -51,14 +45,6 @@ void FrenetRepublisher::FixedPathTrajectoryCallback(
   has_fixed_path_trajectory_ = true;
 }
 
-// ===== HJ ADDED: Map callback for wall filtering =====
-void FrenetRepublisher::MapCallback(const nav_msgs::OccupancyGridConstPtr &map_msg) {
-  ROS_DEBUG("[FrenetRepublisher] Received occupancy map, setting up wall filtering");
-  frenet_converter_.SetOccupancyMap(map_msg);
-  frenet_converter_fixed_.SetOccupancyMap(map_msg);
-}
-// ===== HJ ADDED END =====
-
 void FrenetRepublisher::OdomCallback(const nav_msgs::OdometryConstPtr &msg){
   // Get quaternion and yaw for both conversions
   tf::Quaternion q(
@@ -70,11 +56,13 @@ void FrenetRepublisher::OdomCallback(const nav_msgs::OdometryConstPtr &msg){
   double roll, pitch, yaw;
   m.getRPY(roll, pitch, yaw);
 
+  // ### iy : pass z for 3D closest-point search
   // Publish GB path based frenet odom
   if (has_global_trajectory_) {
     nav_msgs::Odometry frenet_odom = *msg;
     frenet_converter_.GetFrenetOdometry(msg->pose.pose.position.x,
                                         msg->pose.pose.position.y,
+                                        msg->pose.pose.position.z,
                                         yaw, msg->twist.twist.linear.x,
                                         msg->twist.twist.linear.y,
                                         &frenet_odom.pose.pose.position.x,
@@ -92,6 +80,7 @@ void FrenetRepublisher::OdomCallback(const nav_msgs::OdometryConstPtr &msg){
     nav_msgs::Odometry frenet_odom_fixed = *msg;
     frenet_converter_fixed_.GetFrenetOdometry(msg->pose.pose.position.x,
                                               msg->pose.pose.position.y,
+                                              msg->pose.pose.position.z,
                                               yaw, msg->twist.twist.linear.x,
                                               msg->twist.twist.linear.y,
                                               &frenet_odom_fixed.pose.pose.position.x,

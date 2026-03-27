@@ -7,6 +7,9 @@ float64 d_m
 # map coordinates
 float64 x_m
 float64 y_m
+### iy : add z_m for 3D terrain height
+float64 z_m
+### iy : end
 
 # track bound distance
 float64 d_right

@@ -1,0 +1,17 @@
+### iy : simple 2-sector static obs config for try1_0326 (full track, no static obstacles)
+n_sectors: 2
+Static_Obs_sector0:
+  start: 0
+  end: 128
+  s_start: 0.0
+  s_end: 25.475
+  name: sector_1
+  static_obs_section: false
+Static_Obs_sector1:
+  start: 128
+  end: 256
+  s_start: 25.475
+  s_end: 50.951
+  name: sector_2
+  static_obs_section: false
+### iy : end

@@ -1,10 +1,6 @@
 from typing import Union
 import numpy as np
 from scipy.interpolate import CubicSpline
-# ===== HJ ADDED: For occupancy map support =====
-import rospy
-from nav_msgs.msg import OccupancyGrid
-# ===== HJ ADDED END =====
 
 class FrenetConverter:
     def __init__(self, waypoints_x: np.array, waypoints_y: np.array):
@@ -16,17 +12,6 @@ class FrenetConverter:
         self.raceline_length = None
         self.waypoints_distance_m = 0.1 # [m]
         self.iter_max = 3
-
-        # ===== HJ ADDED: Occupancy map for wall filtering =====
-        self.occupancy_grid = None
-        self.has_occupancy_map = False
-        self.map_resolution = None
-        self.map_origin_x = None
-        self.map_origin_y = None
-        self.map_width = None
-        self.map_height = None
-        self.prev_valid_idx = 0
-        # ===== HJ ADDED END =====
 
         self.build_raceline()
 
@@ -56,112 +41,12 @@ class FrenetConverter:
     def get_approx_s(self, x, y) -> float:
         """
         Finds the s-coordinate of the given point by finding the nearest waypoint.
-        Uses wall-crossing detection and rotational search when occupancy map is available.
         """
         # get distance with broadcasting multiple arrays
         lenx = len(x)
         dist_x = x - np.tile(self.waypoints_x, (lenx, 1)).T
         dist_y = y - np.tile(self.waypoints_y, (lenx, 1)).T
-        nearest_idx = np.argmin(np.linalg.norm([dist_x.T, dist_y.T], axis=0), axis=1)
-
-        # ===== HJ ADDED: Wall-crossing check with rotational search =====
-        if not self.has_occupancy_map:
-            # Return array to maintain consistent return type
-            return nearest_idx * self.waypoints_distance_m
-
-        # Process each point
-        result_s = np.zeros(lenx)
-        for i in range(lenx):
-            idx = nearest_idx[i]
-            px, py = x[i], y[i]
-            wpx, wpy = self.waypoints_x[idx], self.waypoints_y[idx]
-
-            # Check if nearest waypoint is wall-free
-            if not self.is_line_crossing_obstacle(px, py, wpx, wpy):
-                self.prev_valid_idx = idx
-                result_s[i] = idx * self.waypoints_distance_m
-                continue
-
-            # Wall detected - try rotational search
-            vec_x = wpx - px
-            vec_y = wpy - py
-
-            # Try 90°, 180°, 270° rotations
-            found = False
-            for angle_deg in [90, 180, 270]:
-                angle_rad = np.deg2rad(angle_deg)
-                cos_a = np.cos(angle_rad)
-                sin_a = np.sin(angle_rad)
-
-                # Rotate vector
-                rotated_x = vec_x * cos_a - vec_y * sin_a
-                rotated_y = vec_x * sin_a + vec_y * cos_a
-
-                # Target point
-                target_x = px + rotated_x
-                target_y = py + rotated_y
-
-                # Find nearest waypoint to target
-                candidate_idx = self.find_nearest_waypoint_to_point(target_x, target_y)
-                cand_wpx = self.waypoints_x[candidate_idx]
-                cand_wpy = self.waypoints_y[candidate_idx]
-
-                if not self.is_line_crossing_obstacle(px, py, cand_wpx, cand_wpy):
-                    # Search in s-direction for better waypoint
-                    best_idx = candidate_idx
-                    best_dist = (px - cand_wpx)**2 + (py - cand_wpy)**2
-
-                    # Search ALL waypoints in both s directions until wall hit
-                    # Forward direction
-                    for s_offset in range(1, len(self.waypoints_x)):
-                        test_idx = (candidate_idx + s_offset) % len(self.waypoints_x)
-
-                        # Check if wrapped around to starting point
-                        if test_idx == candidate_idx:
-                            break
-
-                        test_wpx = self.waypoints_x[test_idx]
-                        test_wpy = self.waypoints_y[test_idx]
-
-                        if not self.is_line_crossing_obstacle(px, py, test_wpx, test_wpy):
-                            dist = (px - test_wpx)**2 + (py - test_wpy)**2
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_idx = test_idx
-                        else:
-                            break  # Hit wall, stop searching forward
-
-                    # Backward direction
-                    for s_offset in range(1, len(self.waypoints_x)):
-                        test_idx = (candidate_idx - s_offset) % len(self.waypoints_x)
-
-                        # Check if wrapped around to starting point
-                        if test_idx == candidate_idx:
-                            break
-
-                        test_wpx = self.waypoints_x[test_idx]
-                        test_wpy = self.waypoints_y[test_idx]
-
-                        if not self.is_line_crossing_obstacle(px, py, test_wpx, test_wpy):
-                            dist = (px - test_wpx)**2 + (py - test_wpy)**2
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_idx = test_idx
-                        else:
-                            break  # Hit wall, stop searching backward
-
-                    self.prev_valid_idx = best_idx
-                    result_s[i] = best_idx * self.waypoints_distance_m
-                    found = True
-                    break
-
-            if not found:
-                # All directions blocked - use nearest distance (ignoring walls)
-                self.prev_valid_idx = idx
-                result_s[i] = idx * self.waypoints_distance_m
-
-        return result_s
-        # ===== HJ ADDED END =====
+        return np.argmin(np.linalg.norm([dist_x.T, dist_y.T], axis=0), axis=1)*self.waypoints_distance_m
 
     def get_frenet_coord(self, x, y, s, eps_m=0.01) -> float:
         """
@@ -279,114 +164,3 @@ class FrenetConverter:
         e_psi = (e_psi + np.pi) % (2 * np.pi) - np.pi  # normalize to [-pi, pi]
 
         return e_psi
-
-    # ===== HJ ADDED: Occupancy map methods =====
-    def set_occupancy_map(self, map_msg: OccupancyGrid):
-        """
-        Set occupancy map for wall-crossing detection from ROS OccupancyGrid message.
-
-        Args:
-            map_msg: OccupancyGrid message from map_server
-        """
-        if map_msg is None:
-            rospy.logerr("[FrenetConverter] Received null map message")
-            return
-
-        # Extract map metadata
-        self.map_resolution = map_msg.info.resolution
-        self.map_origin_x = map_msg.info.origin.position.x
-        self.map_origin_y = map_msg.info.origin.position.y
-        self.map_width = map_msg.info.width
-        self.map_height = map_msg.info.height
-
-        # Convert OccupancyGrid to numpy array
-        # OccupancyGrid: -1 (unknown), 0 (free), 100 (occupied)
-        # Convert to: 255 (free), 0 (occupied)
-        self.occupancy_grid = np.zeros((self.map_height, self.map_width), dtype=np.uint8)
-
-        for y in range(self.map_height):
-            for x in range(self.map_width):
-                index = x + (self.map_height - 1 - y) * self.map_width  # Flip Y-axis
-                cell_value = map_msg.data[index]
-
-                if cell_value == -1 or cell_value > 0:
-                    # Unknown or occupied - treat as occupied for safety
-                    self.occupancy_grid[y, x] = 0
-                else:
-                    # Free space
-                    self.occupancy_grid[y, x] = 255
-
-        self.has_occupancy_map = True
-        rospy.logdebug(f"[FrenetConverter] Occupancy map loaded from ROS: {self.map_width}x{self.map_height} pixels, resolution={self.map_resolution:.3f} m/pixel")
-        rospy.logdebug(f"[FrenetConverter] Map origin: ({self.map_origin_x:.2f}, {self.map_origin_y:.2f})")
-
-    def is_line_crossing_obstacle(self, x1, y1, x2, y2):
-        """
-        Check if line from (x1,y1) to (x2,y2) crosses an obstacle using Bresenham's algorithm.
-
-        Args:
-            x1, y1: Start point in world coordinates
-            x2, y2: End point in world coordinates
-
-        Returns:
-            bool: True if line crosses obstacle, False otherwise
-        """
-        if not self.has_occupancy_map:
-            return False
-
-        # Convert world coordinates to grid coordinates
-        px1 = int((x1 - self.map_origin_x) / self.map_resolution)
-        py1 = self.map_height - 1 - int((y1 - self.map_origin_y) / self.map_resolution)
-        px2 = int((x2 - self.map_origin_x) / self.map_resolution)
-        py2 = self.map_height - 1 - int((y2 - self.map_origin_y) / self.map_resolution)
-
-        # Bresenham's line algorithm with max iteration safety
-        dx = abs(px2 - px1)
-        dy = abs(py2 - py1)
-        sx = 1 if px1 < px2 else -1
-        sy = 1 if py1 < py2 else -1
-        err = dx - dy
-
-        px, py = px1, py1
-        max_iterations = max(self.map_width, self.map_height) * 2  # Safety limit
-        iteration = 0
-
-        while iteration < max_iterations:
-            iteration += 1
-
-            # Boundary check
-            if px < 0 or px >= self.map_width or py < 0 or py >= self.map_height:
-                return True  # Out of bounds = wall
-
-            # Check pixel value (0=occupied, 255=free)
-            if self.occupancy_grid[py, px] < 128:  # Threshold for occupied
-                return True  # Wall detected
-
-            # Reached end point
-            if px == px2 and py == py2:
-                break
-
-            # Bresenham step
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                px += sx
-            if e2 < dx:
-                err += dx
-                py += sy
-
-        return False  # No wall crossed
-
-    def find_nearest_waypoint_to_point(self, target_x, target_y):
-        """
-        Find nearest waypoint to a given point.
-
-        Args:
-            target_x, target_y: Target point coordinates
-
-        Returns:
-            int: Index of nearest waypoint
-        """
-        dist_squared = (self.waypoints_x - target_x)**2 + (self.waypoints_y - target_y)**2
-        return np.argmin(dist_squared)
-    # ===== HJ ADDED END =====

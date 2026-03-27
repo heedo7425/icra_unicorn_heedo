@@ -5,11 +5,6 @@
 #include <f110_msgs/Wpnt.h>
 #include <mutex>
 #include <vector>
-// ===== HJ ADDED: Occupancy map filtering =====
-#include <opencv2/opencv.hpp>
-#include <string>
-#include <nav_msgs/OccupancyGrid.h>
-// ===== HJ ADDED END =====
 
 namespace frenet_conversion{
     
@@ -20,23 +15,14 @@ class FrenetConverter {
 
   /**
    * @brief Initializes the frenet converter with the global trajectory
-   *
-   * @param wptns pointer to vector containing the waypoints describing the
-   * global trajectory, the last and first waypoints should overlap if the
+   * 
+   * @param wptns pointer to vector containing the waypoints describing the 
+   * global trajectory, the last and first waypoints should overlap if the 
    * trajectory is wrapping around
-   *
+   * 
    */
   void SetGlobalTrajectory(const std::vector<f110_msgs::Wpnt> *wptns,
                            const bool is_closed_contour);
-
-  // ===== HJ ADDED: Map-based wall filtering =====
-  /**
-   * @brief Set occupancy map for wall-crossing detection from ROS OccupancyGrid message
-   *
-   * @param map_msg OccupancyGrid message from map_server
-   */
-  void SetOccupancyMap(const nav_msgs::OccupancyGridConstPtr& map_msg);
-  // ===== HJ ADDED END =====
 
   /**
    * @brief Returns the frenet point corresponding to the given position
@@ -94,9 +80,11 @@ class FrenetConverter {
    * @param v_d returns the frenet d velocity
    * @param idx returns the index of the closest waypoint
    */
-  void GetFrenetOdometry(const double x, const double y, const double theta,
-                         const double v_x, const double v_y, double* s,
-                         double* d, double* v_s, double* v_d, int* idx);
+  // ### iy : add z for 3D closest-point search + first_call full search
+  void GetFrenetOdometry(const double x, const double y, const double z,
+                         const double theta, const double v_x, const double v_y,
+                         double* s, double* d, double* v_s, double* v_d, int* idx);
+  // ### iy : end
 
  private:
   /**
@@ -137,27 +125,17 @@ class FrenetConverter {
    * @param x input x position
    * @param y input y position
    */
-  void UpdateClosestIndex(const double x, const double y,  int* idx, bool full_search);
+  // ### iy : add z for 3D distance in closest-point search
+  void UpdateClosestIndex(const double x, const double y, const double z, int* idx, bool full_search);
+  // ### iy : end
 
   /**
-   * @brief Updates the closest index of waypoint array to the given
+   * @brief Updates the closest index of waypoint array to the given 
    * track advancement
-   *
-   * @param s
+   * 
+   * @param s 
    */
   void UpdateClosestIndex(const double s);
-
-  // ===== HJ ADDED: Wall-crossing detection helpers =====
-  /**
-   * @brief Check if line from (x1,y1) to (x2,y2) crosses an obstacle
-   */
-  bool IsLineCrossingObstacle(double x1, double y1, double x2, double y2);
-
-  /**
-   * @brief Find nearest waypoint to a given point
-   */
-  int FindNearestWaypointToPoint(double target_x, double target_y);
-  // ===== HJ ADDED END =====
 
   int closest_idx_;
   std::vector<f110_msgs::Wpnt> wpt_array_;
@@ -165,15 +143,9 @@ class FrenetConverter {
   double global_trajectory_length_;
   bool is_closed_contour_;
   std::mutex mutexGlobalTrajectory_;
-
-  // ===== HJ ADDED: Occupancy map data =====
-  cv::Mat occupancy_grid_;
-  bool has_occupancy_map_{false};
-  double map_resolution_;
-  double map_origin_x_;
-  double map_origin_y_;
-  int prev_valid_closest_idx_{0};
-  // ===== HJ ADDED END =====
+  // ### iy : full search on first odom call to handle arbitrary start position
+  bool first_call_{true};
+  // ### iy : end
 
 };
    

@@ -1,18 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
 project(frenet_conversion)
 
-find_package(catkin REQUIRED COMPONENTS
+find_package(catkin REQUIRED COMPONENTS 
         roscpp
         f110_msgs
         std_msgs
         message_generation
-        cv_bridge  # ===== HJ ADDED =====
-        nav_msgs   # ===== HJ ADDED =====
 )
-
-# ===== HJ ADDED: OpenCV =====
-find_package(OpenCV REQUIRED)
-# ===== HJ ADDED END =====
 
 add_service_files(
         FILES
@@ -32,15 +26,13 @@ catkin_package(
    LIBRARIES ${PROJECT_NAME}
 )
 
-include_directories(include
-        ${catkin_INCLUDE_DIRS}
-        ${OpenCV_INCLUDE_DIRS})       # ===== HJ ADDED =====
+include_directories(include 
+        ${catkin_INCLUDE_DIRS})
 
 add_library(${PROJECT_NAME} src/frenet_conversion.cc)
 
-target_link_libraries(${PROJECT_NAME}
-                ${catkin_LIBRARIES}
-                ${OpenCV_LIBS})           # ===== HJ ADDED =====
+target_link_libraries(${PROJECT_NAME} 
+                ${catkin_LIBRARIES})
 
 install(DIRECTORY include
         DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
