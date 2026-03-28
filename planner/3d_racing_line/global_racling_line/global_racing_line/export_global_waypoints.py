@@ -20,6 +20,7 @@ import sys
 import json
 import numpy as np
 import pandas as pd
+from scipy.interpolate import CubicSpline
 
 params = {
     'track_name': 'experiment_3d_2_3d_smoothed_waypoint1.csv',
@@ -70,6 +71,25 @@ def _build_sphere_markers(xs, ys, zs, r, g, b, scale=0.05):
         m['color'] = {'r': r, 'g': g, 'b': b, 'a': 1.0}
         markers.append(m)
     return markers
+
+
+### HJ : sphere markers with speed-based color (red=slow, green=fast)
+def _build_speed_sphere_markers(xs, ys, zs, vs, scale=0.05):
+    """type=2 (SPHERE) markers with color mapped to speed (red-yellow-green)."""
+    v_min, v_max = float(min(vs)), float(max(vs))
+    v_range = v_max - v_min if v_max > v_min else 1.0
+    markers = []
+    for i in range(len(xs)):
+        m = _make_marker_template()
+        m['id'] = i
+        m['type'] = 2  # SPHERE
+        m['pose']['position'] = {'x': float(xs[i]), 'y': float(ys[i]), 'z': float(zs[i])}
+        m['scale'] = {'x': scale, 'y': scale, 'z': scale}
+        t = (float(vs[i]) - v_min) / v_range  # 0=slow, 1=fast
+        m['color'] = {'r': 1.0 - t, 'g': t, 'b': 0.0, 'a': 1.0}
+        markers.append(m)
+    return markers
+### HJ : end
 
 
 def _build_cylinder_markers(xs, ys, zs, vs, r, g, b):
@@ -158,32 +178,47 @@ def export_waypoints():
     arc_raw[1:] = np.cumsum(ds_real)
     total_length = arc_raw[-1]
 
-    # ── Step 3: 실제 arc length 기준 등간격 재보간 ──
+    ### HJ : CubicSpline 보간 (C² 연속, 기존 np.interp 선형보간 대체)
+    # ── Step 3: 실제 arc length 기준 등간격 재보간 (CubicSpline) ──
     spacing = params['waypoint_spacing']
     n_new = int(total_length / spacing) + 1
     arc_new = np.linspace(0, total_length, n_new)
 
-    x_new = np.interp(arc_new, arc_raw, x_raw)
-    y_new = np.interp(arc_new, arc_raw, y_raw)
-    z_new = np.interp(arc_new, arc_raw, z_raw)
+    # 폐곡선: 끝점을 시작점과 일치시켜 periodic BC 적용
+    # periodic BC → 시작/끝에서 1,2차 미분 연속 (C² 연속)
+    arc_cl = np.append(arc_raw, total_length)
+    x_cl = np.append(x_raw, x_raw[0])
+    y_cl = np.append(y_raw, y_raw[0])
+    z_cl = np.append(z_raw, z_raw[0])
+
+    cs_x = CubicSpline(arc_cl, x_cl, bc_type='periodic')
+    cs_y = CubicSpline(arc_cl, y_cl, bc_type='periodic')
+    cs_z = CubicSpline(arc_cl, z_cl, bc_type='periodic')
+
+    x_new = cs_x(arc_new)
+    y_new = cs_y(arc_new)
+    z_new = cs_z(arc_new)
+
+    # v, ax, s_opt, n_opt는 선형보간 유지 (스플라인 필요 없음)
     v_new = np.interp(arc_new, arc_raw, v_opt)
     ax_new = np.interp(arc_new, arc_raw, ax_opt)
-    # s_opt도 보간 (트랙 경계 조회용)
     s_opt_new = np.interp(arc_new, arc_raw, s_opt)
     n_opt_new = np.interp(arc_new, arc_raw, n_opt)
 
-    # ── Step 4: heading, kappa 계산 (재보간된 x,y에서 직접) ──
-    dx = np.diff(x_new)
-    dy = np.diff(y_new)
-    psi = np.arctan2(dy, dx)
-    psi = np.append(psi, psi[-1])
+    # ── Step 4: heading, kappa 계산 (스플라인 미분으로 해석적 계산) ──
+    dx_ds = cs_x(arc_new, 1)  # 1차 미분: dx/ds
+    dy_ds = cs_y(arc_new, 1)  # 1차 미분: dy/ds
+    psi = np.arctan2(dy_ds, dx_ds)
 
-    # 곡률: dpsi/ds
-    dpsi = np.diff(psi)
-    dpsi = (dpsi + np.pi) % (2 * np.pi) - np.pi  # wrap to [-pi, pi]
-    ds_new = np.diff(arc_new)
-    kappa = dpsi / ds_new
-    kappa = np.append(kappa, kappa[-1])
+    # curvature: κ = (x'y'' - y'x'') / (x'² + y'²)^(3/2)
+    d2x_ds2 = cs_x(arc_new, 2)
+    d2y_ds2 = cs_y(arc_new, 2)
+    kappa = (dx_ds * d2y_ds2 - dy_ds * d2x_ds2) / (dx_ds**2 + dy_ds**2)**1.5
+
+    # pitch (mu_rad): slope angle from raceline xyz directly
+    dz_ds = cs_z(arc_new, 1)
+    mu = -np.arcsin(np.clip(dz_ds / np.sqrt(dx_ds**2 + dy_ds**2 + dz_ds**2), -1.0, 1.0))
+    ### HJ : end
 
     # ── Step 5: 트랙 경계 거리 계산 + waypoints 생성 ──
     waypoints = []
@@ -209,6 +244,7 @@ def export_waypoints():
             'kappa_radpm': float(kappa[k]),
             'vx_mps': float(v_new[k]),
             'ax_mps2': float(ax_new[k]),
+            'mu_rad': float(mu[k]),
         }
         waypoints.append(wpnt)
 
@@ -218,10 +254,15 @@ def export_waypoints():
         r=0.0, g=0.0, b=1.0, scale=0.05,  # 파란색
     )
 
-    raceline_markers = _build_cylinder_markers(
-        x_new, y_new, z_new, v_new,
-        r=1.0, g=1.0, b=0.0,  # 노란색
+    ### HJ : two raceline marker types — sphere (3D pos + speed color) and cylinder (speed height)
+    raceline_markers = _build_speed_sphere_markers(
+        x_new, y_new, z_new, v_new, scale=0.05,
     )
+    raceline_vel_markers = _build_cylinder_markers(
+        x_new, y_new, z_new, v_new,
+        r=1.0, g=0.0, b=0.0,  # red
+    )
+    ### HJ : end
 
     trackbounds_markers = _build_trackbounds_markers(track)
 
@@ -233,12 +274,15 @@ def export_waypoints():
         'est_lap_time': {'data': float(laptime)},
         'centerline_markers': {'markers': centerline_markers},
         'centerline_waypoints': _build_centerline_waypoints(track),
-        'global_traj_markers_iqp': {'markers': []},
+        ### HJ : IQP = SP (3D pipeline has single raceline, no separate IQP/SP)
+        'global_traj_markers_iqp': {'markers': raceline_markers},
         'global_traj_wpnts_iqp': {
             'header': {'seq': 0, 'stamp': {'secs': 0, 'nsecs': 0}, 'frame_id': ''},
-            'wpnts': [],
+            'wpnts': waypoints,
         },
+        ### HJ : end
         'global_traj_markers_sp': {'markers': raceline_markers},
+        'global_traj_vel_markers_sp': {'markers': raceline_vel_markers},
         'global_traj_wpnts_sp': {
             'header': {'seq': 1, 'stamp': {'secs': 0, 'nsecs': 0}, 'frame_id': ''},
             'wpnts': waypoints,

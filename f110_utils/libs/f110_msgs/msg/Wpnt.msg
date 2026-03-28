@@ -21,3 +21,7 @@ float64 kappa_radpm
 float64 vx_mps
 float64 ax_mps2
 
+### HJ : add mu_rad for 3D slope angle (pitch)
+float64 mu_rad
+### HJ : end
+

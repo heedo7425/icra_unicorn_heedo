@@ -95,7 +95,9 @@ class FrenetConverter {
    * @param s returns the frenet s coordinate
    * @param d returns the frenet d coordinate
    */
-  void CalcFrenetPoint(const double x, const double y, double* s, double* d);
+  // ### HJ : add z for 3D tangent projection
+  void CalcFrenetPoint(const double x, const double y, const double z, double* s, double* d);
+  // ### HJ : end
 
   /**
    * @brief Calculates the global position based on the frenet position

@@ -35,6 +35,9 @@ params = {
     'w_T': 0.0,  # cost weight for time (should be 1)
 
 
+    ### HJ : optimization grid spacing (independent from smooth step_size)
+    'step_size_opt': 0.2,  # [m] NLP grid spacing (coarser than smooth for performance)
+    ### HJ : end
     'RK4_steps': 1,
     'sol_opts': {
         "ipopt.max_iter": 5000,
@@ -82,10 +85,15 @@ def calc_global_raceline(
         neglect_V_omega: bool,
         sol_opt: dict,
         out_path: str,
+        step_size_opt: float = 0.2,
 ):
     track_handler = Track3D(
         path=os.path.join(track_path, track_name)
     )
+
+    ### HJ : resample to optimization grid (coarser than smooth for NLP performance)
+    track_handler.resample(step_size_opt)
+    ### HJ : end
 
     gg_handler = GGManager(
         gg_path=gg_diagram_path,
@@ -351,4 +359,5 @@ if __name__ == '__main__':
             neglect_V_omega=params['neglect_V_omega'],
             sol_opt=params['sol_opts'],
             out_path=os.path.join(raceline_out_path, params['raceline_name']),
+            step_size_opt=params['step_size_opt'],
     )
