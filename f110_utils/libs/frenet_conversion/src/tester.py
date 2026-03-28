@@ -47,7 +47,7 @@ class FrenetTester:
 
         """
 
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in msg.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in msg.wpnts])
 
     def car_pose_cb(self, msg: PoseStamped) -> None:
         """
@@ -83,7 +83,7 @@ class FrenetTester:
         rospy.wait_for_message("/global_waypoints", WpntArray)
 
         # Initialize the FrenetConverter object
-        self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo("[Frenet tester] initialized FrenetConverter object")
 
         return True

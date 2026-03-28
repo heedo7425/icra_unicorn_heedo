@@ -158,7 +158,7 @@ class ChangeAvoidanceNode:
         self.current_vx = data.twist.twist.linear.x
 
     def gb_cb(self, data: WpntArray):
-        self.global_waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.global_waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
         self.gb_max_idx = data.wpnts[-1].id
         self.gb_max_s = data.wpnts[-1].s_m
 
@@ -219,7 +219,7 @@ class ChangeAvoidanceNode:
             rospy.wait_for_message("/global_waypoints", WpntArray)
 
             # Initialize the FrenetConverter object
-            converter = FrenetConverter(self.global_waypoints[:, 0], self.global_waypoints[:, 1])
+            converter = FrenetConverter(self.global_waypoints[:, 0], self.global_waypoints[:, 1], self.global_waypoints[:, 2])
             rospy.loginfo("[Spliner] initialized FrenetConverter object")
 
             return converter
@@ -423,7 +423,7 @@ class ChangeAvoidanceNode:
 
             for i in range(cutoff_idx):
                 wpnt = self.local_wpnts_msg.local_wpnts[i]
-                points.append([wpnt.x_m, wpnt.y_m])
+                points.append([wpnt.x_m, wpnt.y_m, wpnt.z_m])
                 tangents.append([np.cos(wpnt.psi_rad), np.sin(wpnt.psi_rad)])
         
         if preferred_side == "left":
@@ -565,7 +565,7 @@ class ChangeAvoidanceNode:
 
 
     def generate_lanes(self, center_wpnts: WpntArray):
-        original_center_wpnts = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in center_wpnts.wpnts])
+        original_center_wpnts = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in center_wpnts.wpnts])
         original_center_psi = np.array([wpnt.psi_rad for wpnt in center_wpnts.wpnts])
         
         min_center_left_gap = np.min([wpnt.d_left for wpnt in center_wpnts.wpnts])

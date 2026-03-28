@@ -27,6 +27,11 @@ void FrenetRepublisher::InitSubscribersPublishers() {
 
   frenet_odom_fixed_pub_ = nh_.advertise<nav_msgs::Odometry>
       ("/odom_frenet_fixed", 1);
+
+  // ### HJ : subscribe to trackbounds once for wall-crossing detection
+  trackbounds_sub_ = nh_.subscribe<visualization_msgs::MarkerArray>
+      ("/trackbounds/markers", 1, &FrenetRepublisher::TrackBoundsCallback, this);
+  // ### HJ : end
 }
 
 void FrenetRepublisher::GlobalTrajectoryCallback(
@@ -36,6 +41,16 @@ void FrenetRepublisher::GlobalTrajectoryCallback(
   frenet_converter_.SetGlobalTrajectory(&wpt_array_, enable_wrapping);
   has_global_trajectory_ = true;
 }
+
+// ### HJ : receive trackbounds once, then unsubscribe
+void FrenetRepublisher::TrackBoundsCallback(
+    const visualization_msgs::MarkerArrayConstPtr &bounds_msg){
+  frenet_converter_.SetTrackBounds(bounds_msg);
+  frenet_converter_fixed_.SetTrackBounds(bounds_msg);
+  trackbounds_sub_.shutdown();
+  ROS_INFO("[FrenetRepublisher] Track bounds received and stored, unsubscribed.");
+}
+// ### HJ : end
 
 void FrenetRepublisher::FixedPathTrajectoryCallback(
     const f110_msgs::OTWpntArrayConstPtr &wpt_array){

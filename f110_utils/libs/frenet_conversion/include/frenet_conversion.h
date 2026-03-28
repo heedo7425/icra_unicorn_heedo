@@ -3,6 +3,7 @@
 
 #include <ros/ros.h>
 #include <f110_msgs/Wpnt.h>
+#include <visualization_msgs/MarkerArray.h>
 #include <mutex>
 #include <vector>
 
@@ -23,6 +24,10 @@ class FrenetConverter {
    */
   void SetGlobalTrajectory(const std::vector<f110_msgs::Wpnt> *wptns,
                            const bool is_closed_contour);
+
+  // ### HJ : set track boundaries for wall-crossing detection
+  void SetTrackBounds(const visualization_msgs::MarkerArrayConstPtr& bounds_msg);
+  // ### HJ : end
 
   /**
    * @brief Returns the frenet point corresponding to the given position
@@ -139,6 +144,15 @@ class FrenetConverter {
    */
   void UpdateClosestIndex(const double s);
 
+  // ### HJ : d_height filter — compute normal projection distance
+  double CalcHeightOffset(const double x, const double y, const double z, int wpt_idx);
+  // ### HJ : z-filtered 2D boundary raycast — check if line crosses track wall
+  bool IsLineCrossingBoundary(const double x1, const double y1, const double x2, const double y2, const double z_ref);
+  // ### HJ : 2D line segment intersection test
+  bool SegmentsIntersect2D(double ax, double ay, double bx, double by,
+                           double cx, double cy, double dx, double dy);
+  // ### HJ : end
+
   int closest_idx_;
   std::vector<f110_msgs::Wpnt> wpt_array_;
   bool has_global_trajectory_{false};
@@ -148,6 +162,15 @@ class FrenetConverter {
   // ### iy : full search on first odom call to handle arbitrary start position
   bool first_call_{true};
   // ### iy : end
+
+  // ### HJ : track boundary data for wall-crossing detection
+  struct BoundPoint { double x, y, z; };
+  std::vector<BoundPoint> left_bounds_;
+  std::vector<BoundPoint> right_bounds_;
+  bool has_track_bounds_{false};
+  double height_filter_threshold_{0.15};  // [m] d_height threshold for layer filtering
+  double z_boundary_margin_{0.2};         // [m] z margin for boundary filtering
+  // ### HJ : end
 
 };
    

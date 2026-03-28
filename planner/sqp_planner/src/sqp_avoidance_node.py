@@ -134,7 +134,7 @@ class SQPAvoidanceNode:
         self.cur_v = msg.twist.twist.linear.x
 
     def gb_cb(self, data: WpntArray):
-        self.global_waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.global_waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
 
     # Everything is refered to the SCALED global waypoints
     def scaled_wpnts_cb(self, data: WpntArray):
@@ -580,7 +580,7 @@ class SQPAvoidanceNode:
             rospy.wait_for_message("/global_waypoints", WpntArray)
 
             # Initialize the FrenetConverter object
-            converter = FrenetConverter(self.global_waypoints[:, 0], self.global_waypoints[:, 1])
+            converter = FrenetConverter(self.global_waypoints[:, 0], self.global_waypoints[:, 1], self.global_waypoints[:, 2])
             rospy.loginfo("[Spliner] initialized FrenetConverter object")
 
             return converter

@@ -142,7 +142,7 @@ class Detect :
         """
 
         # Initialize the FrenetConverter object
-        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo("[Opponent Detection]: initialized FrenetConverter object")
 
         return converter
@@ -154,7 +154,7 @@ class Detect :
 
     def pathCb(self, data):
         # Initial calls: initialize the converter
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
         # Second call: create the boundaries arrays
         if (self.s_array is None or self.path_needs_update) and self.converter is not None:
             rospy.loginfo('[Opponent Detection]: received global path')

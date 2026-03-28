@@ -148,7 +148,7 @@ class Controller_manager:
         for i in range(5):
             # waiting for this message twice, as the republisher needs it first to compute the wanted param
             waypoints = rospy.wait_for_message('/global_waypoints', WpntArray)
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in waypoints.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in waypoints.wpnts])
 
         # ===== HJ MODIFIED: Dual track length for GB and Fixed =====
         self.track_length_gb = rospy.get_param("/global_republisher/track_length")
@@ -158,7 +158,7 @@ class Controller_manager:
         # ===== HJ MODIFIED END =====
 
         # ===== HJ MODIFIED: Initialize GB converter and set as default =====
-        self.converter_gb = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        self.converter_gb = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         self.converter = self.converter_gb  # Default to GB
         rospy.loginfo(f"[{self.name}] Initialized GB Frenet converter")
         # ===== HJ MODIFIED END =====
@@ -250,7 +250,7 @@ class Controller_manager:
         rospy.Subscriber("/vesc/odom", Odometry, self.vesc_odom_cb)
         rospy.Subscriber("/save_start_traj", Bool, self.save_start_traj_cb)
 
-        self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo(f"[{self.name}] initialized FrenetConverter object")
         
     def init_mapping(self):
@@ -447,8 +447,8 @@ class Controller_manager:
 
         # Only create if not already created
         if self.converter_fixed is None:
-            fixed_wpnts = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
-            self.converter_fixed = FrenetConverter(fixed_wpnts[:, 0], fixed_wpnts[:, 1])
+            fixed_wpnts = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
+            self.converter_fixed = FrenetConverter(fixed_wpnts[:, 0], fixed_wpnts[:, 1], fixed_wpnts[:, 2])
 
             # Calculate Fixed track length (last waypoint's s value)
             self.track_length_fixed = data.wpnts[-1].s_m

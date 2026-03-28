@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 3.10)
 project(frenet_conversion)
 
-find_package(catkin REQUIRED COMPONENTS 
+find_package(catkin REQUIRED COMPONENTS
         roscpp
         f110_msgs
         std_msgs
+        visualization_msgs
         message_generation
 )
 
@@ -22,7 +23,7 @@ generate_messages()
 
 catkin_package(
    INCLUDE_DIRS include
-   CATKIN_DEPENDS roscpp f110_msgs
+   CATKIN_DEPENDS roscpp f110_msgs visualization_msgs
    LIBRARIES ${PROJECT_NAME}
 )
 

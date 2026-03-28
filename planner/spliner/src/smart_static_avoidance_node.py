@@ -479,7 +479,7 @@ class ObstacleSpliner:
 
     # Callback for global waypoint topic
     def gb_cb(self, data: WpntArray):
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
         self.gb_wpnts = data
         if self.gb_vmax is None:
             self.gb_vmax = np.max(np.array([wpnt.vx_mps for wpnt in data.wpnts]))
@@ -1474,7 +1474,7 @@ class ObstacleSpliner:
         rospy.wait_for_message("/global_waypoints", WpntArray)
 
         # Initialize the FrenetConverter object
-        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo(f"[{self.name}] initialized FrenetConverter object")
 
         return converter
@@ -2614,6 +2614,7 @@ class ObstacleSpliner:
             # Step 4.5: Create FrenetConverter for fixed path (for interference checking)
             x_array = np.array([w.x_m for w in self.fixed_path_wpnts.wpnts])
             y_array = np.array([w.y_m for w in self.fixed_path_wpnts.wpnts])
+            z_array = np.array([w.z_m for w in self.fixed_path_wpnts.wpnts])
 
             # ===== HJ ADDED: Check for NaN values =====
             if np.any(np.isnan(x_array)) or np.any(np.isnan(y_array)):
@@ -2622,7 +2623,7 @@ class ObstacleSpliner:
                 raise ValueError("Fixed path contains NaN waypoints")
             # ===== HJ ADDED END =====
 
-            self.fixed_converter = FrenetConverter(x_array, y_array)
+            self.fixed_converter = FrenetConverter(x_array, y_array, z_array)
             rospy.loginfo(f"[{self.name}] Created FrenetConverter for fixed path ({len(x_array)} points)")
 
             # ===== HJ ADDED: Step 3.5: Regenerate occupancy grid with nearby_obs (for spline) =====
@@ -3202,7 +3203,8 @@ class ObstacleSpliner:
         # Step 1: Create Frenet converter for centerline
         centerline_converter = FrenetConverter(
             waypoints_x=centerline[:, 0],
-            waypoints_y=centerline[:, 1]
+            waypoints_y=centerline[:, 1],
+            waypoints_z=centerline[:, 2] if centerline.shape[1] > 2 else None
         )
 
         # Step 2: Convert obstacle position to centerline Frenet coordinates
@@ -3612,7 +3614,8 @@ class ObstacleSpliner:
             rospy.loginfo(f"[{self.name}] Creating Frenet converter for original centerline...")
             centerline_converter = FrenetConverter(
                 waypoints_x=centerline_original[:, 0],
-                waypoints_y=centerline_original[:, 1]
+                waypoints_y=centerline_original[:, 1],
+                waypoints_z=centerline_original[:, 2] if centerline_original.shape[1] > 2 else None
             )
 
             # Initialize modified centerline and bounds (for Fixed path - original based)
@@ -4643,7 +4646,7 @@ class ObstacleSpliner:
                 arc_lengths[i] = arc_lengths[i-1] + segment_length
 
             # Create temporary converter for d coordinate calculation
-            temp_fixed_converter = FrenetConverter(xy[:, 0], xy[:, 1])
+            temp_fixed_converter = FrenetConverter(xy[:, 0], xy[:, 1], xy[:, 2] if xy.shape[1] > 2 else None)
             s_coord, d_coord = temp_fixed_converter.get_frenet(xy[:, 0], xy[:, 1])
 
             rospy.loginfo(f"[{self.name}] Using FIXED PATH coordinates: total_arc_length={arc_lengths[-1]:.2f}m")

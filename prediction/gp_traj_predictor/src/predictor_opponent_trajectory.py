@@ -53,7 +53,7 @@ class GaussianProcessOppTraj(object):
         self.proj_opp_traj = data
 
     def glb_wpnts_cb(self, data):
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
         self.glb_wpnts = data
         self.track_length = data.wpnts[-1].s_m
 
@@ -69,7 +69,7 @@ class GaussianProcessOppTraj(object):
         rospy.wait_for_message("/global_waypoints", WpntArray)
 
         # Initialize the FrenetConverter object
-        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo("[Tracking] initialized FrenetConverter object")
 
         return converter   

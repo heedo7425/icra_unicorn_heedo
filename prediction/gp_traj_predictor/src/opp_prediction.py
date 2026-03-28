@@ -238,7 +238,8 @@ class OppTrajPredictor:
             try:
                 x_arr = np.array([wpnt.x_m for wpnt in self.smart_static_wpnts])
                 y_arr = np.array([wpnt.y_m for wpnt in self.smart_static_wpnts])
-                self.smart_converter = FrenetConverter(x_arr, y_arr)
+                z_arr = np.array([wpnt.z_m for wpnt in self.smart_static_wpnts])
+                self.smart_converter = FrenetConverter(x_arr, y_arr, z_arr)
                 rospy.loginfo(f"[Opp. Pred.] Created FrenetConverter for SMART static path ({len(self.smart_static_wpnts)} waypoints)")
 
                 # Convert SMART waypoints to GB Frenet for convergence target using glob2frenet service

@@ -24,6 +24,26 @@ namespace frenet_conversion{
     has_global_trajectory_ = true;
   }
 
+  // ### HJ : parse trackbounds markers (left=odd id, right=even id from export)
+  void FrenetConverter::SetTrackBounds(const visualization_msgs::MarkerArrayConstPtr& bounds_msg) {
+    left_bounds_.clear();
+    right_bounds_.clear();
+    // markers alternate: left(id=0), right(id=1), left(id=2), right(id=3), ...
+    for (size_t i = 0; i < bounds_msg->markers.size(); i++) {
+      const auto& m = bounds_msg->markers[i];
+      BoundPoint bp{m.pose.position.x, m.pose.position.y, m.pose.position.z};
+      if (i % 2 == 0) {
+        left_bounds_.push_back(bp);
+      } else {
+        right_bounds_.push_back(bp);
+      }
+    }
+    has_track_bounds_ = true;
+    ROS_INFO("[FrenetConverter] Track bounds loaded: %zu left, %zu right",
+             left_bounds_.size(), right_bounds_.size());
+  }
+  // ### HJ : end
+
   void FrenetConverter::GetFrenetPoint(const double x, const double y, 
                                        double* s, double* d, int* idx, bool full_search) {
 
@@ -186,16 +206,37 @@ namespace frenet_conversion{
         }
       }
     }
-    // ### HJ : 1m threshold (track width rarely exceeds 1m)
-    if (min_dist > 1.0 || full_search) {
+    // ### HJ : check if proximity result crosses boundary → trigger full search
+    bool boundary_crossed = false;
+    if (!full_search && has_track_bounds_ && min_dist < 1.0) {
+      boundary_crossed = IsLineCrossingBoundary(x, y,
+          wpt_array_[closest_idx_].x_m, wpt_array_[closest_idx_].y_m, z);
+    }
+
+    // full search with d_height filter + boundary raycast
+    if (min_dist > 1.0 || full_search || boundary_crossed) {
+      min_dist = INFINITY;
       for (int i = 0; i < (int)wpt_array_.size(); i++) {
+        // d_height filter: skip waypoints on different surface layer
+        double d_height = CalcHeightOffset(x, y, z, i);
+        if (std::abs(d_height) > height_filter_threshold_) continue;
+
         double d_squared = std::pow(x - wpt_array_[i].x_m, 2) +
                            std::pow(y - wpt_array_[i].y_m, 2) +
                            std::pow(z - wpt_array_[i].z_m, 2);
-        if (d_squared < min_dist) { min_dist = d_squared; closest_idx_ = i; }
+        if (d_squared < min_dist) {
+          // boundary raycast: skip if line crosses track wall
+          if (has_track_bounds_ &&
+              IsLineCrossingBoundary(x, y, wpt_array_[i].x_m, wpt_array_[i].y_m, z)) {
+            continue;
+          }
+          min_dist = d_squared;
+          closest_idx_ = i;
+        }
       }
     }
     *idx = (closest_idx_ + 1); // account for removing the first element
+    // ### HJ : end
   }
   // ### iy : end
 
@@ -214,5 +255,65 @@ namespace frenet_conversion{
       }
     }
   }
+
+  // ### HJ : compute height offset from waypoint's local surface normal
+  double FrenetConverter::CalcHeightOffset(const double x, const double y,
+                                           const double z, int wpt_idx) {
+    const auto& wpt = wpt_array_.at(wpt_idx);
+    double dx = x - wpt.x_m;
+    double dy = y - wpt.y_m;
+    double dz = z - wpt.z_m;
+    // normal = (cos(psi)*sin(mu), sin(psi)*sin(mu), cos(mu))
+    double sin_mu = std::sin(wpt.mu_rad);
+    double cos_mu = std::cos(wpt.mu_rad);
+    double sin_psi = std::sin(wpt.psi_rad);
+    double cos_psi = std::cos(wpt.psi_rad);
+    return dx * cos_psi * sin_mu + dy * sin_psi * sin_mu + dz * cos_mu;
+  }
+
+  // ### HJ : check if line segment (x1,y1)→(x2,y2) crosses any z-filtered boundary
+  bool FrenetConverter::IsLineCrossingBoundary(const double x1, const double y1,
+                                               const double x2, const double y2,
+                                               const double z_ref) {
+    if (!has_track_bounds_) return false;
+
+    // check left boundary segments
+    for (size_t i = 0; i + 1 < left_bounds_.size(); i++) {
+      // z filter: skip boundary segments not near z_ref
+      double seg_z = (left_bounds_[i].z + left_bounds_[i+1].z) * 0.5;
+      if (std::abs(seg_z - z_ref) > z_boundary_margin_) continue;
+      if (SegmentsIntersect2D(x1, y1, x2, y2,
+                              left_bounds_[i].x, left_bounds_[i].y,
+                              left_bounds_[i+1].x, left_bounds_[i+1].y)) {
+        return true;
+      }
+    }
+    // check right boundary segments
+    for (size_t i = 0; i + 1 < right_bounds_.size(); i++) {
+      double seg_z = (right_bounds_[i].z + right_bounds_[i+1].z) * 0.5;
+      if (std::abs(seg_z - z_ref) > z_boundary_margin_) continue;
+      if (SegmentsIntersect2D(x1, y1, x2, y2,
+                              right_bounds_[i].x, right_bounds_[i].y,
+                              right_bounds_[i+1].x, right_bounds_[i+1].y)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ### HJ : 2D line segment intersection (cross product method)
+  bool FrenetConverter::SegmentsIntersect2D(double ax, double ay, double bx, double by,
+                                             double cx, double cy, double dx, double dy) {
+    double d1 = (dx-cx)*(ay-cy) - (dy-cy)*(ax-cx);
+    double d2 = (dx-cx)*(by-cy) - (dy-cy)*(bx-cx);
+    double d3 = (bx-ax)*(cy-ay) - (by-ay)*(cx-ax);
+    double d4 = (bx-ax)*(dy-ay) - (by-ay)*(dx-ax);
+    if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+      return true;
+    }
+    return false;
+  }
+  // ### HJ : end
 
 } // end of namespace frenet_conversion

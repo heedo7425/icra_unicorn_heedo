@@ -6,6 +6,7 @@
 
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/OccupancyGrid.h>
+#include <visualization_msgs/MarkerArray.h>
 #include <f110_msgs/WpntArray.h>
 #include <f110_msgs/OTWpntArray.h>
 #include <f110_msgs/Wpnt.h>
@@ -25,12 +26,16 @@ class FrenetRepublisher {
   void FixedPathTrajectoryCallback(const f110_msgs::OTWpntArrayConstPtr &wpt_array);
   void OdomCallback(const nav_msgs::OdometryConstPtr &msg);
   void MapCallback(const nav_msgs::OccupancyGridConstPtr &map_msg);  // ===== HJ ADDED =====
+  // ### HJ : receive trackbounds once for wall-crossing detection
+  void TrackBoundsCallback(const visualization_msgs::MarkerArrayConstPtr &bounds_msg);
+  // ### HJ : end
 
   ros::NodeHandle nh_;
   ros::Subscriber global_trajectory_sub_;
   ros::Subscriber fixed_path_trajectory_sub_;
   ros::Subscriber odom_sub_;
   ros::Subscriber map_sub_;  // ===== HJ ADDED =====
+  ros::Subscriber trackbounds_sub_;  // ### HJ : trackbounds once ###
   ros::Publisher frenet_odom_pub_;
   ros::Publisher frenet_odom_fixed_pub_;
 

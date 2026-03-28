@@ -27,7 +27,11 @@
 
 ## 즉시 (Frenet 남은 작업)
 
-- [ ] **2. Python frenet_converter.py 3D 대응**
+- [ ] **2. Python frenet_converter.py 호출부 3D 마커/파이프라인 수정**
+  - `get_cartesian` → `get_cartesian_3d` (RViz 마커 z 반영)
+  - 플래너 spline 결과 마커가 z=0에 찍히는 문제
+  - 각 노드에서 `get_frenet_3d` 필요 여부 판단 (교차 구간 nearest search)
+- [ ] **3. Python frenet_converter.py 3D 대응**
   - `build_raceline()`: xy 2D 거리로 s 자체 재계산 → export한 3D s_m 무시
   - `__init__`: z 입력 없음 (`waypoints_x, waypoints_y`만)
   - `get_approx_s`: xy only nearest search → 교차 구간에서 틀림

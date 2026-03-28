@@ -414,7 +414,7 @@ class StaticDynamic:
         self.current_stamp = data.header.stamp
 
     def pathCallback(self, data):
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
         if self.track_length is None:
             rospy.loginfo('[Tracking] received global path')
             self.globalpath = data.wpnts
@@ -430,8 +430,8 @@ class StaticDynamic:
 
         # Initialize converter only once when Fixed path first becomes available
         if not self.fixed_converter_initialized:
-            fixed_waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
-            self.fixed_converter = FrenetConverter(fixed_waypoints[:, 0], fixed_waypoints[:, 1])
+            fixed_waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
+            self.fixed_converter = FrenetConverter(fixed_waypoints[:, 0], fixed_waypoints[:, 1], fixed_waypoints[:, 2])
             self.fixed_converter_initialized = True
             rospy.loginfo('[Tracking] Fixed path Frenet converter initialized: %d waypoints', len(data.wpnts))
 
@@ -472,7 +472,7 @@ class StaticDynamic:
         rospy.wait_for_message("/global_waypoints_scaled", WpntArray)
 
         # Initialize the FrenetConverter object
-        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo("[Tracking] initialized FrenetConverter object")
 
         return converter
