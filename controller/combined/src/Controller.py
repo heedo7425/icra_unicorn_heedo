@@ -196,13 +196,13 @@ class Controller:
         if len(self.waypoint_array_in_map[self.idx_nearest_waypoint:]) > 2:
             # calculate curvature of global optimizer waypoints
             # ===== HJ MODIFIED: Add safety check for empty slice =====
-            curvature_slice = self.waypoint_array_in_map[self.idx_nearest_waypoint+10:self.idx_nearest_waypoint+20,5]
+            curvature_slice = self.waypoint_array_in_map[self.idx_nearest_waypoint+10:self.idx_nearest_waypoint+20,6]
             if len(curvature_slice) > 0:
                 self.curvature_waypoints = np.mean(abs(curvature_slice))
             else:
                 # Fallback: use current waypoint curvature
                 if len(self.waypoint_array_in_map) > self.idx_nearest_waypoint:
-                    self.curvature_waypoints = abs(self.waypoint_array_in_map[self.idx_nearest_waypoint, 5])
+                    self.curvature_waypoints = abs(self.waypoint_array_in_map[self.idx_nearest_waypoint, 6])
                 else:
                     self.curvature_waypoints = 0.0
             # ===== HJ MODIFIED END =====
@@ -322,7 +322,7 @@ class Controller:
             adv_ts_st = self.speed_lookahead_for_steer
             la_position_steer = [self.future_position[0, 0] + v[0]*adv_ts_st, self.future_position[0, 1] + v[1]*adv_ts_st]
             idx_future_la_steer = self.nearest_waypoint(la_position_steer, self.waypoint_array_in_map[:, :2])
-            speed_la_for_lu = self.waypoint_array_in_map[idx_future_la_steer, 2]
+            speed_la_for_lu = self.waypoint_array_in_map[idx_future_la_steer, 3]
             
         speed_for_lu = self.speed_adjust_lat_err(speed_la_for_lu, furture_lat_e_norm)
  
@@ -418,7 +418,7 @@ class Controller:
         
         L1_distance = np.clip(L1_distance, lower_bound, self.t_clip_max)
  
-        future_L1_point = self.waypoint_at_distance_before_car(L1_distance, self.waypoint_array_in_map[:,:2], self.future_idx_nearest_waypoint)
+        future_L1_point = self.waypoint_at_distance_before_car(L1_distance, self.waypoint_array_in_map, self.future_idx_nearest_waypoint)
  
         return future_L1_point, L1_distance
     
@@ -440,7 +440,7 @@ class Controller:
         la_position = [self.position_in_map[0, 0] + v[0]*adv_ts_sp, self.position_in_map[0, 1] + v[1]*adv_ts_sp]
         idx_la_position = self.nearest_waypoint(la_position, self.waypoint_array_in_map[:, :2])
         idx_la_position = np.clip(idx_la_position + offset, 0, len(self.waypoint_array_in_map) -1)
-        global_speed = self.waypoint_array_in_map[idx_la_position, 2]
+        global_speed = self.waypoint_array_in_map[idx_la_position, 3]
         cur_speed = self.speed_now
  
         if cur_speed < 0:
@@ -448,7 +448,7 @@ class Controller:
  
         if (self.state == "START"
             and self.boost_mode
-            and self.waypoint_array_in_map[0,7] > 0):
+            and self.waypoint_array_in_map[0,8] > 0):
             if (global_speed-cur_speed) > 0:
                 global_speed = self.start_speed
             elif self.cur_state_speed - cur_speed > 0:
@@ -582,7 +582,7 @@ class Controller:
         future_position = self.future_position[0, :2]
         idx_future_local_wpnts = self.nearest_waypoint(future_position, self.waypoint_array_in_map[:, :2])
         # ===== HJ MODIFIED: Use signed d values, take abs() of difference =====
-        future_local_wpnts_d = self.waypoint_array_in_map[idx_future_local_wpnts,8]  # Keep sign
+        future_local_wpnts_d = self.waypoint_array_in_map[idx_future_local_wpnts,9]  # Keep sign
 
         try:
             future_potision_s, future_position_d = self.converter.get_frenet([self.future_position[0,0]],[self.future_position[0,1]])
@@ -628,7 +628,7 @@ class Controller:
         """
  
         heading = self.position_in_map[0,2]
-        map_heading = self.waypoint_array_in_map[self.idx_nearest_waypoint, 6]
+        map_heading = self.waypoint_array_in_map[self.idx_nearest_waypoint, 7]
         if abs(heading - map_heading) > np.pi:
             heading_error = 2*np.pi - abs(heading- map_heading)
         else:
@@ -804,17 +804,22 @@ class Controller:
             distance = self.t_clip_min
         d_distance = distance
  
-        # Extract only waypoints ahead of current index
+        ### HJ : use 3D distance for lookahead accumulation on sloped tracks
         waypoints_ahead = waypoints[idx_waypoint_behind_car:]
- 
-        # Compute segment-wise distances between waypoints
-        deltas = np.diff(waypoints_ahead, axis=0)
+
+        ### HJ : x=0, y=1, z=2 — compute 3D segment distances
+        if waypoints_ahead.shape[1] > 2:
+            deltas = np.diff(waypoints_ahead[:, :3], axis=0)
+        else:
+            deltas = np.diff(waypoints_ahead[:, :2], axis=0)
         seg_lengths = np.linalg.norm(deltas, axis=1)
- 
+
         # Compute cumulative distances
         cum_lengths = np.cumsum(seg_lengths)
- 
+
         # Find the first index where cumulative distance exceeds lookahead
         idx_offset = min(np.searchsorted(cum_lengths, d_distance), len(waypoints_ahead) - 1)
- 
-        return waypoints_ahead[idx_offset]
+
+        # Return xy of L1 point (steering is xy plane)
+        return waypoints_ahead[idx_offset, :2]
+        ### HJ : end

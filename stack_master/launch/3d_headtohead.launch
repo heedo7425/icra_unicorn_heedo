@@ -1,0 +1,44 @@
+<!-- ### HJ : minimal headtohead for 3D — controller + state machine only, no planners -->
+<!-- Global raceline tracking only (GB_TRACK state) -->
+<launch>
+  <arg name="map" default="gazebo_wall_3d_rc_car_10th_timeoptimal" />
+  <arg name="racecar_version" default="$(env CAR_NAME)" />
+  <arg name="sim" default="false" />
+  <arg name="ctrl_algo" default="PP" />
+  <arg name="LU_table" default="SRX1-0427" />
+
+  <param name="map" value="$(arg map)" />
+  <param name="racecar_version" value="$(arg racecar_version)" />
+  <param name="sim" value="$(arg sim)" />
+
+  <!-- Sector params (state machine needs these) -->
+  <rosparam ns="map_params" command="load"
+    file="$(find stack_master)/maps/$(arg map)/speed_scaling.yaml" />
+  <rosparam ns="ot_map_params" command="load"
+    file="$(find stack_master)/maps/$(arg map)/ot_sectors.yaml" />
+
+  <!-- Controller params -->
+  <rosparam ns="L1_controller" command="load"
+    file="$(find stack_master)/config/$(arg racecar_version)/controller.yaml" />
+  <node pkg="controller" name="dyn_controller" type="l1_params_server.py" output="screen" />
+  <node pkg="controller" name="controller_manager" type="controller_manager.py" output="screen">
+    <param name="LU_table" value="$(arg LU_table)" />
+    <param name="ctrl_algo" value="$(arg ctrl_algo)" />
+  </node>
+
+  <!-- Planner params (state machine needs these even without planners running) -->
+  <group ns="dyn_planners">
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="global_tracking" /></include>
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="recovery_planner" /></include>
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="start_planner" /></include>
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="static_avoidance_planner" /></include>
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="dynamic_avoidance_planner" /></include>
+  </group>
+
+  <!-- State machine -->
+  <node pkg="state_machine" type="dynamic_statemachine_server.py" name="dyn_statemachine" output="screen" />
+  <node pkg="state_machine" type="state_machine_node.py" name="state_machine">
+    <rosparam file="$(find stack_master)/config/state_machine_params.yaml" />
+  </node>
+  <node pkg="state_machine" type="state_indicator_node.py" name="state_indicator" output="screen" />
+</launch>

@@ -5,6 +5,7 @@
   <arg name="map"                  default="gazebo_wall_3d_rc_car_10th_timeoptimal" />
   <arg name="racecar_version"      default="$(env CAR_NAME)" />
   <arg name="sim"                  default="false" />
+  <arg name="fake_odom"            default="false" />
   <arg name="use_vesc_imu"         default="False" />
   <arg name="enable_smart_scaling" default="False" />
 
@@ -17,6 +18,13 @@
     <include file="$(find stack_master)/launch/low_level.launch">
       <arg name="racecar_version" value="$(arg racecar_version)" />
     </include>
+  </group>
+
+  <!-- ── Fake odom: waypoint-following odom for testing without hardware/gazebo ── -->
+  <group if="$(arg fake_odom)">
+    <node name="fake_odom" pkg="stack_master" type="fake_odom_publisher.py" output="screen">
+      <param name="map" value="$(arg map)" />
+    </node>
   </group>
 
   <!-- ── Odom: GLIL base_odom → /car_state/odom, /car_state/pose ── -->

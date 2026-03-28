@@ -74,6 +74,7 @@ class Controller_manager:
         
         self.state_machine_rate = rospy.get_param('state_machine/rate') #rate in hertz
         self.position_in_map = [] # current position in map frame
+        self.position_z = 0.0  # ### HJ : z coordinate for 3D nearest waypoint search
         # ===== HJ MODIFIED: Dual Frenet position system =====
         self.position_in_map_frenet = [] # current position in frenet coordinates (GB or Fixed depending on mode)
         self.position_in_map_frenet_gb = [] # GB Frenet position
@@ -386,9 +387,12 @@ class Controller_manager:
     def car_state_cb(self, data: PoseStamped):
         x = data.pose.position.x
         y = data.pose.position.y
-        theta = euler_from_quaternion([data.pose.orientation.x, data.pose.orientation.y, 
+        theta = euler_from_quaternion([data.pose.orientation.x, data.pose.orientation.y,
                                        data.pose.orientation.z, data.pose.orientation.w])[2]
         self.position_in_map = np.array([x, y, theta])[np.newaxis]
+        ### HJ : store z separately for 3D nearest waypoint search
+        self.position_z = data.pose.position.z
+        ### HJ : end
 
     # ===== HJ MODIFIED: Split Frenet callbacks for GB and Fixed =====
     def car_state_frenet_gb_cb(self, data: Odometry):
@@ -480,18 +484,27 @@ class Controller_manager:
 
         self.waypoint_list_in_map = []
         
+        ### HJ : waypoint layout [x, y, z, speed, safety_ratio, s, kappa, psi, ax, d]
+        ###       indices:        0  1  2  3      4              5  6      7    8   9
         for waypoint in data.local_wpnts:
-            waypoint_in_map = [waypoint.x_m, waypoint.y_m]
             speed = waypoint.vx_mps
             if waypoint.d_right + waypoint.d_left != 0:
-                self.waypoint_list_in_map.append([waypoint_in_map[0],
-                                                  waypoint_in_map[1], 
-                                                  speed, 
-                                                  min(waypoint.d_left, waypoint.d_right)/(waypoint.d_right + waypoint.d_left), 
-                                                  waypoint.s_m, waypoint.kappa_radpm, waypoint.psi_rad, waypoint.ax_mps2, waypoint.d_m]
-                                                )
+                safety_ratio = min(waypoint.d_left, waypoint.d_right) / (waypoint.d_right + waypoint.d_left)
             else:
-                self.waypoint_list_in_map.append([waypoint_in_map[0], waypoint_in_map[1], speed, 0, waypoint.s_m, waypoint.kappa_radpm, waypoint.psi_rad, waypoint.ax_mps2, waypoint.d_m])
+                safety_ratio = 0
+            self.waypoint_list_in_map.append([
+                waypoint.x_m,         # 0
+                waypoint.y_m,         # 1
+                waypoint.z_m,         # 2
+                speed,                # 3
+                safety_ratio,         # 4
+                waypoint.s_m,         # 5
+                waypoint.kappa_radpm, # 6
+                waypoint.psi_rad,     # 7
+                waypoint.ax_mps2,     # 8
+                waypoint.d_m,         # 9
+            ])
+        ### HJ : end
         self.waypoint_array_in_map = np.array(self.waypoint_list_in_map)
         self.waypoint_safety_counter = 0
         self.state = data.state
@@ -556,7 +569,11 @@ class Controller_manager:
                 self.measure_pub.publish(end-start)
                 
             ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
-            # ack_msg = self.create_ack_msg(0, acceleration, jerk, steering_angle)
+            
+            #-------------------------------Force Speed--------------------------------
+            ack_msg = self.create_ack_msg(2.5, acceleration, jerk, steering_angle)
+            #-------------------------------Force Speed--------------------------------
+
 
             self.drive_pub.publish(ack_msg)
             if self.measuring:

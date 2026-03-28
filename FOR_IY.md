@@ -63,6 +63,17 @@
 3. export_global_waypoints.py     → global_waypoints.json (0.1m CubicSpline, mu_rad 포함)
 ```
 
+## Python FrenetConverter 호출부 — 수정 및 검증 필요
+
+FrenetConverter 클래스 자체는 3D 대응 완료 (z 입력, 3D s 계산, spline_z).
+~20개 노드의 생성자에 z 전달 완료 (`[wpnt.x_m, wpnt.y_m, wpnt.z_m]`).
+
+**미완료 — 각 노드의 메서드 호출부 검증 필요:**
+- `get_frenet(x, y)` → 교차 구간이 있는 트랙에서는 `get_frenet_3d(x, y, z)` 전환 필요
+- `get_cartesian(s, d)` → RViz 마커를 3D로 찍으려면 `get_cartesian_3d(s, d)` 전환 필요
+- 현재는 기존 2D 메서드로도 동작함 (build_raceline의 s가 3D로 계산되므로)
+- 노드별로 3D 전환 필요성 판단 후 점진적 수정
+
 ## 확인/시도 필요 사항
 
 - [ ] `data/` 디렉토리 구조 셋업 (README 참조)
