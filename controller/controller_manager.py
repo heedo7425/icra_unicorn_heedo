@@ -69,7 +69,7 @@ class Controller_manager:
         rospy.loginfo(f"[{self.name}] Using {self.LUT_name}")
         
         self.use_sim = rospy.get_param('/sim')
-        self.wheelbase = rospy.get_param('/vesc/wheelbase', 0.321) # NUCX
+        self.wheelbase = rospy.get_param('/vesc/wheelbase', 0.36) # NUCX
         self.measuring = rospy.get_param('/measure', False)
         
         self.state_machine_rate = rospy.get_param('state_machine/rate') #rate in hertz
@@ -570,9 +570,9 @@ class Controller_manager:
                 
             ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
             
-            #-------------------------------Force Speed--------------------------------
-            ack_msg = self.create_ack_msg(2.5, acceleration, jerk, steering_angle)
-            #-------------------------------Force Speed--------------------------------
+            # #-------------------------------Force Speed--------------------------------
+            # ack_msg = self.create_ack_msg(2.5, acceleration, jerk, steering_angle)
+            # #-------------------------------Force Speed--------------------------------
 
 
             self.drive_pub.publish(ack_msg)

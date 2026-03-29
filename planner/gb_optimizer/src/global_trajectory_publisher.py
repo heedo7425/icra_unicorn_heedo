@@ -19,6 +19,9 @@ class GlobalRepublisher:
         self.glb_markers = None
         self.glb_wpnts = None
         self.track_bounds = None
+        ### HJ : velocity markers for 3D tracks
+        self.glb_vel_markers = None
+        ### HJ : end
 
         rospy.Subscriber('/global_waypoints', WpntArray, self.glb_wpnts_cb)
         rospy.Subscriber('/global_waypoints/markers', MarkerArray, self.glb_markers_cb)
@@ -27,6 +30,9 @@ class GlobalRepublisher:
         self.glb_wpnts_pub = rospy.Publisher('global_waypoints', WpntArray, queue_size=10)
         self.glb_markers_pub = rospy.Publisher('global_waypoints/markers', MarkerArray, queue_size=10)
         self.vis_track_bnds = rospy.Publisher('trackbounds/markers', MarkerArray, queue_size=10)
+        ### HJ : velocity markers publisher
+        self.glb_vel_markers_pub = rospy.Publisher('global_waypoints/vel_markers', MarkerArray, queue_size=10)
+        ### HJ : end
 
         # shortest_path
         self.glb_sp_markers = None
@@ -67,7 +73,7 @@ class GlobalRepublisher:
                 self.map_infos, self.est_lap_time, self.centerline_markers, self.centerline_wpnts,\
                 self.glb_markers, self.glb_wpnts,\
                 self.glb_sp_markers, self.glb_sp_wpnts, \
-                self.track_bounds = read_global_waypoints(map_name)
+                self.track_bounds, self.glb_vel_markers = read_global_waypoints(map_name)
             except FileNotFoundError:
                 rospy.logwarn(f"{map_name} param not found. Not publishing")
         else:
@@ -126,6 +132,10 @@ class GlobalRepublisher:
                 self.est_lap_time_pub.publish(self.est_lap_time)
             if self.graph_lattice is not None:
                 self.lattice_pub.publish(self.graph_lattice)
+            ### HJ : publish velocity markers
+            if self.glb_vel_markers is not None:
+                self.glb_vel_markers_pub.publish(self.glb_vel_markers)
+            ### HJ : end
 
             rate.sleep()
 

@@ -133,9 +133,16 @@ def read_global_waypoints(map_name:str)->Tuple[
     trackbounds_markers = message_converter.convert_dictionary_to_ros_message(
                                             'visualization_msgs/MarkerArray',
                                             d['trackbounds_markers'])
-
+    ### HJ : read velocity markers if present (3D export adds these)
+    global_traj_vel_markers_sp = None
+    if 'global_traj_vel_markers_sp' in d:
+        global_traj_vel_markers_sp = message_converter.convert_dictionary_to_ros_message(
+                                                'visualization_msgs/MarkerArray',
+                                                d['global_traj_vel_markers_sp'])
+    ### HJ : end
 
     return map_info_str, est_lap_time,\
             centerline_markers, centerline_waypoints, \
             global_traj_markers_iqp, global_traj_wpnts_iqp, \
-            global_traj_markers_sp, global_traj_wpnts_sp, trackbounds_markers
+            global_traj_markers_sp, global_traj_wpnts_sp, trackbounds_markers, \
+            global_traj_vel_markers_sp

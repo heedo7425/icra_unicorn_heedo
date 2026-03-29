@@ -381,7 +381,13 @@ class Controller:
         if abs(steering_angle - self.curr_steering_angle) > threshold:
             self.logger_info(f"steering angle clipped")
         steering_angle = np.clip(steering_angle, self.curr_steering_angle - threshold, self.curr_steering_angle + threshold)
-        steering_angle = np.clip(steering_angle,-0.53,0.53)
+        # steering_angle = np.clip(steering_angle,-0.53,0.53)
+        
+        #-------------------------0329 HJ-----------------------------
+        # For HOBAO
+        steering_angle = np.clip(steering_angle,-0.6632,0.6632)
+        #-------------------------0329 HJ-----------------------------
+
 
         # ===== HJ ADDED: Final NaN check before returning =====
         if np.isnan(steering_angle):
