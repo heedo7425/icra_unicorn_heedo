@@ -24,7 +24,7 @@ namespace frenet_conversion{
     has_global_trajectory_ = true;
   }
 
-  // ### HJ : parse trackbounds markers (left=odd id, right=even id from export)
+  // ### HJ : parse trackbounds markers (even index=left, odd index=right)
   void FrenetConverter::SetTrackBounds(const visualization_msgs::MarkerArrayConstPtr& bounds_msg) {
     left_bounds_.clear();
     right_bounds_.clear();
@@ -145,6 +145,7 @@ namespace frenet_conversion{
     *s = (d_x * tx + d_y * ty + d_z * tz) + wpt_array_.at(closest_idx_).s_m;
     if (is_closed_contour_) {
       *s = std::fmod(*s, global_trajectory_length_);
+      if (*s < 0) *s += global_trajectory_length_;  // ### HJ : wrap negative s
     }
     // d = projection onto lateral (horizontal normal)
     *d = d_x * nx + d_y * ny;
@@ -234,6 +235,93 @@ namespace frenet_conversion{
           closest_idx_ = i;
         }
       }
+
+      // ### HJ : rotational search — if full search result crosses wall, try 90/180/270°
+      if (has_track_bounds_ && min_dist < INFINITY &&
+          IsLineCrossingBoundary(x, y, wpt_array_[closest_idx_].x_m,
+                                wpt_array_[closest_idx_].y_m, z)) {
+        double vec_x = wpt_array_[closest_idx_].x_m - x;
+        double vec_y = wpt_array_[closest_idx_].y_m - y;
+
+        int angles[] = {90, 180, 270};
+        for (int angle_deg : angles) {
+          double angle_rad = angle_deg * M_PI / 180.0;
+          double cos_a = std::cos(angle_rad);
+          double sin_a = std::sin(angle_rad);
+
+          double target_x = x + vec_x * cos_a - vec_y * sin_a;
+          double target_y = y + vec_x * sin_a + vec_y * cos_a;
+
+          // find nearest height-filtered waypoint to rotated target
+          double target_min_dist = INFINITY;
+          int candidate_idx = -1;
+          for (int i = 0; i < (int)wpt_array_.size(); i++) {
+            double dh = CalcHeightOffset(x, y, z, i);
+            if (std::abs(dh) > height_filter_threshold_) continue;
+            double d_sq = std::pow(target_x - wpt_array_[i].x_m, 2) +
+                          std::pow(target_y - wpt_array_[i].y_m, 2);
+            if (d_sq < target_min_dist) {
+              target_min_dist = d_sq;
+              candidate_idx = i;
+            }
+          }
+
+          if (candidate_idx < 0) continue;
+          if (IsLineCrossingBoundary(x, y, wpt_array_[candidate_idx].x_m,
+                                    wpt_array_[candidate_idx].y_m, z)) continue;
+
+          // search s-direction from candidate for closest non-wall waypoint
+          int best_idx = candidate_idx;
+          double best_dist = std::pow(x - wpt_array_[candidate_idx].x_m, 2) +
+                             std::pow(y - wpt_array_[candidate_idx].y_m, 2) +
+                             std::pow(z - wpt_array_[candidate_idx].z_m, 2);
+          int n = (int)wpt_array_.size();
+
+          // forward
+          for (int off = 1; off < n; off++) {
+            int ti = (candidate_idx + off) % n;
+            double dh = CalcHeightOffset(x, y, z, ti);
+            if (std::abs(dh) > height_filter_threshold_) break;
+            if (IsLineCrossingBoundary(x, y, wpt_array_[ti].x_m,
+                                      wpt_array_[ti].y_m, z)) break;
+            double d_sq = std::pow(x - wpt_array_[ti].x_m, 2) +
+                          std::pow(y - wpt_array_[ti].y_m, 2) +
+                          std::pow(z - wpt_array_[ti].z_m, 2);
+            if (d_sq < best_dist) { best_dist = d_sq; best_idx = ti; }
+          }
+
+          // backward
+          for (int off = 1; off < n; off++) {
+            int ti = (candidate_idx - off + n) % n;
+            double dh = CalcHeightOffset(x, y, z, ti);
+            if (std::abs(dh) > height_filter_threshold_) break;
+            if (IsLineCrossingBoundary(x, y, wpt_array_[ti].x_m,
+                                      wpt_array_[ti].y_m, z)) break;
+            double d_sq = std::pow(x - wpt_array_[ti].x_m, 2) +
+                          std::pow(y - wpt_array_[ti].y_m, 2) +
+                          std::pow(z - wpt_array_[ti].z_m, 2);
+            if (d_sq < best_dist) { best_dist = d_sq; best_idx = ti; }
+          }
+
+          closest_idx_ = best_idx;
+          ROS_DEBUG_THROTTLE(1.0, "[FrenetConverter] Wall avoided via %d rotation", angle_deg);
+          break;
+        }
+      }
+      // ### HJ : fallback — if all filters failed, use simple 3D nearest
+      if (min_dist == INFINITY) {
+        ROS_WARN_THROTTLE(1.0, "[FrenetConverter] All filters failed, using simple 3D nearest");
+        for (int i = 0; i < (int)wpt_array_.size(); i++) {
+          double d_squared = std::pow(x - wpt_array_[i].x_m, 2) +
+                             std::pow(y - wpt_array_[i].y_m, 2) +
+                             std::pow(z - wpt_array_[i].z_m, 2);
+          if (d_squared < min_dist) {
+            min_dist = d_squared;
+            closest_idx_ = i;
+          }
+        }
+      }
+      // ### HJ : end
     }
     *idx = (closest_idx_ + 1); // account for removing the first element
     // ### HJ : end

@@ -7,6 +7,8 @@ find_package(catkin REQUIRED COMPONENTS
         nav_msgs
         f110_msgs
         tf
+        interactive_markers
+        visualization_msgs
 )
 
 # ===== HJ ADDED: OpenCV dependency (required by frenet_conversion) =====
@@ -15,7 +17,7 @@ find_package(OpenCV REQUIRED)
 
 catkin_package(
    INCLUDE_DIRS include
-   CATKIN_DEPENDS roscpp nav_msgs f110_msgs frenet_conversion tf
+   CATKIN_DEPENDS roscpp nav_msgs f110_msgs frenet_conversion tf interactive_markers visualization_msgs
    LIBRARIES ${PROJECT_NAME}
 )
 

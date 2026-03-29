@@ -7,6 +7,10 @@
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <visualization_msgs/MarkerArray.h>
+#include <visualization_msgs/InteractiveMarker.h>
+#include <visualization_msgs/InteractiveMarkerControl.h>
+#include <visualization_msgs/InteractiveMarkerFeedback.h>
+#include <interactive_markers/interactive_marker_server.h>
 #include <f110_msgs/WpntArray.h>
 #include <f110_msgs/OTWpntArray.h>
 #include <f110_msgs/Wpnt.h>
@@ -30,6 +34,11 @@ class FrenetRepublisher {
   void TrackBoundsCallback(const visualization_msgs::MarkerArrayConstPtr &bounds_msg);
   // ### HJ : end
 
+  // ### HJ : interactive marker for forcing full search
+  void FullSearchButtonCallback(const visualization_msgs::InteractiveMarkerFeedbackConstPtr &feedback);
+  void CreateFullSearchButton();
+  // ### HJ : end
+
   ros::NodeHandle nh_;
   ros::Subscriber global_trajectory_sub_;
   ros::Subscriber fixed_path_trajectory_sub_;
@@ -49,6 +58,11 @@ class FrenetRepublisher {
 
   bool has_global_trajectory_{false};
   bool has_fixed_path_trajectory_{false};
+
+  // ### HJ : full search interactive marker
+  std::shared_ptr<interactive_markers::InteractiveMarkerServer> im_server_;
+  bool force_full_search_{false};
+  // ### HJ : end
 };
    
 }// end namespace frenet_odom_republisher

@@ -91,6 +91,10 @@ class FrenetConverter {
                          double* s, double* d, double* v_s, double* v_d, int* idx);
   // ### iy : end
 
+  // ### HJ : force full search from external trigger (e.g. interactive marker)
+  void ForceFullSearch() { first_call_ = true; }
+  // ### HJ : end
+
  private:
   /**
    * @brief Calculates the frenet coordinates of the given position
@@ -168,8 +172,8 @@ class FrenetConverter {
   std::vector<BoundPoint> left_bounds_;
   std::vector<BoundPoint> right_bounds_;
   bool has_track_bounds_{false};
-  double height_filter_threshold_{0.15};  // [m] d_height threshold for layer filtering
-  double z_boundary_margin_{0.2};         // [m] z margin for boundary filtering
+  double height_filter_threshold_{0.10};  // [m] d_height threshold for layer filtering
+  double z_boundary_margin_{0.1};         // [m] z margin for boundary filtering
   // ### HJ : end
 
 };

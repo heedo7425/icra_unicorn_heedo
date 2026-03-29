@@ -32,6 +32,11 @@ void FrenetRepublisher::InitSubscribersPublishers() {
   trackbounds_sub_ = nh_.subscribe<visualization_msgs::MarkerArray>
       ("/trackbounds/markers", 1, &FrenetRepublisher::TrackBoundsCallback, this);
   // ### HJ : end
+
+  // ### HJ : interactive marker button for forcing full search
+  im_server_ = std::make_shared<interactive_markers::InteractiveMarkerServer>("frenet_full_search");
+  CreateFullSearchButton();
+  // ### HJ : end
 }
 
 void FrenetRepublisher::GlobalTrajectoryCallback(
@@ -48,7 +53,7 @@ void FrenetRepublisher::TrackBoundsCallback(
   frenet_converter_.SetTrackBounds(bounds_msg);
   frenet_converter_fixed_.SetTrackBounds(bounds_msg);
   trackbounds_sub_.shutdown();
-  ROS_INFO("[FrenetRepublisher] Track bounds received and stored, unsubscribed.");
+  ROS_WARN("[FrenetRepublisher] Track bounds received and stored, unsubscribed.");
 }
 // ### HJ : end
 
@@ -108,6 +113,51 @@ void FrenetRepublisher::OdomCallback(const nav_msgs::OdometryConstPtr &msg){
     frenet_odom_fixed_pub_.publish(frenet_odom_fixed);
   }
 }
+
+// ### HJ : interactive marker — full search button
+void FrenetRepublisher::CreateFullSearchButton() {
+  visualization_msgs::InteractiveMarker int_marker;
+  int_marker.header.frame_id = "map";
+  int_marker.name = "full_search_button";
+  int_marker.description = "Force Full Search";
+  int_marker.pose.position.x = 10.0;
+  int_marker.pose.position.y = 10.0;
+  int_marker.pose.position.z = 0.0;
+  int_marker.scale = 0.8;
+
+  // yellow box marker
+  visualization_msgs::Marker box;
+  box.type = visualization_msgs::Marker::CUBE;
+  box.scale.x = 0.8;
+  box.scale.y = 0.4;
+  box.scale.z = 0.15;
+  box.color.r = 1.0;
+  box.color.g = 1.0;
+  box.color.b = 0.0;
+  box.color.a = 1.0;
+
+  // button control — click to trigger
+  visualization_msgs::InteractiveMarkerControl button_control;
+  button_control.interaction_mode = visualization_msgs::InteractiveMarkerControl::BUTTON;
+  button_control.always_visible = true;
+  button_control.markers.push_back(box);
+  int_marker.controls.push_back(button_control);
+
+  im_server_->insert(int_marker,
+      boost::bind(&FrenetRepublisher::FullSearchButtonCallback, this, _1));
+  im_server_->applyChanges();
+  ROS_INFO("[FrenetRepublisher] Full Search interactive marker created");
+}
+
+void FrenetRepublisher::FullSearchButtonCallback(
+    const visualization_msgs::InteractiveMarkerFeedbackConstPtr &feedback) {
+  if (feedback->event_type == visualization_msgs::InteractiveMarkerFeedback::BUTTON_CLICK) {
+    frenet_converter_.ForceFullSearch();
+    frenet_converter_fixed_.ForceFullSearch();
+    ROS_WARN("[FrenetRepublisher] Full Search triggered by interactive marker!");
+  }
+}
+// ### HJ : end
 
 }// end namespace frenet_odom_republisher
 

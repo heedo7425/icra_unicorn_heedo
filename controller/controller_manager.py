@@ -668,7 +668,8 @@ class Controller_manager:
         lookahead_marker.color.a = 1.0
         lookahead_marker.pose.position.x = lookahead_point[0]
         lookahead_marker.pose.position.y = lookahead_point[1]
-        lookahead_marker.pose.position.z = 0
+        ### HJ : use actual z from L1 point for 3D visualization
+        lookahead_marker.pose.position.z = lookahead_point[2] if len(lookahead_point) > 2 else 0
 
         lookahead_marker.pose.orientation.x = 0
         lookahead_marker.pose.orientation.y = 0
@@ -695,7 +696,8 @@ class Controller_manager:
         future_position_marker.color.a = 1.0
         future_position_marker.pose.position.x = future_position[0,0]
         future_position_marker.pose.position.y = future_position[0,1]
-        future_position_marker.pose.position.z = 0
+        ### HJ : use spline-interpolated z for 3D visualization
+        future_position_marker.pose.position.z = self.controller.future_position_z
 
         future_position_marker.pose.orientation.x = quaternions[0]
         future_position_marker.pose.orientation.y = quaternions[1]
@@ -721,7 +723,8 @@ class Controller_manager:
         lookahead_marker.color.a = 1.0
         lookahead_marker.pose.position.x = lookahead_point[0]
         lookahead_marker.pose.position.y = lookahead_point[1]
-        lookahead_marker.pose.position.z = 0
+        ### HJ : use actual z for 3D visualization
+        lookahead_marker.pose.position.z = lookahead_point[2] if len(lookahead_point) > 2 else 0
         lookahead_marker.pose.orientation.x = 0
         lookahead_marker.pose.orientation.y = 0
         lookahead_marker.pose.orientation.z = 0
@@ -745,10 +748,11 @@ class Controller_manager:
         opponent_marker.color.b = 0.0
         opponent_marker.color.a = 1.0
         if self.opponent is not None:
-            pos = self.converter.get_cartesian([self.opponent[0]], [self.opponent[1]])
+            ### HJ : use 3D cartesian for opponent marker visualization
+            pos = self.converter.get_cartesian_3d([self.opponent[0]], [self.opponent[1]])
             opponent_marker.pose.position.x = pos[0]
             opponent_marker.pose.position.y = pos[1]
-            opponent_marker.pose.position.z = 0
+            opponent_marker.pose.position.z = pos[2]
 
         opponent_marker.pose.orientation.x = 0
         opponent_marker.pose.orientation.y = 0
