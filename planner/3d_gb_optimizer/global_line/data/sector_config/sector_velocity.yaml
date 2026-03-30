@@ -1,0 +1,14 @@
+global_limit: 2.0
+n_sectors: 3
+Sector0:
+  start: 0
+  end: 18
+  velocity_scale: 1.5
+Sector1:
+  start: 18
+  end: 38
+  velocity_scale: 0.5
+Sector2:
+  start: 38
+  end: 114
+  velocity_scale: 1.5

@@ -17,6 +17,14 @@
 - [x] **d_right 음수 수정** — export에서 abs() 처리
 - [x] **psi_rad normalize** — arctan2 사용 → [-π,π] 자동
 - [x] **Track3D 소스 확보** — planner/3d_racing_line/src/
+- [x] **Controller 3D 점검 + 수정** (0330)
+  - L1 point: `waypoint_at_distance_before_car` → `[:3]` xyz 반환 (누적 거리는 이미 3D)
+  - Future position z: spline 보간 (`converter.spline_z(s)`)으로 추정
+  - Lateral error: `get_frenet_3d` 적용 (future_position_z 활용)
+  - AEB: 원본 활성화 (전수 검색 방식), emergency 버전 주석 처리
+  - 마커 z 적용: lookahead(L1 xyz), future position(spline z), prediction sphere(spline z), trailing opponent(`get_cartesian_3d`)
+  - Nearest waypoint: local waypoints 내 검색이라 2D로 충분 → 스킵
+  - position_in_map z: Controller 내에서 z 직접 사용 없음 → 구조 변경 불필요
 
 ## 즉시 (시스템 돌아가게 하는 것)
 
@@ -27,20 +35,19 @@
 
 ## 즉시 (Frenet 남은 작업)
 
-- [ ] **2. Python frenet_converter.py 호출부 3D 수정 및 검증**
-  - FrenetConverter 클래스 3D 대응 완료 (z 입력, 3D s, spline_z, get_frenet_3d/get_cartesian_3d)
-  - ~20개 노드의 생성자에 z 전달 완료 (`[wpnt.x_m, wpnt.y_m, wpnt.z_m]`)
-  - **미완료**: 각 노드의 메서드 호출부 검증 필요
-    - `get_frenet(x, y)` → `get_frenet_3d(x, y, z)` 전환 필요 여부 (교차 구간 nearest search)
-    - `get_cartesian(s, d)` → `get_cartesian_3d(s, d)` 전환 필요 여부 (RViz 마커 z 반영)
-    - 플래너 spline 결과 마커가 z=0에 찍히는 문제
-  - 노드별로 3D 전환 필요성 판단 후 점진적 수정
-- [ ] **3. Python frenet_converter.py 3D 대응**
-  - `build_raceline()`: xy 2D 거리로 s 자체 재계산 → export한 3D s_m 무시
-  - `__init__`: z 입력 없음 (`waypoints_x, waypoints_y`만)
-  - `get_approx_s`: xy only nearest search → 교차 구간에서 틀림
-  - ~20개 노드가 사용 (planner, controller, prediction, perception, sector tuner)
-  - 파일: `f110_utils/libs/frenet_conversion/src/frenet_converter/frenet_converter.py`
+- [x] **2. Python frenet_converter.py 3D 대응 + 보호 로직** (0330)
+  - `build_raceline()`: 3D 거리 누적으로 s 계산, `waypoints_s[index]`로 반환 (하드코딩 제거)
+  - `waypoints_distance_m`: 실제 간격 중앙값으로 계산 (0.1 하드코딩 제거)
+  - Height filter (`d_height`): CalcHeightOffset 수식 벡터화, threshold 0.10m
+  - Boundary check: `set_track_bounds`에서 선분 시작/끝/z평균 미리 계산, numpy 벡터화 교차 판정
+  - 회전 검색: 벽 넘으면 90°/180°/270° 방향 탐색 → s 전진/후진으로 최단 waypoint
+  - Fallback: height filter 전멸 → 단순 3D nearest, 회전 실패 → 벽 무시 nearest
+  - Track bounds 자동 로드: 생성자에서 `/trackbounds/markers` 토픽 1회 수신 (5s timeout)
+  - psi/mu spline 미분으로 자체 계산 (Wpnt 배열 불필요)
+- [x] **2-1. Python frenet_converter.py 호출부 3D 적용** (0330)
+  - Controller lateral error: `get_frenet_3d` 적용 (future_position_z 활용)
+  - Controller trailing opponent 마커: `get_cartesian_3d` 적용
+  - **미완료**: 플래너/perception 등 ~20개 노드 호출부는 점진적 전환 필요
 - [ ] **3. Glob2Frenet.srv에 z 추가** — frenet_conversion_server에서 3D 서비스 지원
 
 ## 단기 (경로 품질)
@@ -48,17 +55,40 @@
 - [ ] **4. 0327 최적화 결과를 export에 통과시키기** — 센터라인 smooth 필요 (iy 의존)
 - [ ] **5. 경사면 속도 보상** — pitch(mu_rad) 기반 속도 커맨드 보정
 
+## 단기 (Perception 대체 — Gazebo 환경)
+
+- [x] **10. Gazebo static obstacle → planner 직접 연결** (0330)
+  - `gazebo_static_obstacle_publisher.py` 생성 — poses + radii 구독 → `get_frenet_3d` → ObstacleArray publish
+  - `gazebo_static_obstacle_publisher.launch` 생성 — in/out 토픽 configurable
+  - Obstacle.msg에 `z_m` 필드 추가
+  - srv 4개에 z 필드 추가 (Glob2Frenet, Glob2FrenetArr, Frenet2Glob, Frenet2GlobArr)
+  - `GetFrenetPoint` 시그니처에 z 추가, `GetGlobalPoint`에 z 출력 추가
+  - frenet_conversion_server 콜백에서 req.z/res.z 활용
+- [ ] **10-1. detect/tracking C++ 코드 3D 대응** (detection 확정 후)
+  - `GetFrenetPoint`, `GetGlobalPoint` 시그니처 변경으로 인한 호출부 수정 필요:
+    - `abp-detection/detect.cpp:128,132` — GetGlobalPoint에 &p.z 추가
+    - `abp-detection/detect.cpp:632,684` — GetFrenetPoint에 center_z 추가
+    - `2.5d_detection/tracking_node.cpp:486` — GetFrenetPoint에 z 추가
+    - `2.5d_detection/detection_node.cpp:338` — GetFrenetPoint에 z 추가
+  - Obstacle.msg z_m 필드 채우기 (tracking 결과에서 z 반영)
+
 ## 중기 (Closest point 개선)
 
-- [ ] **6. UpdateClosestIndex 교차 구간 robustness**
-  - 현재 3D 유클리드 거리로 동작, 교차 구간에서 위험
-  - 접근법: z_weight / mu_rad 비교 / surface segment
+- [x] **6. UpdateClosestIndex 교차 구간 robustness** (0330)
+  - C++: height filter + boundary raycast + 회전 검색(90°/180°/270°) + s 전진/후진 + fallback 추가
+  - C++: 음수 s wrapping 수정 (`fmod` 후 `+= length`)
+  - C++: `ForceFullSearch()` public 메서드 추가
+  - C++: Interactive marker (rviz 클릭 → full search 강제 트리거)
+  - C++: height_filter_threshold 0.10m, z_boundary_margin 0.10m
+  - C++: trackbounds 로드 확인 로그 → ROS_WARN
+  - Python도 동일 보호 로직 적용 (TODO #2에서 완료)
 - [ ] **7. Controller nearest_waypoint XY only → 3D**
   - `Controller.py:190` — `nearest_waypoint(position[:2], waypoints[:2])`
+  - local waypoints 내 검색이라 당장 문제없음, 경로 겹침 시 필요
 
 ## 장기
 
-- [ ] **8. 시각화 마커 z 반영** — sector_server 등 z=0 하드코딩 수정
+- [ ] **8. 시각화 마커 z 반영** — sector_server 등 z=0 하드코딩 수정 (controller 마커는 0330 완료)
 - [ ] **9. 하드코딩 제거 → launch/yaml 인자 통합**
 
 ## 핵심 판단 기록
@@ -84,14 +114,15 @@
 | Localization (GLIL) | OK | x,y,z,roll,pitch,yaw, body frame twist |
 | Waypoint (Wpnt.msg) | OK | z_m, mu_rad 필드 있음 |
 | global_waypoints.json | OK | CubicSpline, mu_rad, IQP=SP, gazebo_wall 테스트 완료 |
-| Frenet C++ (closest point) | OK | 3D Euclidean distance (교차 구간 개선 필요) |
-| Frenet C++ (s,d 계산) | **3D** | 3D 접선 투영 적용 완료 |
+| Frenet C++ (closest point) | **3D** | height filter + boundary raycast + 회전 검색 + fallback |
+| Frenet C++ (s,d 계산) | **3D** | 3D 접선 투영 적용 완료, 음수 s wrapping 수정 |
 | Frenet C++ (v_s,v_d 계산) | 2D | body frame이라 기존 로직이 정확 |
+| Frenet C++ (interactive) | OK | rviz 버튼 → ForceFullSearch |
 | Frenet Conversion Server | 2D | srv에 z 없음 (TODO #3) |
-| Python FrenetConverter | **2D** | z 없음, ~20개 노드 사용 (TODO #2) |
+| Python FrenetConverter | **3D** | height filter + boundary(벡터화) + 회전 검색 + fallback, trackbounds 자동 로드 |
 | Sector Servers | 무관 | 인덱스 기반 |
 | Velocity Scaler | 무관 | 인덱스 기반 |
 | State Machine | 무관 | s,d만 사용 |
-| Controller (L1/PP) | 2D | Python FrenetConverter 의존 |
+| Controller (L1/PP) | **3D** | L1 xyz, future z spline, lateral error 3D frenet, 마커 z, AEB 활성화 |
 | 3d_base_system.launch | OK | sim/real 분리 |
 | test_3d_frenet.launch | OK | fake odom 테스트 검증 완료 |

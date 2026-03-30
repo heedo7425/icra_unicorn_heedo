@@ -39,8 +39,9 @@ class FrenetConverter {
    * @param idx returns the index of the closest waypoint
    * 
    */
-  void GetFrenetPoint(const double x, const double y, double* s, double* d, 
-                      int* idx, bool full_search);
+  // ### HJ : added z for 3D frenet conversion (default 0.0 for 2D callers)
+  void GetFrenetPoint(const double x, const double y, const double z,
+                      double* s, double* d, int* idx, bool full_search);
   
   /**
    * @brief Returns the global point corresponding to the frenet position
@@ -51,7 +52,8 @@ class FrenetConverter {
    * @param y output y position
    * 
    */
-  void GetGlobalPoint(const double s, const double d, double* x, double* y);
+  // ### HJ : added z output for 3D
+  void GetGlobalPoint(const double s, const double d, double* x, double* y, double* z);
 
   /**
    * @brief Get the Closest Index on the global trajectory to the given position

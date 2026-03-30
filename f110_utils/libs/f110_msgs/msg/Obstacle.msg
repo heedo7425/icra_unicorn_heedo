@@ -7,6 +7,8 @@ float64 d_left            # defined as left bound of the obstacle
 
 float64 x_m
 float64 y_m
+### HJ : add z_m for 3D obstacle position
+float64 z_m
 
 bool is_actually_a_gap    # used by the frenet planner to choos points through which we want to go
 float64 s_center

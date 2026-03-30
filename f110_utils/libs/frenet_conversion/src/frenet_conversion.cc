@@ -44,7 +44,8 @@ namespace frenet_conversion{
   }
   // ### HJ : end
 
-  void FrenetConverter::GetFrenetPoint(const double x, const double y, 
+  // ### HJ : added z for 3D frenet conversion
+  void FrenetConverter::GetFrenetPoint(const double x, const double y, const double z,
                                        double* s, double* d, int* idx, bool full_search) {
 
     if (!has_global_trajectory_) {
@@ -52,11 +53,11 @@ namespace frenet_conversion{
       return;
     }
 
-    UpdateClosestIndex(x, y, 0.0, idx, full_search);
+    UpdateClosestIndex(x, y, z, idx, full_search);
 
-    // calculate frenet point (z=0 for 2D callers)
-    CalcFrenetPoint(x, y, 0.0, s, d);
+    CalcFrenetPoint(x, y, z, s, d);
   }
+  // ### HJ : end
 
   // ### iy : add z for 3D closest-point search + first_call full search
   // ### HJ : CalcFrenetPoint uses 3D tangent, CalcFrenetVelocity stays 2D (body frame twist)
@@ -83,8 +84,9 @@ namespace frenet_conversion{
   }
   // ### HJ : end
 
-  void FrenetConverter::GetGlobalPoint(const double s, const double d, 
-                                       double* x, double* y) {
+  // ### HJ : added z output for 3D
+  void FrenetConverter::GetGlobalPoint(const double s, const double d,
+                                       double* x, double* y, double* z) {
 
     if (!has_global_trajectory_) {
       ROS_ERROR("[FrenetConverter] No global trajectory set!");
@@ -93,11 +95,12 @@ namespace frenet_conversion{
     std::unique_lock<std::mutex> lock(mutexGlobalTrajectory_);
 
     UpdateClosestIndex(s);
-    
-    // calculate frenet point
+
     CalcGlobalPoint(s, d, x, y);
+    *z = wpt_array_.at(closest_idx_).z_m;
     lock.unlock();
   }
+  // ### HJ : end
 
   void FrenetConverter::GetClosestIndex(const double s, int* idx) {
     if (!has_global_trajectory_) {

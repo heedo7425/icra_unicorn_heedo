@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>global_line_3d</name>
+  <version>1.0.0</version>
+  <description>Global racing line generation pipeline</description>
+
+  <maintainer email="iy@todo.todo">iy</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>rosbag</exec_depend>
+  <exec_depend>rospy</exec_depend>
+</package>

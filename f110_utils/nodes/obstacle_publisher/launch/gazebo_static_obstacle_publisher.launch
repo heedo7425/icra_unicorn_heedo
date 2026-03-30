@@ -1,0 +1,17 @@
+<launch>
+    <!-- ### HJ : Gazebo static obstacle → /tracking/obstacles (bypasses detect + tracking) -->
+    <arg name="in_poses_topic" default="/gazebo/static_obstacles/poses"/>
+    <arg name="in_radii_topic" default="/gazebo/static_obstacles/radii"/>
+    <arg name="out_obstacles_topic" default="/tracking/obstacles"/>
+    <arg name="out_markers_topic" default="/gazebo_static_obstacle_markers"/>
+    <arg name="rate" default="10"/>
+
+    <node name="gazebo_static_obstacle_publisher" pkg="obstacle_publisher"
+          type="gazebo_static_obstacle_publisher.py" output="screen">
+        <param name="in_poses_topic" value="$(arg in_poses_topic)"/>
+        <param name="in_radii_topic" value="$(arg in_radii_topic)"/>
+        <param name="out_obstacles_topic" value="$(arg out_obstacles_topic)"/>
+        <param name="out_markers_topic" value="$(arg out_markers_topic)"/>
+        <param name="rate" value="$(arg rate)"/>
+    </node>
+</launch>

@@ -30,6 +30,20 @@ UNICORN Racing Team의 자율주행 레이싱 스택 (ROS1, Noetic).
 - 런치 (2D 원본): `stack_master/launch/base_system.launch`, `stack_master/launch/headtohead.launch`
 - 런치 (3D 작업용): `stack_master/launch/car_race.launch` (임시), 향후 `3d_base_system.launch`
 
+## Docker 환경
+- 컨테이너 이름: `icra2026`
+- 호스트 → 컨테이너 경로 매핑: `/home/unicorn/icra_2026_ws/UNICORN-ICCAS_2025` → `/home/unicorn/catkin_ws/src/race_stack`
+- **빌드, import 테스트, 코드 실행은 반드시 Docker 컨테이너 안에서 할 것**
+```bash
+# 컨테이너 내부에서 명령 실행
+docker exec icra2026 bash -c "source /opt/ros/noetic/setup.bash && source /home/unicorn/catkin_ws/devel/setup.bash && <명령>"
+
+# 빌드 예시
+docker exec icra2026 bash -c "source /opt/ros/noetic/setup.bash && source /home/unicorn/catkin_ws/devel/setup.bash && cd /home/unicorn/catkin_ws && catkin build"
+```
+- 로컬 파일 수정은 호스트에서, 빌드/테스트는 Docker에서
+- **로컬 git에 영향주는 docker 명령 (fetch, checkout 등) 절대 금지**
+
 ## 빌드
 ```bash
 cd /home/unicorn/icra_2026_ws && catkin build
