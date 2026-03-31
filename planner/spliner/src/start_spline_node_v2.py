@@ -146,7 +146,7 @@ class ObstacleSpliner:
 
     # Callback for global waypoint topic
     def gb_cb(self, data: WpntArray):
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
         self.gb_wpnts = data
         if self.gb_vmax is None:
             self.gb_vmax = np.max(np.array([wpnt.vx_mps for wpnt in data.wpnts]))
@@ -214,7 +214,7 @@ class ObstacleSpliner:
         rospy.wait_for_message("/global_waypoints", WpntArray)
 
         # Initialize the FrenetConverter object
-        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo(f"[{self.name}] initialized FrenetConverter object")
 
         return converter

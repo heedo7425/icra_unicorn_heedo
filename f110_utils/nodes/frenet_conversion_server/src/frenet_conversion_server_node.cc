@@ -47,12 +47,13 @@ namespace frenet_conversion_server
     }
   }
 
+  // ### HJ : use req.z for 3D frenet conversion
   bool FrenetConversionServer::Glob2FrenetConversionCallback(
       frenet_conversion::Glob2Frenet::Request &req,
       frenet_conversion::Glob2Frenet::Response &res)
   {
     frenet_converter_.GetFrenetPoint(
-        req.x, req.y, &res.s, &res.d, &res.idx, true);
+        req.x, req.y, req.z, &res.s, &res.d, &res.idx, true);
     return true;
   }
 
@@ -62,11 +63,12 @@ namespace frenet_conversion_server
   {
     std::vector<double> s,d;
     std::vector<int> idx;
-    for (int i = 0; i < req.x.size(); i++)
+    for (size_t i = 0; i < req.x.size(); i++)
     {
         double s_i,d_i;
         int idx_i;
-        frenet_converter_.GetFrenetPoint(req.x[i], req.y[i], &s_i, &d_i, &idx_i, true);
+        double z_i = (i < req.z.size()) ? req.z[i] : 0.0;
+        frenet_converter_.GetFrenetPoint(req.x[i], req.y[i], z_i, &s_i, &d_i, &idx_i, true);
         s.push_back(s_i);
         d.push_back(d_i);
         idx.push_back(idx_i);
@@ -76,14 +78,16 @@ namespace frenet_conversion_server
     res.idx = idx;
     return true;
   }
+  // ### HJ : end
 
 
+  // ### HJ : Frenet2Glob now returns z from waypoint
   bool FrenetConversionServer::Frenet2GlobConversionCallback(
       frenet_conversion::Frenet2Glob::Request &req,
       frenet_conversion::Frenet2Glob::Response &res)
   {
     frenet_converter_.GetGlobalPoint(
-        req.s, req.d, &res.x, &res.y);
+        req.s, req.d, &res.x, &res.y, &res.z);
     return true;
   }
 
@@ -91,18 +95,21 @@ namespace frenet_conversion_server
     frenet_conversion::Frenet2GlobArr::Request &req,
     frenet_conversion::Frenet2GlobArr::Response &res)
   {
-    std::vector<double> x,y;
-    for (int i = 0; i < req.s.size(); i++)
+    std::vector<double> x, y, z;
+    for (size_t i = 0; i < req.s.size(); i++)
     {
-        double x_i,y_i;
-        frenet_converter_.GetGlobalPoint(req.s[i], req.d[i], &x_i, &y_i);
+        double x_i, y_i, z_i;
+        frenet_converter_.GetGlobalPoint(req.s[i], req.d[i], &x_i, &y_i, &z_i);
         x.push_back(x_i);
         y.push_back(y_i);
+        z.push_back(z_i);
     }
     res.x = x;
     res.y = y;
+    res.z = z;
     return true;
   }
+  // ### HJ : end
 
   void FrenetConversionServer::GlobalTrajectoryCallback(
       const f110_msgs::WpntArrayConstPtr &wpt_array)

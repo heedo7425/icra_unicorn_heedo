@@ -81,7 +81,7 @@ class OvertakingInterpolator:
         self.glb_spline_np = coords[:, 1:3]
         self.glb_spline_x = Spline(coords[:, 0], coords[:, 1])
         self.glb_spline_y = Spline(coords[:, 0], coords[:, 2])
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
 
 
     def glb_wpnts_sp_cb(self, data:WpntArray):
@@ -124,7 +124,7 @@ class OvertakingInterpolator:
 
         # Initialize the FrenetConverter object
 
-        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo("[OT Interpolator] initialized FrenetConverter object")
 
         return converter

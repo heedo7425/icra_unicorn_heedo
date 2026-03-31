@@ -24,6 +24,7 @@ class LapAnalyser:
         if msg is not None:
             self.vis_pos = msg.pose
         self.vis_pos.position.z += 1.5  # appear on top of the state marker
+        self.vis_pos.position.x += -1
         rospy.loginfo(f"LapAnalyser will be centered at {self.vis_pos.position.x}, {self.vis_pos.position.y}, {self.vis_pos.position.z}")
 
         # stuff for min distance to track boundary

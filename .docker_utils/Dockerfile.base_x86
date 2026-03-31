@@ -14,7 +14,7 @@ RUN apt-get update && xargs apt-get install -y < /.install_utils/linux_req_car.t
 
 # install python packages
 RUN --mount=type=cache,target=/root/.cache/pip pip3 install -r /.install_utils/requirements.txt && \
-        pip3 install numpy casadi
+        pip3 install numpy casadi open3d
 
 
 # install catkin build tools
@@ -29,6 +29,22 @@ RUN apt-get update && apt-get install -y curl gnupg2 lsb-release && \
 RUN . /.install_utils/cartographer_req.sh && . /.install_utils/install_abseil.sh
 
 # install particle filter
-#RUN . /.install_utils/dev_pf_setup.sh 
+# RUN . /.install_utils/dev_pf_setup.sh
+# install livox driver & Livox-SDK2
+RUN . /.install_utils/dev_livox_setup.sh
+
+# ── GLIL dependencies ────────────────────────────────────────────────────────
+RUN apt-get update && xargs apt-get install -y < /.install_utils/linux_req_glil.txt
+
+# CMake 3.28 (GTSAM requires newer cmake than system default)
+RUN apt-get install -y --no-install-recommends wget ca-certificates && \
+    wget -qO /tmp/cmake.tar.gz \
+      https://github.com/Kitware/CMake/releases/download/v3.28.6/cmake-3.28.6-linux-x86_64.tar.gz && \
+    tar -xzf /tmp/cmake.tar.gz -C /usr/local --strip-components=1 && \
+    rm /tmp/cmake.tar.gz
+
+# GLIL thirdparty superbuild (GTSAM, ROBIN, gtsam_points, KISS-Matcher)
+COPY state_estimation/GLIL_unicorn_racing/glim/thirdparty /glil_thirdparty_src
+RUN . /.install_utils/glil_thirdparty_build.sh && rm -rf /glil_thirdparty_src
 
 ENTRYPOINT [ "bash", "/.install_utils/ros_entrypoint.sh" ]

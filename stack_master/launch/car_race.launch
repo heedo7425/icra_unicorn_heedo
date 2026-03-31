@@ -1,0 +1,85 @@
+<!-- Car race launch: hardware + frenet + sectors + planners -->
+<!-- Localization (GLIL): run separately -->
+<!-- Controller + State machine (headtohead.launch): run separately -->
+<launch>
+  <arg name="map"                  default="try1_0326" />
+  <arg name="racecar_version"      default="$(env CAR_NAME)" />
+  <arg name="algo"                 default="slam" />
+  <arg name="use_vesc_imu"         default="False" />
+  <arg name="enable_smart_scaling" default="False" />
+
+  <param name="map"             value="$(arg map)" />
+  <param name="racecar_version" value="$(arg racecar_version)" />
+  <param name="sim"             value="false" />
+
+  <!-- Hardware: LIDAR, IMU, VESC -->
+  <include file="$(find stack_master)/launch/low_level.launch">
+    <arg name="racecar_version" value="$(arg racecar_version)" />
+  </include>
+
+  <!-- Frenet conversion server -->
+  <node pkg="frenet_conversion_server" name="frenet_conversion_server_node" type="frenet_conversion_server_node" output="screen">
+    <param name="PerceptionOnly" type="bool" value="false"/>
+  </node>
+
+  <!-- Frenet odom republisher (/car_state/odom → /car_state/odom_frenet) -->
+  <include file="$(find frenet_odom_republisher)/launch/frenet_odom_republisher.launch" />
+
+  <!-- Car State Node: converts GLIL odom to /car_state/odom & /car_state/pose -->
+  <node name="carstate_node" pkg="stack_master" type="carstate_node.py" output="screen">
+    <param name="debug"        value="False" />
+    <param name="localization" value="$(arg algo)" />
+    <param name="odom_topic"   value="/glim_ros/odom" />
+  </node>
+
+  <node pkg="topic_tools" type="relay" name="odom_relay"
+    args="glim_ros/base_odom car_state/odom" />
+
+  <node name="extract_pose" pkg="stack_master" type="extract_pose_from_odom.py" output="screen">
+      <param name="in_topic" value="car_state/odom" />
+      <param name="out_topic" value="car_state/pose" />
+  </node>
+
+  <!-- Global waypoints publisher -->
+  <node name="global_republisher" pkg="gb_optimizer" type="global_trajectory_publisher.py" output="screen">
+    <param name="map" value="$(arg map)" />
+  </node>
+
+  <!-- Speed sector server + velocity scaler -->
+  <rosparam ns="map_params" command="load" file="$(find stack_master)/maps/$(arg map)/speed_scaling.yaml"/>
+  <node pkg="sector_tuner" type="sector_server.py" name="dyn_sector_speed" output="screen" />
+  <node pkg="sector_tuner" type="vel_scaler_node.py" name="velocity_scaler" output="screen">
+    <param name="enable_smart_scaling" value="$(arg enable_smart_scaling)" />
+  </node>
+
+  <!-- Overtaking sector server -->
+  <rosparam ns="ot_map_params" command="load" file="$(find stack_master)/maps/$(arg map)/ot_sectors.yaml" />
+  <node pkg="overtaking_sector_tuner" type="ot_sector_server.py" name="dyn_sector_overtake" output="screen" />
+  <node pkg="overtaking_sector_tuner" type="ot_interpolator.py" name="ot_interpolator" output="screen"/>
+
+  <!-- Static obstacle sector server -->
+  <rosparam ns="static_obs_map_params" command="load" file="$(find stack_master)/maps/$(arg map)/static_obs_sectors.yaml" />
+  <node pkg="static_obstacle_sector_tuner" type="static_obs_sector_server.py" name="dyn_sector_static_obstacle" output="screen" />
+
+  <!-- State indicator (LED + state display) -->
+  <!--include file="$(find stack_master)/launch/state_indicator.launch"/-->
+
+  <!-- State indicator (state display only; blink1 LED disabled - requires USB device) -->
+  <node pkg="state_machine" type="state_indicator_node.py" name="state_indicator" output="screen"/>
+
+
+  <!-- Lap time and lateral error analyser -->
+  <node name="lap_analyser" pkg="lap_analyser" type="lap_analyser.py" output="screen">
+    <param name="loc_algo" value="$(arg algo)" />
+  </node>
+
+  <!-- Dynamic planner parameter servers -->
+  <group ns="dyn_planners">
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="global_tracking" /></include>
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="recovery_planner" /></include>
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="start_planner" /></include>
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="static_avoidance_planner" /></include>
+    <include file="$(find stack_master)/launch/planners.launch"><arg name="planners" value="dynamic_avoidance_planner" /></include>
+  </group>
+
+</launch>

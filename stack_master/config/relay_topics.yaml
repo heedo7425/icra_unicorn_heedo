@@ -1,6 +1,63 @@
 relay_topics:
-  - input: "/scan"
-    type: "sensor_msgs/LaserScan"
+  # === GLIL State Estimation ===
+  - input: "/glim_ros/imu_odom"
+    type: "nav_msgs/Odometry"
+
+  - input: "/glim_ros/imu_pose"
+    type: "geometry_msgs/PoseStamped"
+
+  - input: "/glim_ros/aligned_points"
+    type: "sensor_msgs/PointCloud2"
+
+  - input: "/glim_ros/aligned_points_corrected"
+    type: "sensor_msgs/PointCloud2"
+
+  - input: "/glim_ros/points"
+    type: "sensor_msgs/PointCloud2"
+
+  - input: "/glim_ros/points_corrected"
+    type: "sensor_msgs/PointCloud2"
+
+  - input: "/glim_ros/occupancy_grid"
+    type: "nav_msgs/OccupancyGrid"
+    latch: True
+
+  - input: "/glim_ros/dynamic_objects"
+    type: "sensor_msgs/PointCloud2"
+
+  - input: "/glim_ros/dynamic_occupancy_grid"
+    type: "nav_msgs/OccupancyGrid"
+
+  # === 2.5D Detection ===
+  - input: "/detection/filtered"
+    type: "sensor_msgs/PointCloud2"
+
+  - input: "/detection/objects"
+    type: "sensor_msgs/PointCloud2"
+
+  - input: "/detection/markers"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/detection/ground_mask"
+    type: "nav_msgs/OccupancyGrid"
+
+  - input: "/tracking/markers"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/tracking/poses"
+    type: "geometry_msgs/PoseArray"
+
+  - input: "/mapUGV"
+    type: "nav_msgs/OccupancyGrid"
+    latch: True
+
+  - input: "/wallGrid"
+    type: "nav_msgs/OccupancyGrid"
+    latch: True
+
+  # === Legacy (Hokuyo - deprecated) ===
+  # - input: "/scan"
+  #   type: "sensor_msgs/LaserScan"
 
   - input: "/car_state/pose"
     type: "geometry_msgs/PoseStamped"
@@ -30,7 +87,22 @@ relay_topics:
   - input: "/planner/start_wpnts/markers"
     type: "visualization_msgs/MarkerArray"
 
+  - input: "/state_wpnts_src_marker"
+    type: "visualization_msgs/Marker"
+
   - input: "/planner/recovery/markers"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/static_obs_sector_markers"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/centerline_modification_viz"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/planner/avoidance/smart_markers"
+    type: "visualization_msgs/MarkerArray"
+
+  - input: "/planner/avoidance/smart_active_marker"
     type: "visualization_msgs/MarkerArray"
 
   - input: "/detect/breakpoints_markers"

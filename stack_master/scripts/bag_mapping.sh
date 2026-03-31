@@ -12,7 +12,7 @@ cd "$MAPPING_DIR"
 
 rosbag record \
     /scan \
-    /imu/data \
+    /vesc/sensors/imu/raw \
     /vesc/sensors/core \
     /vesc/sensors/servo_position_command \
     /car_state/odom \

@@ -1,32 +1,39 @@
 cmake_minimum_required(VERSION 3.10)
 project(frenet_odom_republisher)
 
-find_package(catkin REQUIRED COMPONENTS 
+find_package(catkin REQUIRED COMPONENTS
 	roscpp
         frenet_conversion
         nav_msgs
         f110_msgs
         tf
+        interactive_markers
+        visualization_msgs
 )
+
+# ===== HJ ADDED: OpenCV dependency (required by frenet_conversion) =====
+find_package(OpenCV REQUIRED)
+# ===== HJ ADDED END =====
 
 catkin_package(
    INCLUDE_DIRS include
-   CATKIN_DEPENDS roscpp nav_msgs f110_msgs frenet_conversion tf
+   CATKIN_DEPENDS roscpp nav_msgs f110_msgs frenet_conversion tf interactive_markers visualization_msgs
    LIBRARIES ${PROJECT_NAME}
 )
 
-include_directories(include 
-        ${catkin_INCLUDE_DIRS} 
+include_directories(include
+        ${catkin_INCLUDE_DIRS}
         ${CUSTOM_EIGEN_INCLUDE_DIR}
-        ${Threads_INCLUDE_DIRS})
+        ${Threads_INCLUDE_DIRS}
+        ${OpenCV_INCLUDE_DIRS})  # ===== HJ ADDED =====
 
 add_executable(frenet_odom_republisher_node
                src/frenet_odom_republisher_node.cc
                )
 
-target_link_libraries(frenet_odom_republisher_node 
-                ${catkin_LIBRARIES} 
-                )
+target_link_libraries(frenet_odom_republisher_node
+                ${catkin_LIBRARIES}
+                ${OpenCV_LIBS})  # ===== HJ ADDED =====
 
 install(DIRECTORY include
         DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}

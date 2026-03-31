@@ -2,12 +2,20 @@ import numpy as np
 import time
 import json
 import os
+import sys
 from typing import Tuple
 import trajectory_planning_helpers as tph
 import matplotlib.pyplot as plt
 import configparser
 from global_racetrajectory_optimization import opt_mintime_traj, helper_funcs_glob
 from vel_planner.vel_planner import calc_vel_profile
+
+# trajectory_optimizer.py is at: planner/gb_optimizer/src/global_racetrajectory_optimization/
+# iqp_handler_wrapper.py is at: planner/spliner/src/
+_spliner_src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'spliner', 'src'))
+if _spliner_src_path not in sys.path:
+    sys.path.insert(0, _spliner_src_path)
+from iqp_handler_wrapper import iqp_handler as iqp_handler_with_max_iters
 
 """
 Created by:
@@ -269,17 +277,21 @@ def trajectory_optimizer(input_path: str,
                                                   plot_debug=False)[0]
 
     elif curv_opt_type == 'mincurv_iqp':
-        alpha_opt, reftrack_interp, normvec_normalized_interp = tph.iqp_handler.\
-            iqp_handler(reftrack=reftrack_interp,
-                        normvectors=normvec_normalized_interp,
-                        A=a_interp,
-                        kappa_bound=pars["veh_params"]["curvlim"],
-                        w_veh=safety_width,
-                        print_debug=debug,
-                        plot_debug=plot_opts["mincurv_curv_lin"],
-                        stepsize_interp=pars["stepsize_opts"]["stepsize_reg"],
-                        iters_min=pars["optim_opts"]["iqp_iters_min"],
-                        curv_error_allowed=pars["optim_opts"]["iqp_curverror_allowed"])
+        # Get iters_max from optim_opts if specified, otherwise None (no limit)
+        iqp_iters_max = pars["optim_opts"].get("iqp_iters_max", None)
+
+        alpha_opt, reftrack_interp, normvec_normalized_interp = iqp_handler_with_max_iters(
+            reftrack=reftrack_interp,
+            normvectors=normvec_normalized_interp,
+            A=a_interp,
+            kappa_bound=pars["veh_params"]["curvlim"],
+            w_veh=safety_width,
+            print_debug=debug,
+            plot_debug=plot_opts["mincurv_curv_lin"],
+            stepsize_interp=pars["stepsize_opts"]["stepsize_reg"],
+            iters_min=pars["optim_opts"]["iqp_iters_min"],
+            iters_max=iqp_iters_max,
+            curv_error_allowed=pars["optim_opts"]["iqp_curverror_allowed"])
 
     elif curv_opt_type == 'shortest_path':
         alpha_opt = tph.opt_shortest_path.opt_shortest_path(reftrack=reftrack_interp,
@@ -410,6 +422,23 @@ def trajectory_optimizer(input_path: str,
         vx_profile_opt = np.interp(s_points_opt_interp, s_splines[:-1], v_opt)
 
     else:
+
+        # HJ DEBUG: Check for anomalies in kappa and el_lengths
+        print(f"DEBUG kappa_opt: min={np.min(kappa_opt):.4f}, max={np.max(kappa_opt):.4f}, mean={np.mean(kappa_opt):.4f}")
+        print(f"DEBUG el_lengths: min={np.min(el_lengths_opt_interp):.4f}, max={np.max(el_lengths_opt_interp):.4f}, mean={np.mean(el_lengths_opt_interp):.4f}")
+        # Check for spikes in kappa
+        kappa_diff = np.abs(np.diff(kappa_opt))
+        spike_threshold = 0.5  # rad/m change between consecutive points
+        spike_indices = np.where(kappa_diff > spike_threshold)[0]
+        if len(spike_indices) > 0:
+            print(f"WARNING: Found {len(spike_indices)} curvature spikes at indices: {spike_indices[:10]}...")
+            for idx in spike_indices[:5]:
+                print(f"  idx {idx}: kappa[{idx}]={kappa_opt[idx]:.4f} -> kappa[{idx+1}]={kappa_opt[idx+1]:.4f} (diff={kappa_diff[idx]:.4f})")
+        # Check for very small el_lengths
+        small_el = np.where(el_lengths_opt_interp < 0.001)[0]
+        if len(small_el) > 0:
+            print(f"WARNING: Found {len(small_el)} very small el_lengths at indices: {small_el}")
+
         vx_profile_opt = calc_vel_profile(ggv=ggv,
                                           ax_max_machines=ax_max_machines,
                                           b_ax_max_machines=b_ax_max_machines,

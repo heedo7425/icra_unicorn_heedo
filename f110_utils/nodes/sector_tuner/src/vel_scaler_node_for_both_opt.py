@@ -55,7 +55,7 @@ class VelocityScaler:
         # smart waypoints sub and pub (only if enabled)
         if self.enable_smart_scaling:
             self.smart_sub = rospy.Subscriber("/planner/avoidance/smart_static_otwpnts", OTWpntArray, self.smart_wpnts_cb)
-            self.smart_scaled_pub = rospy.Publisher("/planner/avoidance/smart_static_otwpnts", OTWpntArray, queue_size=10)
+            self.smart_scaled_pub = rospy.Publisher("/planner/avoidance/smart_static_otwpnts_scaled", OTWpntArray, queue_size=10)
             rospy.loginfo("Smart waypoints scaling ENABLED")
         else:
             self.smart_sub = None
@@ -79,14 +79,19 @@ class VelocityScaler:
 
     def smart_wpnts_cb(self, data:OTWpntArray):
         """
-        Saves smart waypoints (only once) and unsubscribes
+        Saves smart waypoints whenever received (keeps subscription active for updates).
+        Also resets scaled waypoints to trigger re-initialization.
         """
+        import copy
+        self.smart_wpnts_og = data
+        # Immediately create fresh deepcopy for scaled (thread-safe reset)
+        self.smart_wpnts_scaled = copy.deepcopy(data)
         if not self.smart_wpnts_received:
-            self.smart_wpnts_og = data
             self.smart_wpnts_received = True
-            self.smart_sub.unregister()
             rospy.loginfo(f"Smart waypoints received! {len(data.wpnts)} waypoints, first vel: {data.wpnts[0].vx_mps:.2f} m/s")
-            rospy.loginfo("Unsubscribed from smart_static_otwpnts")
+        else:
+            rospy.loginfo_throttle(5.0, f"Smart waypoints updated! {len(data.wpnts)} waypoints")
+
 
     def dyn_param_cb(self, params:Config):
         """
@@ -103,10 +108,10 @@ class VelocityScaler:
 
         rospy.loginfo(self.sectors_params)
 
-    def xy_to_frenet_gb(self, x, y):
+    def xy_to_gb_index(self, x, y):
         """
-        Converts x, y coordinates to Frenet s coordinate based on global waypoints.
-        Finds the closest point on the global waypoints and returns its s value.
+        Finds the closest global waypoint index for given x, y coordinates.
+        Used to determine which sector a point belongs to (sectors use index-based start/end).
 
         Parameters
         ----------
@@ -117,22 +122,22 @@ class VelocityScaler:
 
         Returns
         -------
-        s : float
-            Frenet s coordinate based on global waypoints
+        idx : int
+            Index of the closest global waypoint
         """
         if self.glb_wpnts_og is None:
-            return 0.0
+            return 0
 
         min_dist = float('inf')
-        closest_s = 0.0
+        closest_idx = 0
 
-        for wpnt in self.glb_wpnts_og.wpnts:
-            dist = np.sqrt((wpnt.x_m - x)**2 + (wpnt.y_m - y)**2)
+        for i, wpnt in enumerate(self.glb_wpnts_og.wpnts):
+            dist = (wpnt.x_m - x)**2 + (wpnt.y_m - y)**2
             if dist < min_dist:
                 min_dist = dist
-                closest_s = wpnt.s_m
+                closest_idx = i
 
-        return closest_s
+        return closest_idx
 
     def get_vel_scaling(self, s):
         """
@@ -225,7 +230,7 @@ class VelocityScaler:
     def scale_smart_waypoints(self):
         """
         Scales the smart waypoints' velocities based on global waypoints' sectors.
-        Converts each waypoint's x, y to Frenet s coordinate using global waypoints,
+        Converts each waypoint's x, y to closest global waypoint index,
         finds the appropriate scaling factor, and applies it to the velocity.
         Preserves all other waypoint attributes (s, d, x, y, order, etc.)
         Updates header timestamp to current time.
@@ -243,11 +248,11 @@ class VelocityScaler:
 
         # Scale each waypoint's velocity
         for i, wpnt in enumerate(self.smart_wpnts_og.wpnts):
-            # Convert x, y to global waypoints Frenet s
-            s_gb = self.xy_to_frenet_gb(wpnt.x_m, wpnt.y_m)
+            # Convert x, y to closest global waypoint index (sector start/end are index-based)
+            gb_idx = self.xy_to_gb_index(wpnt.x_m, wpnt.y_m)
 
             # Get velocity scaling factor based on global waypoints sector
-            vel_scaling = self.get_vel_scaling(s_gb)
+            vel_scaling = self.get_vel_scaling(gb_idx)
 
             # Apply scaling to velocity only
             new_vel = wpnt.vx_mps * vel_scaling

@@ -81,7 +81,8 @@ VescToOdom::VescToOdom(ros::NodeHandle nh, ros::NodeHandle private_nh) :
 
   // subscribe to vesc state and. optionally, servo command
   vesc_state_sub_ = nh.subscribe("sensors/core", 10, &VescToOdom::vescStateCallback, this);
-  imu_sub_ = nh.subscribe("/imu/data", 10, &VescToOdom::imuCallback, this);
+  // imu_sub_ = nh.subscribe("/imu/data", 10, &VescToOdom::imuCallback, this);
+  imu_sub_ = nh.subscribe("/vesc/sensors/imu/raw", 10, &VescToOdom::imuCallback, this);
   dyn_wheel_odom_sub_ = nh.subscribe("dyn_wheel_odom/parameter_updates", 10, &VescToOdom::dynCallback, this);
   
   if (use_servo_cmd_)
@@ -99,7 +100,9 @@ void VescToOdom::dynCallback(const dynamic_reconfigure::Config::ConstPtr& imu)
 }
 void VescToOdom::imuCallback(const sensor_msgs::Imu::ConstPtr& imu)
 {
-  linear_accel_x = -imu->linear_acceleration.x;
+  // linear_accel_x = -imu->linear_acceleration.x; // micro_strain
+  linear_accel_x = -imu->linear_acceleration.y; // vesc_imu
+
 }
 
 

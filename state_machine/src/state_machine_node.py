@@ -535,6 +535,7 @@ class StateMachine:
         self.max_s = data.wpnts[-1].s_m
         # Get spacing between wpnts for rough approximations
         self.wpnt_dist = data.wpnts[1].s_m - data.wpnts[0].s_m
+        self.waypoints_dist = self.wpnt_dist
         self.gb_max_idx = data.wpnts[-1].id
         if self.ot_planner == "graph_based":
             self.gb_wpnts_arr = np.array([
@@ -1654,6 +1655,10 @@ class StateMachine:
         loc_wpnts.header.stamp = rospy.Time.now()
         loc_wpnts.header.frame_id = "map"
 
+        ### iy : z = actual terrain height, color = speed (red=slow, green=fast)
+        vx_vals = [wpnt.vx_mps for wpnt in loc_wpnts.wpnts]
+        vx_min = min(vx_vals) if vx_vals else 0.0
+        vx_max = max(vx_vals) if vx_vals else 1.0
         for i, wpnt in enumerate(loc_wpnts.wpnts):
             mrk = Marker()
             mrk.header.frame_id = "map"
@@ -1662,15 +1667,18 @@ class StateMachine:
             mrk.scale.y = 0.15
             mrk.scale.z = 0.15
             mrk.color.a = 1.0
-            mrk.color.g = 1.0
+            t = (wpnt.vx_mps - vx_min) / (vx_max - vx_min) if vx_max > vx_min else 0.5
+            mrk.color.r = max(0.0, min(1.0, 1.0 - 2.0 * (t - 0.5)))
+            mrk.color.g = max(0.0, min(1.0, 2.0 * t))
+            mrk.color.b = 0.0
 
             mrk.id = i
             mrk.pose.position.x = wpnt.x_m
             mrk.pose.position.y = wpnt.y_m
-            # mrk.pose.position.z = wpnt.vx_mps / self.max_speed  # Visualise speed in z dimension
-            mrk.pose.position.z = wpnt.vx_mps  # Visualise speed in z dimension
+            mrk.pose.position.z = wpnt.z_m
             mrk.pose.orientation.w = 1
             loc_markers.markers.append(mrk)
+        ### iy : end
 
         # if len(loc_wpnts.wpnts) == 0:
         #     rospy.logwarn(f"[{self.name}] No local waypoints published...")

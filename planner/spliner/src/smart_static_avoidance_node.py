@@ -14,6 +14,7 @@ import cv2
 import yaml
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32, Bool
+from sensor_msgs.msg import Joy
 from visualization_msgs.msg import Marker, MarkerArray
 from scipy.interpolate import InterpolatedUnivariateSpline as Spline
 from scipy.interpolate import BPoly
@@ -29,11 +30,14 @@ import trajectory_planning_helpers as tph
 from rospkg import RosPack
 
 # ===== HJ ADDED: GB-aware algorithm parameters =====
-OPPOSITE_SPACE_THRESHOLD = 1.3  # meters, if opposite wall has > this space, shift toward it
+OPPOSITE_SPACE_THRESHOLD = 0.6 # meters, if opposite wall has > this space, shift toward it
+
+# Obstacle size
+OBSTACLE_RADIUS = 0.25  # meters, obstacle radius for all calculations
 
 # Safety width override
 OVERRIDE_SAFETY_WIDTH = True  # True: use SAFETY_WIDTH_VALUE, False: use ROS parameter
-SAFETY_WIDTH_VALUE = 1.0  # meters, used only if OVERRIDE_SAFETY_WIDTH is True
+SAFETY_WIDTH_VALUE = 1.0  # Safety Boundary to Wall for OPT, meters, used only if OVERRIDE_SAFETY_WIDTH is True
 
 # Fixed path post-smoothing (applied after optimization)
 SMOOTH_OPT_OUTPUT = True  # Enable Savitzky-Golay smoothing on optimizer output
@@ -43,23 +47,71 @@ SMOOTH_POLYORDER = 2  # Polynomial order (3 = cubic, lower = smoother but less a
 
 # Set to True to use conservative bounds from _for_spliner.png and obstacle-added map
 # Set to False to use original GB waypoint bounds (d_left, d_right from optimization)
-USE_SAFE_GRID = False
+USE_SAFE_GRID = True
+# Set to True to use conservative bounds (_for_spliner.png + obstacles) for optimization input
+# Set to False to use original bounds (map.png + obstacles) for optimization input
+# Only effective when USE_SAFE_GRID=True
+USE_CONSERVATIVE_BOUNDS_FOR_OPT = True
 # Set to True to visualize d_left/d_right endpoints as spheres in RViz
 # GB mode: Blue spheres, Smart mode: Cyan spheres
 DEBUG_MORE_SPACE = True
 
 # Set to True to disable Fixed path optimization entirely (use only GB path with dynamic avoidance)
 USE_ONLY_GB = False
-# ===== HJ ADDED END =====
+
+# Joy button to force GB mode (ignore obstacles)
+JOY_FORCE_GB_BUTTON = 7  # Button index to force GB mode (set to -1 to disable)
+
+# Local optimization mode (instead of global optimization)
+# True: optimize only around obstacles (±5m), merge with GB raceline, then smooth
+# False: global optimization (original behavior)
+ENABLE_LOCAL_OPT = True
+LOCAL_OPT_RANGE = 4  # meters before/after obstacle for local optimization / # make it small when the map is small
+LOCAL_OPT_WALL_MARGIN = 0.6  # Minimum distance from wall for fixed path spline (meters)
+LOCAL_OPT_EVASION_DIST = 0.5  # meters, distance from obstacle edge for local optimization
+LOCAL_OPT_MID_D_RATIO = 0.5  # d value ratio for intermediate points (1/4, 3/4): 0.7 = 70% of d_apex
+
+RECOMPUTE_LOCAL_OPT_SPEED = True  # True: recompute speed from kappa (like centerline opt), False: use GB speed
+KAPPA_SMOOTH_WINDOW = 11  # Savgol filter window for kappa smoothing before velocity calc (odd number, 0=disabled)
+
+LOCAL_OPT_FALLBACK = True  # True: fallback to LOCAL_OPT when GLOBAL optimization fails, False: fallback to GB mode
+
+# Transition smoothing parameters (for LOCAL_OPT mode)
+SMOOTH_TRANS_MARGIN = 30  # waypoints before/after transition point
+SMOOTH_TRANS_NUM_CTRL_PTS = 9  # number of control points (odd recommended: 3, 5, 7, 9, ...)
+SMOOTH_TRANS_SCALE = 1.0  # tangent scale: larger = rounder curve
+
+##########################################################################
+############################### HJ Edited ################################
+##########################################################################
+
+# Velocity blending parameters (for LOCAL_OPT mode)
+# Blends kappa-based velocity with GB velocity near obstacles for smoother profile
+USE_VEL_BLENDING = True  # True: blend kappa+GB velocity, False: use kappa velocity only
+VEL_BLEND_RANGE = 10.0  # meters around obstacle where blending is applied
+VEL_BLEND_TRANSITION = 5.0  # meters for smooth transition from blend zone to GB
+
+VEL_BLEND_GB_WEIGHT = 0.4  # GB weight: 0.0 = 100% kappa (slow), 0.5 = average, 1.0 = 100% GB (fast)
+
+# Real-time avoidance path smoothing (for do_spline / otwpnts output)
+SMOOTH_OTWPNTS = True  # Enable Savitzky-Golay smoothing on real-time avoidance path
+SMOOTH_OTWPNTS_WINDOW = 51  # Window size (must be odd, larger = smoother, 11 is good balance)
+SMOOTH_OTWPNTS_POLYORDER = 2  # Polynomial order
+
+##########################################################################
+############################### HJ Edited ################################
+##########################################################################
+
 
 # GB optimizer speed tuning parameters
 OPT_WIDTH_OPT = 0.8  # Optimization width factor (lower = faster, less aggressive)
 OPT_IQP_ITERS_MIN = 5  # Minimum IQP iterations (lower = faster, less precise)
-OPT_IQP_CURVERROR_ALLOWED = 0.05  # Allowed curvature error (higher = faster, less smooth) #--Very Important--#
+OPT_IQP_CURVERROR_ALLOWED = 0.05 # Allowed curvature error (higher = faster, less smooth) #--Very Important--#
 
 OPT_STEPSIZE_PREP = 0.3  # Spline fitting step size in meters (higher = faster)  #--Very Important--#
 OPT_STEPSIZE_REG = 0.3  # Optimization step size in meters (higher = faster)
 OPT_STEPSIZE_INTERP = 0.1  # Final interpolation step size in meters (waypoint spacing)
+OPT_IQP_ITERS_MAX = 30  # Maximum IQP iterations - prevents infinite loop on non-convergence
 
 # Add GB optimizer path to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../gb_optimizer/src'))
@@ -191,6 +243,7 @@ class ObstacleSpliner:
 
         # Detection zone monitoring: track if vehicle has passed through zone without obstacles
         self.sector_monitoring = {}  # {sector_id: {'in_zone': bool, 'had_obstacles': bool, 'entered_at_s': float}}
+        self.consecutive_cleared_sectors = 0  # Track how many consecutive sectors were cleared without obstacles
 
         # Sector-specific interference tracking: remember which sectors had interfering obstacles during path generation
         self.sectors_with_interfering_obs = set()  # Set of sector_ids that had interfering obstacles when fixed path was generated
@@ -268,6 +321,11 @@ class ObstacleSpliner:
         self.conservative_map_with_obs_path = ""  # Path to _for_spliner_with_obs.png
         # ===== HJ ADDED END =====
 
+        # ===== HJ ADDED: Joy button to force GB mode =====
+        self.joy_force_gb = False  # True when button pressed → force GB mode
+        self.joy_force_gb_prev = False  # Previous button state for edge detection
+        # ===== HJ ADDED END =====
+
         # Subscribe to the topics
         # ===== HJ EDITED START: Subscribe to tracking obstacles for smart static avoidance =====
         rospy.Subscriber("/tracking/obstacles", ObstacleArray, self.tracking_obs_cb)
@@ -277,6 +335,11 @@ class ObstacleSpliner:
         rospy.Subscriber("/car_state/odom", Odometry, self.state_cb)
         rospy.Subscriber("/global_waypoints", WpntArray, self.gb_cb)
         rospy.Subscriber("/global_waypoints_scaled", WpntArray, self.gb_scaled_cb)
+        # ===== HJ ADDED: Joy subscriber for force GB mode =====
+        if JOY_FORCE_GB_BUTTON >= 0:
+            rospy.Subscriber("/joy", Joy, self.joy_cb)
+            rospy.loginfo(f"[{self.name}] Joy force GB mode enabled: button {JOY_FORCE_GB_BUTTON}")
+        # ===== HJ ADDED END =====
         # dyn params sub
         self.evasion_dist = 0.65
         self.obs_traj_tresh = 0.3
@@ -353,6 +416,43 @@ class ObstacleSpliner:
         self.obstacles_updated = True
     # ===== HJ PHASE A: Callback lightened =====
 
+    # ===== HJ ADDED: Joy callback for force GB mode =====
+    def joy_cb(self, data: Joy):
+        """
+        Callback for /joy topic.
+
+        Force GB mode permanently when JOY_FORCE_GB_BUTTON is pressed (one-shot).
+        - Before optimization: prevent optimization from ever running
+        - After optimization: revert to GB mode permanently
+        Once activated, cannot be undone (restart node to reset).
+        """
+        if JOY_FORCE_GB_BUTTON < 0 or JOY_FORCE_GB_BUTTON >= len(data.buttons):
+            return
+
+        # Already forced → ignore further presses
+        if self.joy_force_gb:
+            return
+
+        button_pressed = data.buttons[JOY_FORCE_GB_BUTTON] == 1
+
+        # Edge detection: only activate on rising edge (button press)
+        if button_pressed and not self.joy_force_gb_prev:
+            self.joy_force_gb = True  # Permanent, no toggle back
+
+            rospy.logwarn(f"[{self.name}] ===== JOY FORCE GB MODE: ACTIVATED (PERMANENT) =====")
+            if self.fixed_path_generated:
+                # Already optimized → revert to GB permanently
+                rospy.logwarn(f"[{self.name}] Fixed path exists → Reverting to GB mode permanently")
+                self.use_fixed_path = False
+                self.published_flag = False
+                self.use_fixed_path_pub.publish(Bool(data=False))
+            else:
+                # Not yet optimized → prevent optimization forever
+                rospy.logwarn(f"[{self.name}] No fixed path yet → Optimization will be permanently skipped")
+
+        self.joy_force_gb_prev = button_pressed
+    # ===== HJ ADDED END =====
+
     def behavior_cb(self, data: BehaviorStrategy):
         """
         Callback for /behavior_strategy topic.
@@ -379,7 +479,7 @@ class ObstacleSpliner:
 
     # Callback for global waypoint topic
     def gb_cb(self, data: WpntArray):
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
         self.gb_wpnts = data
         if self.gb_vmax is None:
             self.gb_vmax = np.max(np.array([wpnt.vx_mps for wpnt in data.wpnts]))
@@ -560,7 +660,8 @@ class ObstacleSpliner:
 
             # ===== HJ ADDED: State-aware flag management - publish when safe =====
             # Check if we have pending flag changes and can safely publish them
-            desired_flag = self.use_fixed_path and self.fixed_path_generated
+            # ===== HJ MODIFIED: Joy force GB overrides use_fixed_path =====
+            desired_flag = self.use_fixed_path and self.fixed_path_generated and not self.joy_force_gb
 
             # Detect if internal state changed (want to publish new value)
             if desired_flag != self.published_flag:
@@ -593,8 +694,8 @@ class ObstacleSpliner:
             mrks = MarkerArray()
 
             # ===== HJ EDITED START: Smart static avoidance mode switching =====
-            # Check if we should generate fixed path (only if not attempted AND not generating)
-            if not self.fixed_path_generation_attempted and not self.fixed_path_generating and self._check_obs_is_ready_for_path_gen():
+            # Check if we should generate fixed path (only if not attempted AND not generating AND not joy force GB)
+            if not self.fixed_path_generation_attempted and not self.fixed_path_generating and not self.joy_force_gb and self._check_obs_is_ready_for_path_gen():
                 rospy.loginfo(f"[{self.name}] ========================================")
                 rospy.loginfo(f"[{self.name}] OBSTACLES VERIFIED! Starting fixed path generation in background...")
                 rospy.loginfo(f"[{self.name}] ========================================")
@@ -623,12 +724,16 @@ class ObstacleSpliner:
             if self.obs_in_interest is not None:
                 # Select reference path based on use_fixed_path flag
                 # ===== HJ MODIFIED: Extract .wpnts list from OTWpntArray =====
-                if self.use_fixed_path:
+                # ===== HJ MODIFIED: Joy force GB overrides use_fixed_path =====
+                use_fixed = self.use_fixed_path and not self.joy_force_gb
+                if use_fixed:
                     reference_wpnts = self.fixed_path_wpnts.wpnts  # Extract list from OTWpntArray
                     rospy.loginfo_throttle(5.0, f"[{self.name}] POST-FIX (Fixed mode): Spline avoidance around FIXED path")
                 else:
                     reference_wpnts = gb_scaled_wpnts  # Already a list
-                    if self.fixed_path_generating:
+                    if self.joy_force_gb:
+                        rospy.logwarn_throttle(5.0, f"[{self.name}] JOY FORCE GB: Using GB raceline (ignoring obstacles)")
+                    elif self.fixed_path_generating:
                         rospy.loginfo_throttle(5.0, f"[{self.name}] PRE-FIX: Generating... Using GB raceline")
                     elif self.fixed_path_generated:
                         rospy.loginfo_throttle(5.0, f"[{self.name}] POST-FIX (GB mode): Using GB raceline")
@@ -1226,6 +1331,9 @@ class ObstacleSpliner:
                         # Mark if obstacles detected
                         if interfering_obs:
                             monitor['had_obstacles'] = True
+                            # ===== HJ ADDED: Reset counter when obstacles detected =====
+                            self.consecutive_cleared_sectors = 0
+                            # ===== HJ ADDED END =====
 
                         # Warn only when flag changes (or first time)
                         if monitor['had_obstacles'] != prev_had_obstacles:
@@ -1244,11 +1352,21 @@ class ObstacleSpliner:
                             monitor['in_zone'] = False
 
                             if not monitor['had_obstacles']:
-                                # Passed through entire zone without obstacles → revert to GB
-                                self.use_fixed_path = False
+                                # ===== HJ MODIFIED: Require 2+ consecutive cleared sectors =====
+                                # Passed through zone without obstacles → increment counter
+                                self.consecutive_cleared_sectors += 1
                                 rospy.logwarn(
                                     f"[{self.name}] POST-FIX: Vehicle EXITED sector {sector_id} zone "
-                                    f"(s={self.cur_s:.2f}m) WITHOUT obstacles detected during passage → Reverting to GB")
+                                    f"(s={self.cur_s:.2f}m) WITHOUT obstacles detected during passage "
+                                    f"→ Consecutive cleared sectors: {self.consecutive_cleared_sectors}")
+
+                                # Only revert to GB after 2+ consecutive cleared sectors
+                                if self.consecutive_cleared_sectors >= 2:
+                                    self.use_fixed_path = False
+                                    rospy.logwarn(
+                                        f"[{self.name}] POST-FIX: {self.consecutive_cleared_sectors} consecutive sectors cleared "
+                                        f"→ Reverting to GB")
+                                # ===== HJ MODIFIED END =====
                             # else:
                             #     rospy.loginfo(
                             #         f"[{self.name}] Vehicle exited sector {sector_id} zone, "
@@ -1356,7 +1474,7 @@ class ObstacleSpliner:
         rospy.wait_for_message("/global_waypoints", WpntArray)
 
         # Initialize the FrenetConverter object
-        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo(f"[{self.name}] initialized FrenetConverter object")
 
         return converter
@@ -1437,25 +1555,37 @@ class ObstacleSpliner:
                 rospy.logerr(f"[{self.name}] Failed to load conservative map: {map_path}")
                 return {}, {}
 
-            # Create binary mask (white = free space, black = occupied)
-            conservative_bw = np.where(conservative_img > 200, 255, 0).astype(np.uint8)
+            # Flip image (same as global_planner_node)
+            # conservative_bw = cv2.flip(conservative_img, 0)
 
-            # Extract centerline from skeleton (reuse existing logic)
-            skeleton = skeletonize(conservative_bw // 255).astype(np.uint8) * 255
+            # Filtering with morphological opening (same as global_planner_node)
+            kernel1 = np.ones((9, 9), np.uint8)
+            opening = cv2.morphologyEx(conservative_img, cv2.MORPH_OPEN, kernel1, iterations=1)
+
+            # Get morphological skeleton of the map (same as global_planner_node)
+            skeleton = skeletonize(opening, method='lee')
             centerline_pixels = self._extract_centerline_from_skeleton(skeleton)
 
             if centerline_pixels is None:
                 rospy.logerr(f"[{self.name}] Failed to extract centerline from {map_path}")
                 return {}, {}
 
-            # Extract bounds using watershed (reuse existing function)
-            bound_r_pixels, bound_l_pixels = self._extract_bounds_from_watershed(
-                centerline_pixels, conservative_bw
-            )
-
-            if bound_r_pixels is None or bound_l_pixels is None:
-                rospy.logerr(f"[{self.name}] Failed to extract bounds from {map_path}")
-                return {}, {}
+            # Extract bounds using watershed (same as global_planner_node)
+            # If watershed fails, fallback to distance transform
+            use_watershed = True
+            try:
+                bound_r_pixels, bound_l_pixels = self._extract_bounds_from_watershed(
+                    centerline_pixels, opening
+                )
+                dist_transform = None
+                rospy.loginfo(f"[{self.name}] Using watershed for track bound extraction...")
+            except IOError:
+                rospy.logwarn(f"[{self.name}] More than two track bounds detected with watershed algorithm")
+                rospy.loginfo(f"[{self.name}] Trying with simple distance transform...")
+                use_watershed = False
+                bound_r_pixels = None
+                bound_l_pixels = None
+                dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
 
             # Convert to meters
             yaml_path = os.path.join(self.map_dir, f'{self.map_name}.yaml')
@@ -1467,14 +1597,24 @@ class ObstacleSpliner:
             map_origin_y = map_data['origin'][1]
             map_height = conservative_img.shape[0]
 
-            bound_r_m = self._pixels_to_meters(bound_r_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
-            bound_l_m = self._pixels_to_meters(bound_l_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
-
             # Convert waypoints to centerline format [x, y]
             centerline_m = np.array([[wp.x_m, wp.y_m] for wp in waypoints])
 
-            # Calculate distances using existing function
-            reftrack = self._calculate_reftrack_distances(centerline_m, bound_r_m, bound_l_m)
+            # Calculate distances (same logic as global_planner_node.add_dist_to_cent)
+            if dist_transform is not None:
+                # Use distance transform (fallback)
+                width_track = dist_transform[centerline_pixels[:, 1].astype(int),
+                                             centerline_pixels[:, 0].astype(int)] * map_resolution
+                # Interpolate if needed
+                if len(width_track) != len(centerline_m):
+                    width_track = np.interp(np.arange(0, len(centerline_m)), np.arange(0, len(width_track)), width_track)
+                # For distance transform, left and right are the same
+                reftrack = np.column_stack((centerline_m, width_track, width_track))
+            else:
+                # Use watershed bounds
+                bound_r_m = self._pixels_to_meters(bound_r_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
+                bound_l_m = self._pixels_to_meters(bound_l_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
+                reftrack = self._calculate_reftrack_distances(centerline_m, bound_r_m, bound_l_m)
 
             # Extract d_right and d_left into dictionaries
             d_right_dict = {i: reftrack[i, 2] for i in range(len(waypoints))}
@@ -1491,162 +1631,191 @@ class ObstacleSpliner:
     # ===== HJ ADDED END =====
 
 
+    # def _more_space(self, obstacle: Obstacle, gb_wpnts: List[Any], obs_s_idx: int) -> Tuple[str, float]:
+    #     # ===== HJ MODIFIED: Use conservative bounds if USE_SAFE_GRID enabled =====
+    #     if USE_SAFE_GRID:
+    #         # Check if we're in GB mode or Smart mode based on use_fixed_path flag
+    #         if not self.use_fixed_path:
+    #             # GB mode: use GB conservative bounds from _for_spliner.png (no obstacles)
+    #             if obs_s_idx in self.gb_conservative_d_left and obs_s_idx in self.gb_conservative_d_right:
+    #                 wpnt_d_left = self.gb_conservative_d_left[obs_s_idx]
+    #                 wpnt_d_right = self.gb_conservative_d_right[obs_s_idx]
+    #             else:
+    #                 # Fallback to original bounds if conservative bounds not available
+    #                 wpnt_d_left = gb_wpnts[obs_s_idx].d_left
+    #                 wpnt_d_right = gb_wpnts[obs_s_idx].d_right
+    #         else:
+    #             # Smart mode: use Smart conservative bounds from _for_spliner_with_obs.png
+    #             if obs_s_idx in self.smart_conservative_d_left and obs_s_idx in self.smart_conservative_d_right:
+    #                 wpnt_d_left = self.smart_conservative_d_left[obs_s_idx]
+    #                 wpnt_d_right = self.smart_conservative_d_right[obs_s_idx]
+    #             else:
+    #                 # Fallback to original bounds if conservative bounds not available
+    #                 wpnt_d_left = gb_wpnts[obs_s_idx].d_left
+    #                 wpnt_d_right = gb_wpnts[obs_s_idx].d_right
+    #     else:
+    #         # USE_SAFE_GRID=False: use original GB waypoint bounds
+    #         wpnt_d_left = gb_wpnts[obs_s_idx].d_left
+    #         wpnt_d_right = gb_wpnts[obs_s_idx].d_right
+    #     # ===== HJ MODIFIED END =====
+
+    #     # rospy.logwarn_throttle(1.0,
+    #     #     f"[{self.name}] _more_space: wpnt[{obs_s_idx}] d_left={wpnt_d_left:.2f}, d_right={wpnt_d_right:.2f}, "
+    #     #     f"obs d_left={obstacle.d_left:.2f}, d_right={obstacle.d_right:.2f}")
+
+    #     left_gap = abs(wpnt_d_left - obstacle.d_left)
+    #     right_gap = abs(wpnt_d_right + obstacle.d_right)
+    #     min_space = self.evasion_dist + self.spline_bound_mindist
+
+    #     if right_gap > min_space and left_gap < min_space:
+    #         # Compute apex distance to the right of the opponent
+    #         d_apex_right = obstacle.d_right - self.evasion_dist
+    #         # If we overtake to the right of the opponent BUT the apex is to the left of the raceline, then we set the apex to 0
+    #         if d_apex_right > 0:
+    #             d_apex_right = 0
+    #         return "right", d_apex_right
+
+    #     elif left_gap > min_space and right_gap < min_space:
+    #         # Compute apex distance to the left of the opponent
+    #         d_apex_left = obstacle.d_left + self.evasion_dist
+    #         # If we overtake to the left of the opponent BUT the apex is to the right of the raceline, then we set the apex to 0
+    #         if d_apex_left < 0:
+    #             d_apex_left = 0
+    #         return "left", d_apex_left
+    #     else:
+    #         # Both sides have insufficient space, choose the side with MORE available space
+    #         # Calculate actual distance from obstacle center to each wall
+
+    #         # Get obstacle center XY coordinates (convert from Frenet to Cartesian)
+    #         # Use appropriate converter based on mode
+    #         if self.use_fixed_path and self.fixed_converter is not None:
+    #             # Smart mode: obstacle is in Fixed path Frenet coordinates
+    #             obs_xy = self.fixed_converter.get_cartesian(
+    #                 np.array([obstacle.s_center]),
+    #                 np.array([obstacle.d_center])
+    #             )
+    #         else:
+    #             # GB mode: obstacle is in GB Frenet coordinates
+    #             obs_xy = self.converter.get_cartesian(
+    #                 np.array([obstacle.s_center]),
+    #                 np.array([obstacle.d_center])
+    #             )
+    #         obs_pos = np.array([obs_xy[0, 0], obs_xy[1, 0]])
+
+    #         # Select appropriate bounds based on USE_SAFE_GRID and use_fixed_path flags
+    #         if USE_SAFE_GRID:
+    #             if not self.use_fixed_path:
+    #                 # GB mode + USE_SAFE_GRID=True: Use conservative bounds (no obstacles)
+    #                 if hasattr(self, 'bound_l_conservative') and hasattr(self, 'bound_r_conservative'):
+    #                     bound_l = self.bound_l_conservative
+    #                     bound_r = self.bound_r_conservative
+    #                     bounds_source = "conservative (no obs)"
+    #                 else:
+    #                     rospy.logwarn_throttle(5.0, f"[{self.name}] Conservative bounds not available, using original")
+    #                     bound_l = self.bound_l_original
+    #                     bound_r = self.bound_r_original
+    #                     bounds_source = "original (fallback)"
+    #             else:
+    #                 # Smart mode + USE_SAFE_GRID=True: Use conservative bounds with obstacles
+    #                 if hasattr(self, 'bound_l_conservative_modified') and hasattr(self, 'bound_r_conservative_modified'):
+    #                     bound_l = self.bound_l_conservative_modified
+    #                     bound_r = self.bound_r_conservative_modified
+    #                     bounds_source = "conservative + obs"
+    #                 else:
+    #                     rospy.logwarn_throttle(5.0, f"[{self.name}] Conservative modified bounds not available, using original modified")
+    #                     bound_l = self.bound_l_modified
+    #                     bound_r = self.bound_r_modified
+    #                     bounds_source = "original + obs (fallback)"
+    #         else:
+    #             if not self.use_fixed_path:
+    #                 # GB mode + USE_SAFE_GRID=False: Use original bounds (no obstacles)
+    #                 if hasattr(self, 'bound_l_original') and hasattr(self, 'bound_r_original'):
+    #                     bound_l = self.bound_l_original
+    #                     bound_r = self.bound_r_original
+    #                     bounds_source = "original (no obs)"
+    #                 else:
+    #                     rospy.logwarn_throttle(5.0, f"[{self.name}] Original bounds not available, extracting from GB waypoints")
+    #                     # Extract bounds from GB waypoints as fallback
+    #                     bound_l = np.array([[wp.x_m + wp.d_left * np.cos(wp.psi_rad + np.pi/2),
+    #                                         wp.y_m + wp.d_left * np.sin(wp.psi_rad + np.pi/2)]
+    #                                        for wp in gb_wpnts])
+    #                     bound_r = np.array([[wp.x_m + wp.d_right * np.cos(wp.psi_rad - np.pi/2),
+    #                                         wp.y_m + wp.d_right * np.sin(wp.psi_rad - np.pi/2)]
+    #                                        for wp in gb_wpnts])
+    #                     bounds_source = "GB wpnts (fallback)"
+    #             else:
+    #                 # Smart mode + USE_SAFE_GRID=False: Use original bounds with obstacles
+    #                 if hasattr(self, 'bound_l_modified') and hasattr(self, 'bound_r_modified'):
+    #                     bound_l = self.bound_l_modified
+    #                     bound_r = self.bound_r_modified
+    #                     bounds_source = "original + obs"
+    #                 else:
+    #                     rospy.logwarn_throttle(5.0, f"[{self.name}] Modified bounds not available, using original")
+    #                     bound_l = self.bound_l_original
+    #                     bound_r = self.bound_r_original
+    #                     bounds_source = "original (fallback)"
+
+    #         # Calculate minimum distance from obstacle center to each wall
+    #         dist_to_left_wall = np.min(np.linalg.norm(bound_l - obs_pos, axis=1))
+    #         dist_to_right_wall = np.min(np.linalg.norm(bound_r - obs_pos, axis=1))
+
+    #         # Calculate available space (subtract obstacle radius)
+    #         obstacle_radius = OBSTACLE_RADIUS
+    #         space_to_left = dist_to_left_wall - obstacle_radius
+    #         space_to_right = dist_to_right_wall - obstacle_radius
+
+    #         rospy.logwarn_throttle(1.0,
+    #             f"[{self.name}] _more_space: Both sides tight! bounds_source={bounds_source}, "
+    #             f"dist_to_left_wall={dist_to_left_wall:.2f}m, dist_to_right_wall={dist_to_right_wall:.2f}m, "
+    #             f"space_to_left={space_to_left:.2f}m, space_to_right={space_to_right:.2f}m")
+
+    #         if space_to_left > space_to_right:
+    #             # More space on the left side
+    #             candidate_d_apex_left = obstacle.d_left + self.evasion_dist
+    #             # If we overtake to the left of the opponent BUT the apex is to the right of the raceline, then we set the apex to 0
+    #             if candidate_d_apex_left < 0:
+    #                 candidate_d_apex_left = 0
+    #             rospy.logwarn_throttle(1.0, f"[{self.name}] _more_space: Choosing LEFT (space_diff={space_to_left - space_to_right:.2f}m)")
+    #             return "left", candidate_d_apex_left
+    #         else:
+    #             # More space on the right side (or equal)
+    #             candidate_d_apex_right = obstacle.d_right - self.evasion_dist
+    #             # If we overtake to the right of the opponent BUT the apex is to the left of the raceline, then we set the apex to 0
+    #             if candidate_d_apex_right > 0:
+    #                 candidate_d_apex_right = 0
+    #             rospy.logwarn_throttle(1.0, f"[{self.name}] _more_space: Choosing RIGHT (space_diff={space_to_right - space_to_left:.2f}m)")
+    #             return "right", candidate_d_apex_right
+        
+
     def _more_space(self, obstacle: Obstacle, gb_wpnts: List[Any], obs_s_idx: int) -> Tuple[str, float]:
-        # ===== HJ MODIFIED: Use conservative bounds if USE_SAFE_GRID enabled =====
-        if USE_SAFE_GRID:
-            # Check if we're in GB mode or Smart mode based on use_fixed_path flag
-            if not self.use_fixed_path:
-                # GB mode: use GB conservative bounds from _for_spliner.png (no obstacles)
-                if obs_s_idx in self.gb_conservative_d_left and obs_s_idx in self.gb_conservative_d_right:
-                    wpnt_d_left = self.gb_conservative_d_left[obs_s_idx]
-                    wpnt_d_right = self.gb_conservative_d_right[obs_s_idx]
-                else:
-                    # Fallback to original bounds if conservative bounds not available
-                    wpnt_d_left = gb_wpnts[obs_s_idx].d_left
-                    wpnt_d_right = gb_wpnts[obs_s_idx].d_right
-            else:
-                # Smart mode: use Smart conservative bounds from _for_spliner_with_obs.png
-                if obs_s_idx in self.smart_conservative_d_left and obs_s_idx in self.smart_conservative_d_right:
-                    wpnt_d_left = self.smart_conservative_d_left[obs_s_idx]
-                    wpnt_d_right = self.smart_conservative_d_right[obs_s_idx]
-                else:
-                    # Fallback to original bounds if conservative bounds not available
-                    wpnt_d_left = gb_wpnts[obs_s_idx].d_left
-                    wpnt_d_right = gb_wpnts[obs_s_idx].d_right
+        """
+        Determine evasion direction and d_apex for obstacle avoidance.
+
+        Uses _decide_obstacle_strategy_gb_aware for direction (same as Global opt centerline shift),
+        then calculates d_apex based on the chosen direction.
+        """
+        # Use _decide_obstacle_strategy_gb_aware for consistent direction with Global opt
+        _, evasion_direction = self._decide_obstacle_strategy_gb_aware(
+            obstacle.s_center, obstacle.d_center, obstacle.size / 2
+        )
+
+        # Calculate d_apex based on evasion direction
+        if evasion_direction == "left":
+            d_apex = obstacle.d_left + self.evasion_dist
+            # If apex is to the right of the raceline, set to 0
+            if d_apex < 0:
+                d_apex = 0
+            rospy.loginfo_throttle(1.0, f"[{self.name}] _more_space: evasion=LEFT, d_apex={d_apex:.2f}m")
         else:
-            # USE_SAFE_GRID=False: use original GB waypoint bounds
-            wpnt_d_left = gb_wpnts[obs_s_idx].d_left
-            wpnt_d_right = gb_wpnts[obs_s_idx].d_right
-        # ===== HJ MODIFIED END =====
+            d_apex = obstacle.d_right - self.evasion_dist
+            # If apex is to the left of the raceline, set to 0
+            if d_apex > 0:
+                d_apex = 0
+            rospy.loginfo_throttle(1.0, f"[{self.name}] _more_space: evasion=RIGHT, d_apex={d_apex:.2f}m")
 
-        # rospy.logwarn_throttle(1.0,
-        #     f"[{self.name}] _more_space: wpnt[{obs_s_idx}] d_left={wpnt_d_left:.2f}, d_right={wpnt_d_right:.2f}, "
-        #     f"obs d_left={obstacle.d_left:.2f}, d_right={obstacle.d_right:.2f}")
+        return evasion_direction, d_apex
 
-        left_gap = abs(wpnt_d_left - obstacle.d_left)
-        right_gap = abs(wpnt_d_right + obstacle.d_right)
-        min_space = self.evasion_dist + self.spline_bound_mindist
-
-        if right_gap > min_space and left_gap < min_space:
-            # Compute apex distance to the right of the opponent
-            d_apex_right = obstacle.d_right - self.evasion_dist
-            # If we overtake to the right of the opponent BUT the apex is to the left of the raceline, then we set the apex to 0
-            if d_apex_right > 0:
-                d_apex_right = 0
-            return "right", d_apex_right
-
-        elif left_gap > min_space and right_gap < min_space:
-            # Compute apex distance to the left of the opponent
-            d_apex_left = obstacle.d_left + self.evasion_dist
-            # If we overtake to the left of the opponent BUT the apex is to the right of the raceline, then we set the apex to 0
-            if d_apex_left < 0:
-                d_apex_left = 0
-            return "left", d_apex_left
-        else:
-            # Both sides have insufficient space, choose the side with MORE available space
-            # Calculate actual distance from obstacle center to each wall
-
-            # Get obstacle center XY coordinates (convert from Frenet to Cartesian)
-            # Use appropriate converter based on mode
-            if self.use_fixed_path and self.fixed_converter is not None:
-                # Smart mode: obstacle is in Fixed path Frenet coordinates
-                obs_xy = self.fixed_converter.get_cartesian(
-                    np.array([obstacle.s_center]),
-                    np.array([obstacle.d_center])
-                )
-            else:
-                # GB mode: obstacle is in GB Frenet coordinates
-                obs_xy = self.converter.get_cartesian(
-                    np.array([obstacle.s_center]),
-                    np.array([obstacle.d_center])
-                )
-            obs_pos = np.array([obs_xy[0, 0], obs_xy[1, 0]])
-
-            # Select appropriate bounds based on USE_SAFE_GRID and use_fixed_path flags
-            if USE_SAFE_GRID:
-                if not self.use_fixed_path:
-                    # GB mode + USE_SAFE_GRID=True: Use conservative bounds (no obstacles)
-                    if hasattr(self, 'bound_l_conservative') and hasattr(self, 'bound_r_conservative'):
-                        bound_l = self.bound_l_conservative
-                        bound_r = self.bound_r_conservative
-                        bounds_source = "conservative (no obs)"
-                    else:
-                        rospy.logwarn_throttle(5.0, f"[{self.name}] Conservative bounds not available, using original")
-                        bound_l = self.bound_l_original
-                        bound_r = self.bound_r_original
-                        bounds_source = "original (fallback)"
-                else:
-                    # Smart mode + USE_SAFE_GRID=True: Use conservative bounds with obstacles
-                    if hasattr(self, 'bound_l_conservative_modified') and hasattr(self, 'bound_r_conservative_modified'):
-                        bound_l = self.bound_l_conservative_modified
-                        bound_r = self.bound_r_conservative_modified
-                        bounds_source = "conservative + obs"
-                    else:
-                        rospy.logwarn_throttle(5.0, f"[{self.name}] Conservative modified bounds not available, using original modified")
-                        bound_l = self.bound_l_modified
-                        bound_r = self.bound_r_modified
-                        bounds_source = "original + obs (fallback)"
-            else:
-                if not self.use_fixed_path:
-                    # GB mode + USE_SAFE_GRID=False: Use original bounds (no obstacles)
-                    if hasattr(self, 'bound_l_original') and hasattr(self, 'bound_r_original'):
-                        bound_l = self.bound_l_original
-                        bound_r = self.bound_r_original
-                        bounds_source = "original (no obs)"
-                    else:
-                        rospy.logwarn_throttle(5.0, f"[{self.name}] Original bounds not available, extracting from GB waypoints")
-                        # Extract bounds from GB waypoints as fallback
-                        bound_l = np.array([[wp.x_m + wp.d_left * np.cos(wp.psi_rad + np.pi/2),
-                                            wp.y_m + wp.d_left * np.sin(wp.psi_rad + np.pi/2)]
-                                           for wp in gb_wpnts])
-                        bound_r = np.array([[wp.x_m + wp.d_right * np.cos(wp.psi_rad - np.pi/2),
-                                            wp.y_m + wp.d_right * np.sin(wp.psi_rad - np.pi/2)]
-                                           for wp in gb_wpnts])
-                        bounds_source = "GB wpnts (fallback)"
-                else:
-                    # Smart mode + USE_SAFE_GRID=False: Use original bounds with obstacles
-                    if hasattr(self, 'bound_l_modified') and hasattr(self, 'bound_r_modified'):
-                        bound_l = self.bound_l_modified
-                        bound_r = self.bound_r_modified
-                        bounds_source = "original + obs"
-                    else:
-                        rospy.logwarn_throttle(5.0, f"[{self.name}] Modified bounds not available, using original")
-                        bound_l = self.bound_l_original
-                        bound_r = self.bound_r_original
-                        bounds_source = "original (fallback)"
-
-            # Calculate minimum distance from obstacle center to each wall
-            dist_to_left_wall = np.min(np.linalg.norm(bound_l - obs_pos, axis=1))
-            dist_to_right_wall = np.min(np.linalg.norm(bound_r - obs_pos, axis=1))
-
-            # Calculate available space (subtract obstacle radius: 0.5m diameter = 0.25m radius)
-            obstacle_radius = 0.25  # meters
-            space_to_left = dist_to_left_wall - obstacle_radius
-            space_to_right = dist_to_right_wall - obstacle_radius
-
-            rospy.logwarn_throttle(1.0,
-                f"[{self.name}] _more_space: Both sides tight! bounds_source={bounds_source}, "
-                f"dist_to_left_wall={dist_to_left_wall:.2f}m, dist_to_right_wall={dist_to_right_wall:.2f}m, "
-                f"space_to_left={space_to_left:.2f}m, space_to_right={space_to_right:.2f}m")
-
-            if space_to_left > space_to_right:
-                # More space on the left side
-                candidate_d_apex_left = obstacle.d_left + self.evasion_dist
-                # If we overtake to the left of the opponent BUT the apex is to the right of the raceline, then we set the apex to 0
-                if candidate_d_apex_left < 0:
-                    candidate_d_apex_left = 0
-                rospy.logwarn_throttle(1.0, f"[{self.name}] _more_space: Choosing LEFT (space_diff={space_to_left - space_to_right:.2f}m)")
-                return "left", candidate_d_apex_left
-            else:
-                # More space on the right side (or equal)
-                candidate_d_apex_right = obstacle.d_right - self.evasion_dist
-                # If we overtake to the right of the opponent BUT the apex is to the left of the raceline, then we set the apex to 0
-                if candidate_d_apex_right > 0:
-                    candidate_d_apex_right = 0
-                rospy.logwarn_throttle(1.0, f"[{self.name}] _more_space: Choosing RIGHT (space_diff={space_to_right - space_to_left:.2f}m)")
-                return "right", candidate_d_apex_right
-
-    def do_spline(self, obs: Obstacle, gb_wpnts: WpntArray) -> Tuple[WpntArray, MarkerArray]:
+    def do_spline(self, obs: Obstacle, gb_wpnts: WpntArray, return_samples: bool = False) -> Tuple[WpntArray, MarkerArray]:
         """
         Creates an evasion trajectory for the closest obstacle by splining between pre- and post-apex points.
 
@@ -1851,6 +2020,29 @@ class ObstacleSpliner:
                 poly = BPoly.from_derivatives(d, spline_result[:,i])
                 samples[:,i] = poly(s)
 
+            # ===== HJ ADDED: Apply Savitzky-Golay smoothing to reduce angular paths =====
+            if SMOOTH_OTWPNTS and len(samples) >= SMOOTH_OTWPNTS_WINDOW:
+                # Preserve start and end points
+                start_pt = samples[0].copy()
+                end_pt = samples[-1].copy()
+
+                # Apply Savitzky-Golay filter to x and y separately
+                samples[:, 0] = savgol_filter(samples[:, 0], SMOOTH_OTWPNTS_WINDOW, SMOOTH_OTWPNTS_POLYORDER)
+                samples[:, 1] = savgol_filter(samples[:, 1], SMOOTH_OTWPNTS_WINDOW, SMOOTH_OTWPNTS_POLYORDER)
+
+                # Restore start point (vehicle position - must not change)
+                samples[0] = start_pt
+
+                # Blend end points smoothly (last 5 points)
+                blend_len = min(5, len(samples) - 1)
+                for bi in range(blend_len):
+                    idx = len(samples) - blend_len + bi
+                    w = bi / blend_len  # 0 to almost 1
+                    samples[idx] = samples[idx] * (1 - w) + end_pt * w
+                samples[-1] = end_pt
+            # ===== HJ ADDED END =====
+
+
             # if samples.shape[0] < self.n_loc_wpnts:
             n_additional = 100
             # ===== HJ MODIFIED: Use ref_max_idx instead of self.gb_max_idx =====
@@ -1861,16 +2053,59 @@ class ObstacleSpliner:
                 )
                 for i in range(n_additional)
             ])
-            # ===== HJ MODIFIED END =====
+
+
+            # ===== HJ ADDED: Smooth transition between spline and GB path =====
+            if SMOOTH_OTWPNTS and len(samples) > 0 and len(xy_additional) > 0:
+                # Blend last N points of samples with corresponding GB points (no direction reversal)
+                blend_to_gb_len = min(40, len(samples) - 1)  # 40 waypoints transition (stronger)
+
+                # Get starting GB index for blending (go backwards from s_idx[-1])
+                blend_start_gb_idx = max(0, s_idx[-1] - blend_to_gb_len)
+
+                for bi in range(blend_to_gb_len):
+                    idx = len(samples) - blend_to_gb_len + bi
+                    # Use quadratic easing for smoother blend (stronger at end)
+                    t = (bi + 1) / (blend_to_gb_len + 1)
+                    w = t * t  # Quadratic: starts slow, accelerates toward GB
+
+                    # Get corresponding GB point (moving forward along GB path)
+                    gb_idx_for_blend = (s_idx[-1] - blend_to_gb_len + bi + 1) % ref_max_idx
+                    target_pt = np.array([gb_wpnts[gb_idx_for_blend].x_m, gb_wpnts[gb_idx_for_blend].y_m])
+
+                    samples[idx] = samples[idx] * (1 - w) + target_pt * w
+            # ===== HJ ADDED END =====
+
             samples = np.vstack([samples, xy_additional])
+
+            # ===== HJ ADDED: Resample to uniform spacing =====
+            if SMOOTH_OTWPNTS and len(samples) > 2:
+                # Calculate cumulative arc length
+                diffs = np.diff(samples, axis=0)
+                seg_lengths = np.sqrt(np.sum(diffs**2, axis=1))
+                cum_length = np.concatenate([[0], np.cumsum(seg_lengths)])
+                total_length = cum_length[-1]
+
+                # Target spacing (use wpnt_dist from GB waypoints)
+                target_spacing = wpnt_dist
+                n_resampled = max(int(total_length / target_spacing), 2)
+
+                # Create uniform parameter values
+                uniform_s = np.linspace(0, total_length, n_resampled)
+
+                # Interpolate x and y at uniform spacing
+                samples_resampled = np.zeros((n_resampled, 2))
+                samples_resampled[:, 0] = np.interp(uniform_s, cum_length, samples[:, 0])
+                samples_resampled[:, 1] = np.interp(uniform_s, cum_length, samples[:, 1])
+                samples = samples_resampled
+            # ===== HJ ADDED END =====
 
             psi_, kappa_ = tph.calc_head_curv_num.\
                 calc_head_curv_num(
                     path=samples,
-                    el_lengths=0.1*np.ones(len(samples)-1),
+                    el_lengths=wpnt_dist*np.ones(len(samples)-1),
                     is_closed=False
                 )
-
             # ===== HJ MODIFIED: Calculate Frenet coordinates for gb_wpnt_i indexing =====
             # s_, d_ are used to find the correct waypoint index in the current reference path
             if self.use_fixed_path and self.fixed_converter is not None:
@@ -1968,11 +2203,21 @@ class ObstacleSpliner:
                 # ===== HJ ADDED END =====
                 wpnts.wpnts = []
                 mrks.markers = []
+                if return_samples:
+                    return wpnts, mrks, None
             else:
                 # ===== HJ ADDED: Success log =====
                 # rospy.logerr(f"[{self.name}] DEBUG SUCCESS: Generated {len(wpnts.wpnts)} waypoints successfully!")
                 # ===== HJ ADDED END =====
                 pass  # All checks passed, wpnts already populated
+
+        # Return with optional samples
+        if return_samples:
+            # Return samples if available (only when obstacle was processed)
+            if 'samples' in dir():
+                return wpnts, mrks, samples
+            else:
+                return wpnts, mrks, None
         return wpnts, mrks
 
     ######################
@@ -2105,7 +2350,8 @@ class ObstacleSpliner:
             # ===== HJ ADDED END =====
 
         finally:
-            # Always clear generating flag when done (success or fail)
+            # Always mark as attempted and clear generating flag when done (success, fail, or any exception)
+            self.fixed_path_generation_attempted = True
             self.fixed_path_generating = False
             rospy.loginfo(f"[{self.name}] [THREAD] Path generation thread finished.")
 
@@ -2140,38 +2386,49 @@ class ObstacleSpliner:
             if use_stable_centerline:
                 rospy.loginfo(f"[{self.name}] Using STABLE CENTERLINE approach (new method)...")
 
-                # Convert verified_obs + nearby_obs from Frenet to XY coordinates
+                # Convert obstacles from Frenet to XY coordinates
                 # Format: (sector_id, obs_id, s, d) → (pos [x,y], radius)
-                # Remove duplicates (verified_obs and nearby_obs can overlap)
+                #
+                # Two obstacle lists:
+                # 1. obstacles: verified_obs + nearby_obs (for GLOBAL optimization boundaries)
+                #    - GLOBAL opt uses these as boundary constraints, optimizer ignores if path doesn't intersect
+                # 2. obstacles_interfering: verified_obs only (for LOCAL optimization)
+                #    - LOCAL opt directly calculates shift for each obstacle, so only include interfering ones
+
+                def convert_obs_to_xy(obs_list, list_name):
+                    seen = set()
+                    unique_obs = []
+                    for sector_id, obs_id, s, d in obs_list:
+                        if (sector_id, obs_id) not in seen:
+                            seen.add((sector_id, obs_id))
+                            unique_obs.append((sector_id, obs_id, s, d))
+
+                    result = []
+                    for sector_id, obs_id, s, d in unique_obs:
+                        xy = self.converter.get_cartesian(np.array([s]), np.array([d]))
+                        pos = np.array([xy[0, 0], xy[1, 0]])
+
+                        key = (sector_id, obs_id)
+                        if key in self.static_obs_memory and 'radius' in self.static_obs_memory[key]:
+                            radius = self.static_obs_memory[key]['radius']
+                        else:
+                            radius = OBSTACLE_RADIUS
+
+                        result.append((pos, radius))
+                        rospy.loginfo(f"[{self.name}]   [{list_name}] Converted obstacle: sector={sector_id}, id={obs_id}, s={s:.2f}, d={d:.2f} → x={pos[0]:.2f}, y={pos[1]:.2f}, r={radius:.2f}")
+
+                    return result, len(obs_list), len(unique_obs)
+
+                # All obstacles (verified + nearby) for GLOBAL optimization boundaries
                 all_obs_frenet = verified_obs + nearby_obs
-                seen = set()
-                unique_obs = []
+                obstacles, total_all, unique_all = convert_obs_to_xy(all_obs_frenet, "ALL")
+                rospy.loginfo(f"[{self.name}] All obstacles (for GLOBAL bounds): total={total_all}, unique={unique_all} (removed {total_all - unique_all} duplicates)")
 
-                for sector_id, obs_id, s, d in all_obs_frenet:
-                    if (sector_id, obs_id) not in seen:
-                        seen.add((sector_id, obs_id))
-                        unique_obs.append((sector_id, obs_id, s, d))
+                # Only interfering obstacles (verified_obs) for LOCAL optimization
+                obstacles_interfering, total_interfering, unique_interfering = convert_obs_to_xy(verified_obs, "INTERFERING")
+                rospy.loginfo(f"[{self.name}] Interfering obstacles (for LOCAL opt): total={total_interfering}, unique={unique_interfering}")
 
-                rospy.loginfo(f"[{self.name}] Total obstacles: {len(all_obs_frenet)}, Unique: {len(unique_obs)} (removed {len(all_obs_frenet) - len(unique_obs)} duplicates)")
-
-                obstacles = []
-                for sector_id, obs_id, s, d in unique_obs:
-                    # Convert Frenet (s, d) to Cartesian (x, y) using GB converter
-                    xy = self.converter.get_cartesian(np.array([s]), np.array([d]))
-                    pos = np.array([xy[0, 0], xy[1, 0]])
-
-                    # Get obstacle radius from static_obs_memory
-                    key = (sector_id, obs_id)
-                    if key in self.static_obs_memory and 'radius' in self.static_obs_memory[key]:
-                        radius = self.static_obs_memory[key]['radius']
-                    else:
-                        # Default radius: diameter 50cm = radius 25cm
-                        radius = 0.25
-
-                    obstacles.append((pos, radius))
-                    rospy.loginfo(f"[{self.name}]   Converted obstacle: sector={sector_id}, id={obs_id}, s={s:.2f}, d={d:.2f} → x={pos[0]:.2f}, y={pos[1]:.2f}, r={radius:.2f}")
-
-                rospy.loginfo(f"[{self.name}] Converted {len(obstacles)} obstacles to XY coordinates")
+                rospy.loginfo(f"[{self.name}] Converted obstacles: {len(obstacles)} for GLOBAL bounds, {len(obstacles_interfering)} for LOCAL opt")
 
                 # Load map for occupancy grid generation (needed for GridFilter)
                 if not hasattr(self, 'original_bw'):
@@ -2208,64 +2465,116 @@ class ObstacleSpliner:
 
             rospy.loginfo(f"[{self.name}] Reftrack prepared: {reftrack.shape[0]} points")
 
-            # Step 2: Save to temporary CSV in current working directory (ONCE)
-            self._save_reftrack_to_csv(reftrack, csv_filename)
-            rospy.loginfo(f"[{self.name}] Reftrack saved to CSV")
-
-            # Step 3: Retry with progressively reduced safety_width ratios if optimization fails
-            # Reftrack is prepared ONCE above, only safety_width changes in retry loop
-            # ===== HJ MODIFIED: Only try down to 0.9 ratio, then give up and use GB mode =====
-            safety_width_ratios = [1.0, 0.95, 0.9]  # Stop at 0.9 (was: 0.85, 0.8, 0.75, 0.7)
-
-            trajectory_opt = None
-            last_error = None
-
-            for idx, ratio in enumerate(safety_width_ratios):
+            # ===== HJ ADDED: Switch between global and local optimization =====
+            if ENABLE_LOCAL_OPT:
+                # LOCAL OPTIMIZATION MODE
+                # Use obstacles_interfering (verified_obs only) - LOCAL opt directly calculates shift for each obstacle
+                rospy.loginfo(f"[{self.name}] ENABLE_LOCAL_OPT=True, using local optimization mode")
                 try:
-                    safety_width_adjusted = self.safety_width * ratio
-                    rospy.logwarn(
-                        f"[{self.name}] Attempt {idx+1}/{len(safety_width_ratios)}: "
-                        f"safety_width={safety_width_adjusted:.3f}m (ratio={ratio:.2f})"
+                    trajectory_opt, bound_r, bound_l = self._generate_local_optimized_path(
+                        obstacles=obstacles_interfering,
+                        reftrack=reftrack
                     )
+                    # Local optimization doesn't return est_time, use placeholder
+                    est_time = 0.0  # Local opt doesn't calculate lap time estimate
+                    rospy.loginfo(f"[{self.name}] Local optimization SUCCESS! Trajectory: {trajectory_opt.shape[0]} points")
+                except Exception as e:
+                    rospy.logerr(f"[{self.name}] Local optimization FAILED: {e}")
+                    rospy.logwarn(f"[{self.name}] Falling back to GB mode")
+                    return False
+            else:
+                # GLOBAL OPTIMIZATION MODE (original behavior)
+                rospy.loginfo(f"[{self.name}] ENABLE_LOCAL_OPT=False, using global optimization mode")
 
-                    # Call GB optimizer with adjusted safety_width
-                    rospy.loginfo(f"[{self.name}] Calling GB optimizer (mincurv_iqp)...")
-                    trajectory_opt, bound_r, bound_l, est_time = self._call_gb_optimizer(
-                        csv_filename,
-                        safety_width=safety_width_adjusted
-                    )
-                    rospy.loginfo(
-                        f"[{self.name}] GB optimizer SUCCESS! "
-                        f"Trajectory: {trajectory_opt.shape[0]} points, Est time: {est_time:.2f}s"
-                    )
-                    break  # Success! Exit retry loop
+                # Step 2: Save to temporary CSV in current working directory (ONCE)
+                self._save_reftrack_to_csv(reftrack, csv_filename)
+                rospy.loginfo(f"[{self.name}] Reftrack saved to CSV")
 
-                except (ValueError, RuntimeError) as e:
-                    # Catch both ValueError (constraints inconsistent) and RuntimeError (track too small)
-                    error_msg = str(e)
-                    if "constraints are inconsistent" in error_msg or "Problem not solvable" in error_msg:
-                        rospy.logerr(
-                            f"[{self.name}] Attempt {idx+1}/{len(safety_width_ratios)} failed: {error_msg}. "
-                            f"Trying next configuration..."
+                # Step 3: Retry with progressively reduced safety_width ratios if optimization fails
+                # Reftrack is prepared ONCE above, only safety_width changes in retry loop
+                # ===== HJ MODIFIED: Only try down to 0.9 ratio, then give up and use GB mode =====
+                
+                # safety_width_ratios = [1.0, 0.95, 0.9]  # Stop at 0.9
+                safety_width_ratios = [1.0]
+
+                trajectory_opt = None
+                last_error = None
+                used_local_opt_fallback = False  # Track if LOCAL_OPT fallback was used
+
+                for idx, ratio in enumerate(safety_width_ratios):
+                    try:
+                        safety_width_adjusted = self.safety_width * ratio
+                        rospy.logwarn(
+                            f"[{self.name}] Attempt {idx+1}/{len(safety_width_ratios)}: "
+                            f"safety_width={safety_width_adjusted:.3f}m (ratio={ratio:.2f})"
                         )
-                        last_error = e
-                        continue  # Try next configuration
-                    else:
-                        raise  # Re-raise if different error
 
-            # Check if all attempts failed
-            if trajectory_opt is None:
-                rospy.logerr(f"[{self.name}] ===== OPTIMIZATION FAILED =====")
-                rospy.logerr(f"[{self.name}] All {len(safety_width_ratios)} optimization attempts failed (down to {safety_width_ratios[-1]} ratio)")
-                rospy.logwarn(f"[{self.name}] Falling back to GB mode (Fixed path generation skipped)")
-                rospy.logwarn(f"[{self.name}] Will use GB path with dynamic obstacle avoidance (do_spline)")
-                # Return False to skip Fixed path usage (continue with GB mode)
-                return False
+                        # Call GB optimizer with adjusted safety_width
+                        rospy.loginfo(f"[{self.name}] Calling GB optimizer (mincurv_iqp)...")
+                        trajectory_opt, bound_r, bound_l, est_time = self._call_gb_optimizer(
+                            csv_filename,
+                            safety_width=safety_width_adjusted
+                        )
+                        rospy.loginfo(
+                            f"[{self.name}] GB optimizer SUCCESS! "
+                            f"Trajectory: {trajectory_opt.shape[0]} points, Est time: {est_time:.2f}s"
+                        )
+                        break  # Success! Exit retry loop
+
+                    except (ValueError, RuntimeError) as e:
+                        # Catch ValueError (constraints inconsistent), RuntimeError (track too small, timeout, IQP convergence)
+                        error_msg = str(e)
+                        if ("constraints are inconsistent" in error_msg or
+                            "Problem not solvable" in error_msg or
+                            "timeout" in error_msg.lower() or
+                            "IQP failed to converge" in error_msg):
+                            rospy.logerr(
+                                f"[{self.name}] Attempt {idx+1}/{len(safety_width_ratios)} failed: {error_msg}. "
+                                f"Trying next configuration..."
+                            )
+                            last_error = e
+                            continue  # Try next configuration
+                        else:
+                            raise  # Re-raise if different error
+
+                # Check if all attempts failed
+                if trajectory_opt is None:
+                    rospy.logerr(f"[{self.name}] ===== GLOBAL OPTIMIZATION FAILED =====")
+                    rospy.logerr(f"[{self.name}] All {len(safety_width_ratios)} optimization attempts failed (down to {safety_width_ratios[-1]} ratio)")
+
+                    if LOCAL_OPT_FALLBACK:
+                        # Fallback to LOCAL_OPT
+                        # Use obstacles_interfering (verified_obs only) - LOCAL opt directly calculates shift for each obstacle
+                        rospy.logwarn(f"[{self.name}] LOCAL_OPT_FALLBACK=True, trying local optimization...")
+                        try:
+                            trajectory_opt, bound_r, bound_l = self._generate_local_optimized_path(
+                                obstacles=obstacles_interfering,
+                                reftrack=reftrack
+                            )
+                            est_time = 0.0
+                            used_local_opt_fallback = True  # Mark that we used LOCAL_OPT fallback
+                            rospy.loginfo(f"[{self.name}] Local optimization fallback SUCCESS! Trajectory: {trajectory_opt.shape[0]} points")
+                        except Exception as e:
+                            rospy.logerr(f"[{self.name}] Local optimization fallback FAILED: {e}")
+                            rospy.logwarn(f"[{self.name}] Falling back to GB mode")
+                            return False
+                    else:
+                        rospy.logwarn(f"[{self.name}] LOCAL_OPT_FALLBACK=False, falling back to GB mode")
+                        rospy.logwarn(f"[{self.name}] Will use GB path with dynamic obstacle avoidance (do_spline)")
+                        return False
+            # ===== HJ ADDED END =====
 
             # ===== HJ ADDED: Step 3.5: Apply post-smoothing if enabled =====
-            if SMOOTH_OPT_OUTPUT:
+            # Smoothing is applied only for GLOBAL optimization (not LOCAL_OPT)
+            # LOCAL_OPT already produces smooth curves with BPoly transition smoothing
+            # Skip smoothing if: ENABLE_LOCAL_OPT=True OR used_local_opt_fallback=True
+            skip_smoothing = ENABLE_LOCAL_OPT or (not ENABLE_LOCAL_OPT and used_local_opt_fallback)
+
+            if SMOOTH_OPT_OUTPUT and not skip_smoothing:
                 rospy.loginfo(f"[{self.name}] SMOOTH_OPT_OUTPUT=True, applying Savitzky-Golay smoothing...")
                 trajectory_opt = self._smooth_trajectory_output(trajectory_opt, target_stepsize=0.1)
+            elif skip_smoothing:
+                rospy.loginfo(f"[{self.name}] LOCAL_OPT mode (or fallback): skipping post-smoothing (already has BPoly smoothing)")
             else:
                 rospy.loginfo(f"[{self.name}] SMOOTH_OPT_OUTPUT=False, using original optimizer output")
             # ===== HJ ADDED END =====
@@ -2305,6 +2614,7 @@ class ObstacleSpliner:
             # Step 4.5: Create FrenetConverter for fixed path (for interference checking)
             x_array = np.array([w.x_m for w in self.fixed_path_wpnts.wpnts])
             y_array = np.array([w.y_m for w in self.fixed_path_wpnts.wpnts])
+            z_array = np.array([w.z_m for w in self.fixed_path_wpnts.wpnts])
 
             # ===== HJ ADDED: Check for NaN values =====
             if np.any(np.isnan(x_array)) or np.any(np.isnan(y_array)):
@@ -2313,7 +2623,7 @@ class ObstacleSpliner:
                 raise ValueError("Fixed path contains NaN waypoints")
             # ===== HJ ADDED END =====
 
-            self.fixed_converter = FrenetConverter(x_array, y_array)
+            self.fixed_converter = FrenetConverter(x_array, y_array, z_array)
             rospy.loginfo(f"[{self.name}] Created FrenetConverter for fixed path ({len(x_array)} points)")
 
             # ===== HJ ADDED: Step 3.5: Regenerate occupancy grid with nearby_obs (for spline) =====
@@ -2377,12 +2687,11 @@ class ObstacleSpliner:
 
             # ===== HJ MODIFIED: Calculate d_left, d_right using nearby_obs =====
             # Step 4.5.5: Extract track boundaries and calculate d_left, d_right
-            # SKIP if using stable centerline (d_left/d_right not needed - reftrack already has w_tr_right/left)
-            if not use_stable_centerline:
-                if os.path.exists(obstacles_only_png_path):
-                    self._calculate_fixed_path_boundaries(obstacles_only_png_path, modified_yaml_path, nearby_obs)
-                else:
-                    rospy.logwarn(f"[{self.name}] Cannot calculate d_left/d_right: obstacles_only map not found")
+            # Always calculate for LOCAL_OPT (needs Fixed path Frenet-based boundaries)
+            # For GLOBAL mode with stable centerline, reftrack already has w_tr_right/left
+            if ENABLE_LOCAL_OPT or not use_stable_centerline:
+                rospy.loginfo(f"[{self.name}] Calculating d_left/d_right for Fixed path (LOCAL_OPT={ENABLE_LOCAL_OPT})...")
+                self._calculate_fixed_path_boundaries(obstacles_only_png_path, modified_yaml_path, nearby_obs)
             else:
                 rospy.loginfo(f"[{self.name}] Skipping d_left/d_right calculation (using stable centerline with reftrack distances)")
             # ===== HJ MODIFIED END =====
@@ -2534,8 +2843,13 @@ class ObstacleSpliner:
             # Note: obstacles_only.png will be generated later with nearby_obs in Step 3.5
             # ===== HJ MODIFIED END =====
 
-            # Step 4: Extract centerline using skeletonize
-            skeleton = skeletonize(modified_bw // 255).astype(np.uint8) * 255
+            # Step 4: Extract centerline using skeletonize (same as global_planner_node)
+            # Filtering with morphological opening
+            kernel1 = np.ones((9, 9), np.uint8)
+            opening = cv2.morphologyEx(modified_bw, cv2.MORPH_OPEN, kernel1, iterations=1)
+
+            # Get morphological skeleton of the map
+            skeleton = skeletonize(opening, method='lee')
 
             # DEBUG: Save skeleton
             skeleton_path = os.path.join(self.map_dir, f'{self.map_name}_skeleton.png')
@@ -2548,20 +2862,35 @@ class ObstacleSpliner:
                 rospy.logerr(f"[{self.name}] Failed to extract centerline")
                 return None
 
-            # Step 5: Extract bounds using watershed
-            bound_r_pixels, bound_l_pixels = self._extract_bounds_from_watershed(
-                centerline_pixels, modified_bw
-            )
-
-            if bound_r_pixels is None or bound_l_pixels is None:
-                rospy.logerr(f"[{self.name}] Failed to extract bounds")
-                return None
+            # Step 5: Extract bounds using watershed (same as global_planner_node)
+            # If watershed fails, fallback to distance transform
+            try:
+                bound_r_pixels, bound_l_pixels = self._extract_bounds_from_watershed(
+                    centerline_pixels, opening
+                )
+                dist_transform = None
+                rospy.loginfo(f"[{self.name}] Using watershed for track bound extraction...")
+            except IOError:
+                rospy.logwarn(f"[{self.name}] More than two track bounds detected with watershed algorithm")
+                rospy.loginfo(f"[{self.name}] Trying with simple distance transform...")
+                bound_r_pixels = None
+                bound_l_pixels = None
+                dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
 
             # Convert to meters
             map_height = og_img.shape[0]  # Image height in pixels
             centerline_m = self._pixels_to_meters(centerline_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
-            bound_r_m = self._pixels_to_meters(bound_r_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
-            bound_l_m = self._pixels_to_meters(bound_l_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
+
+            if dist_transform is not None:
+                # Use distance transform (fallback) - left and right widths are the same
+                width_track = dist_transform[centerline_pixels[:, 1].astype(int),
+                                             centerline_pixels[:, 0].astype(int)] * map_resolution
+                bound_r_m = None
+                bound_l_m = None
+            else:
+                bound_r_m = self._pixels_to_meters(bound_r_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
+                bound_l_m = self._pixels_to_meters(bound_l_pixels, map_resolution, map_origin_x, map_origin_y, map_height)
+                width_track = None
 
             # ===== HJ ADDED: Interpolate centerline for uniform spacing =====
             # Skeleton gives uneven spacing (~0.05m avg), interpolate to uniform stepsize
@@ -2599,14 +2928,22 @@ class ObstacleSpliner:
             if is_ccw != want_ccw:
                 centerline_pixels = np.flip(centerline_pixels, axis=0)
                 centerline_m = np.flip(centerline_m, axis=0)
-                bound_r_m, bound_l_m = bound_l_m, bound_r_m  # Swap bounds when flipping
+                if bound_r_m is not None and bound_l_m is not None:
+                    bound_r_m, bound_l_m = bound_l_m, bound_r_m  # Swap bounds when flipping
                 rospy.loginfo(f"[{self.name}] Centerline FLIPPED to {'CCW' if want_ccw else 'CW'} (reverse_mapping={self.reverse_mapping})")
             else:
                 rospy.loginfo(f"[{self.name}] Centerline direction correct ({'CCW' if want_ccw else 'CW'})")
             # ===== HJ MODIFIED END =====
 
             # Step 6: Calculate reftrack distances
-            reftrack = self._calculate_reftrack_distances(centerline_m, bound_r_m, bound_l_m)
+            if width_track is not None:
+                # Use distance transform (fallback) - left and right widths are the same
+                # Interpolate width_track to match centerline_m after interpolation
+                if len(width_track) != len(centerline_m):
+                    width_track = np.interp(np.arange(0, len(centerline_m)), np.arange(0, len(width_track)), width_track)
+                reftrack = np.column_stack((centerline_m, width_track, width_track))
+            else:
+                reftrack = self._calculate_reftrack_distances(centerline_m, bound_r_m, bound_l_m)
 
             rospy.loginfo(f"[{self.name}] Prepared reftrack from occupancy grid: {reftrack.shape[0]} points")
             return reftrack
@@ -2684,24 +3021,33 @@ class ObstacleSpliner:
                 rospy.logerr(f"[{self.name}] Failed to load conservative map: {conservative_map_path}")
                 return None, None
 
-            # Create binary mask (white = free space, black = occupied)
-            conservative_bw = np.where(conservative_img > 200, 255, 0).astype(np.uint8)
+            # Flip image (same as global_planner_node)
+            # conservative_bw = cv2.flip(conservative_img, 0)
 
-            # Extract centerline from skeleton
-            skeleton = skeletonize(conservative_bw // 255).astype(np.uint8) * 255
+            # Filtering with morphological opening (same as global_planner_node)
+            kernel1 = np.ones((9, 9), np.uint8)
+            opening = cv2.morphologyEx(conservative_img, cv2.MORPH_OPEN, kernel1, iterations=1)
+
+            # Get morphological skeleton of the map (same as global_planner_node)
+            skeleton = skeletonize(opening, method='lee')
             centerline_pixels = self._extract_centerline_from_skeleton(skeleton)
 
             if centerline_pixels is None:
                 rospy.logerr(f"[{self.name}] Failed to extract centerline from conservative map")
                 return None, None
 
-            # Extract bounds using watershed
-            bound_r_pixels, bound_l_pixels = self._extract_bounds_from_watershed(
-                centerline_pixels, conservative_bw
-            )
-
-            if bound_r_pixels is None or bound_l_pixels is None:
-                rospy.logerr(f"[{self.name}] Failed to extract bounds from conservative map")
+            # Extract bounds using watershed (same as global_planner_node)
+            # If watershed fails, fallback to distance transform
+            try:
+                bound_r_pixels, bound_l_pixels = self._extract_bounds_from_watershed(
+                    centerline_pixels, opening
+                )
+                rospy.loginfo(f"[{self.name}] Using watershed for conservative bound extraction...")
+            except IOError:
+                rospy.logwarn(f"[{self.name}] More than two track bounds detected with watershed algorithm")
+                rospy.loginfo(f"[{self.name}] Trying with simple distance transform...")
+                # For _get_conservative_boundaries, we can't use distance transform as fallback
+                # because we need actual boundary points. Return None to signal failure.
                 return None, None
 
             # Convert to meters
@@ -2857,7 +3203,8 @@ class ObstacleSpliner:
         # Step 1: Create Frenet converter for centerline
         centerline_converter = FrenetConverter(
             waypoints_x=centerline[:, 0],
-            waypoints_y=centerline[:, 1]
+            waypoints_y=centerline[:, 1],
+            waypoints_z=centerline[:, 2] if centerline.shape[1] > 2 else None
         )
 
         # Step 2: Convert obstacle position to centerline Frenet coordinates
@@ -3042,29 +3389,42 @@ class ObstacleSpliner:
         obs_s_idx = int(obs_s / wpnt_dist) % len(self.gb_wpnts.wpnts)
         gb_wp = self.gb_wpnts.wpnts[obs_s_idx]
 
-        # 2. Handle based on obstacle side (left: d>0, right: d<0)
-        if obs_d > 0:  # Obstacle on left
-            opposite_space = gb_wp.d_right  # Distance to right wall
+        # # 2. Handle based on obstacle side (left: d>0, right: d<0)
+        # if obs_d > 0:  # Obstacle on left
+        #     opposite_space = gb_wp.d_right  # Distance to right wall
 
-            if opposite_space > OPPOSITE_SPACE_THRESHOLD:
-                # Right side has space → add to left bound, shift centerline right
-                rospy.loginfo(f"[{self.name}]   GB-aware: obs left, d_right={opposite_space:.2f}m > {OPPOSITE_SPACE_THRESHOLD}m → left bound, shift right")
-                return ('left', 'right')
-            else:
-                # Right side no space → add to right bound, shift centerline left
-                rospy.loginfo(f"[{self.name}]   GB-aware: obs left, d_right={opposite_space:.2f}m <= {OPPOSITE_SPACE_THRESHOLD}m → right bound, shift left")
-                return ('right', 'left')
-        else:  # Obstacle on right
-            opposite_space = gb_wp.d_left  # Distance to left wall
+        #     if opposite_space > OPPOSITE_SPACE_THRESHOLD:
+        #         # Right side has space → add to left bound, shift centerline right
+        #         rospy.loginfo(f"[{self.name}]   GB-aware: obs left, d_right={opposite_space:.2f}m > {OPPOSITE_SPACE_THRESHOLD}m → left bound, shift right")
+        #         return ('left', 'right')
+        #     else:
+        #         # Right side no space → add to right bound, shift centerline left
+        #         rospy.loginfo(f"[{self.name}]   GB-aware: obs left, d_right={opposite_space:.2f}m <= {OPPOSITE_SPACE_THRESHOLD}m → right bound, shift left")
+        #         return ('right', 'left')
+        # else:  # Obstacle on right
+        #     opposite_space = gb_wp.d_left  # Distance to left wall
 
-            if opposite_space > OPPOSITE_SPACE_THRESHOLD:
-                # Left side has space → add to right bound, shift centerline left
-                rospy.loginfo(f"[{self.name}]   GB-aware: obs right, d_left={opposite_space:.2f}m > {OPPOSITE_SPACE_THRESHOLD}m → right bound, shift left")
-                return ('right', 'left')
-            else:
-                # Left side no space → add to left bound, shift centerline right
-                rospy.loginfo(f"[{self.name}]   GB-aware: obs right, d_left={opposite_space:.2f}m <= {OPPOSITE_SPACE_THRESHOLD}m → left bound, shift right")
-                return ('left', 'right')
+        #     if opposite_space > OPPOSITE_SPACE_THRESHOLD:
+        #         # Left side has space → add to right bound, shift centerline left
+        #         rospy.loginfo(f"[{self.name}]   GB-aware: obs right, d_left={opposite_space:.2f}m > {OPPOSITE_SPACE_THRESHOLD}m → right bound, shift left")
+        #         return ('right', 'left')
+        #     else:
+        #         # Left side no space → add to left bound, shift centerline right
+        #         rospy.loginfo(f"[{self.name}]   GB-aware: obs right, d_left={opposite_space:.2f}m <= {OPPOSITE_SPACE_THRESHOLD}m → left bound, shift right")
+        #         return ('left', 'right')
+
+        # 2. Prefer LEFT shift unless left side has no space
+        # Check left side space first
+        left_space = gb_wp.d_left  # Distance to left wall
+
+        if left_space > OPPOSITE_SPACE_THRESHOLD:
+            # Left side has space → shift left (add obstacle to right bound)
+            rospy.loginfo(f"[{self.name}]   GB-aware: d_left={left_space:.2f}m > {OPPOSITE_SPACE_THRESHOLD}m → prefer LEFT, right bound, shift left")
+            return ('right', 'left')
+        else:
+            # Left side no space → shift right (add obstacle to left bound)
+            rospy.loginfo(f"[{self.name}]   GB-aware: d_left={left_space:.2f}m <= {OPPOSITE_SPACE_THRESHOLD}m → must go RIGHT, left bound, shift right")
+            return ('left', 'right')
 
     def _generate_spline_for_obstacle(
         self,
@@ -3254,7 +3614,8 @@ class ObstacleSpliner:
             rospy.loginfo(f"[{self.name}] Creating Frenet converter for original centerline...")
             centerline_converter = FrenetConverter(
                 waypoints_x=centerline_original[:, 0],
-                waypoints_y=centerline_original[:, 1]
+                waypoints_y=centerline_original[:, 1],
+                waypoints_z=centerline_original[:, 2] if centerline_original.shape[1] > 2 else None
             )
 
             # Initialize modified centerline and bounds (for Fixed path - original based)
@@ -3383,12 +3744,28 @@ class ObstacleSpliner:
             rospy.loginfo(f"[{self.name}] Modified {num_modified} centerline points (averaged where overlapping)")
 
             # Step 5: Calculate distances from modified centerline to modified bounds (Fixed path)
-            rospy.loginfo(f"[{self.name}] Calculating distances from centerline to bounds (original)...")
-            reftrack = self._calculate_reftrack_distances(
-                centerline_modified,
-                bound_r_modified,
-                bound_l_modified
-            )
+            # Choose bounds for optimization based on USE_CONSERVATIVE_BOUNDS_FOR_OPT flag
+            # Store original centerline for visualization comparison
+            self._viz_original_centerline = centerline_original
+
+            if USE_SAFE_GRID and USE_CONSERVATIVE_BOUNDS_FOR_OPT:
+                rospy.loginfo(f"[{self.name}] Calculating distances from centerline to bounds (conservative)...")
+                reftrack = self._calculate_reftrack_distances(
+                    centerline_modified,
+                    bound_r_conservative_modified,
+                    bound_l_conservative_modified,
+                    update_viz=visualize,
+                    obstacles=obstacles
+                )
+            else:
+                rospy.loginfo(f"[{self.name}] Calculating distances from centerline to bounds (original)...")
+                reftrack = self._calculate_reftrack_distances(
+                    centerline_modified,
+                    bound_r_modified,
+                    bound_l_modified,
+                    update_viz=visualize,
+                    obstacles=obstacles
+                )
             rospy.loginfo(f"[{self.name}] Created reftrack: {reftrack.shape[0]} points")
 
             # Step 5.5: Store bounds for later use (_more_space and d_left/d_right calculation)
@@ -3414,19 +3791,8 @@ class ObstacleSpliner:
                 self.bound_l_conservative_modified = bound_l_conservative_modified
                 rospy.loginfo(f"[{self.name}] Stored conservative bounds with obstacles for Smart mode")
 
-            # Step 6: Visualize if requested
-            if visualize:
-                save_path = os.path.join(self.map_dir, f'{self.map_name}_centerline_modification_debug.png')
-                self._visualize_centerline_modification(
-                    original_centerline=centerline_original,
-                    modified_centerline=centerline_modified,
-                    original_bound_r=bound_r_original,
-                    original_bound_l=bound_l_original,
-                    modified_bound_r=bound_r_modified,
-                    modified_bound_l=bound_l_modified,
-                    obstacles=obstacles,
-                    save_path=save_path
-                )
+            # Step 6: Visualization is now handled inside _calculate_reftrack_distances
+            # when update_viz=True, showing the actual bounds used for optimization
 
             return reftrack
 
@@ -3510,7 +3876,7 @@ class ObstacleSpliner:
             # This is more robust than trying to replace individual values
             # Use global parameters for easy tuning
 
-            replacement = f'optim_opts_mincurv={{"width_opt": {OPT_WIDTH_OPT},\n                    "iqp_iters_min": {OPT_IQP_ITERS_MIN},\n                    "iqp_curverror_allowed": {OPT_IQP_CURVERROR_ALLOWED}}}'
+            replacement = f'optim_opts_mincurv={{"width_opt": {OPT_WIDTH_OPT},\n                    "iqp_iters_min": {OPT_IQP_ITERS_MIN},\n                    "iqp_iters_max": {OPT_IQP_ITERS_MAX},\n                    "iqp_curverror_allowed": {OPT_IQP_CURVERROR_ALLOWED}}}'
 
             ini_content_modified = re.sub(
                 r'optim_opts_mincurv=\{[^}]+\}',
@@ -3570,7 +3936,7 @@ class ObstacleSpliner:
             f"plot={self.gb_optimizer_plot}"
         )
 
-        # Call trajectory_optimizer with modified ini
+        # Call trajectory_optimizer
         trajectory_opt, bound_r, bound_l, est_time = trajectory_optimizer(
             input_path=temp_input_path,
             track_name=track_name,
@@ -3593,6 +3959,450 @@ class ObstacleSpliner:
         )
 
         return trajectory_opt, bound_r, bound_l, est_time
+
+    def _generate_local_optimized_path(
+        self,
+        obstacles: List[Tuple[np.ndarray, float]],
+        reftrack: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Generate path using do_spline logic for each obstacle.
+
+        Fakes vehicle position to be before each obstacle, then calls do_spline
+        to generate avoidance trajectory. Merges all spline segments with GB raceline.
+
+        Args:
+            obstacles: List of (position [x, y], radius) tuples
+            reftrack: Reference track [x, y, w_tr_right, w_tr_left] (for bounds info)
+
+        Returns:
+            trajectory_opt: [s_m, x_m, y_m, psi_rad, kappa, vx_mps, ax_mps2]
+            bound_r: Right boundary XY
+            bound_l: Left boundary XY
+        """
+        import trajectory_planning_helpers as tph
+        from f110_msgs.msg import Obstacle
+
+        rospy.loginfo(f"[{self.name}] ===== LOCAL OPT: Using do_spline with fake position =====")
+        rospy.loginfo(f"[{self.name}] Obstacles: {len(obstacles)}")
+
+        # Get GB waypoints
+        if self.gb_wpnts.wpnts is None or len(self.gb_wpnts.wpnts) == 0:
+            raise ValueError("GB waypoints not available")
+
+        gb_wpnts_list = self.gb_wpnts.wpnts
+        n_gb = len(gb_wpnts_list)
+        wpnt_dist = gb_wpnts_list[1].s_m - gb_wpnts_list[0].s_m if n_gb > 1 else 0.1
+        ref_max_s = gb_wpnts_list[-1].s_m + wpnt_dist
+
+        # Save original vehicle state
+        orig_cur_x = self.cur_x
+        orig_cur_y = self.cur_y
+        orig_cur_s = self.cur_s
+        orig_cur_d = self.cur_d
+        orig_cur_yaw = self.cur_yaw
+
+        # Start with GB raceline as base
+        gb_xy = np.array([[w.x_m, w.y_m] for w in gb_wpnts_list])
+        gb_s = np.array([w.s_m for w in gb_wpnts_list])
+        gb_psi = np.array([w.psi_rad for w in gb_wpnts_list])
+        gb_kappa = np.array([w.kappa_radpm for w in gb_wpnts_list])
+        gb_vx = np.array([w.vx_mps for w in gb_wpnts_list])
+
+        # Result starts as copy of GB (will only modify avoidance regions)
+        result_xy = gb_xy.copy()
+        result_psi = gb_psi.copy()
+        result_kappa = gb_kappa.copy()
+
+        # Track which indices are modified
+        merged_indices = set()
+
+        # Track transition points (start/end of each avoidance region) for final smoothing
+        transition_points = []
+
+        from scipy.interpolate import CubicSpline
+
+        # Process each obstacle: create smooth avoidance spline with GB boundary conditions
+        for obs_idx, (obs_pos, obs_radius) in enumerate(obstacles):
+            rospy.loginfo(f"[{self.name}] Processing obstacle {obs_idx+1}: pos={obs_pos}, r={obs_radius:.2f}m")
+
+            # Convert to Frenet coordinates
+            obs_s_arr, obs_d_arr = self.converter.get_frenet(
+                np.array([obs_pos[0]]), np.array([obs_pos[1]])
+            )
+            obs_s = float(obs_s_arr[0])
+            obs_d = float(obs_d_arr[0])
+
+            rospy.loginfo(f"[{self.name}]   Frenet: s={obs_s:.2f}m, d={obs_d:.2f}m")
+
+            # Determine evasion side using _more_space logic
+            obs_s_idx = int(obs_s / wpnt_dist) % n_gb
+
+            # Get wall bounds from GB waypoint
+            gb_wpnt = gb_wpnts_list[obs_s_idx]
+            w_left = gb_wpnt.d_left
+            w_right = gb_wpnt.d_right
+
+            # Create Obstacle message for _more_space
+            obs_msg = Obstacle()
+            obs_msg.is_static = True
+            obs_msg.s_center = obs_s
+            obs_msg.d_center = obs_d
+            obs_msg.size = obs_radius * 2
+            obs_msg.d_left = obs_d + obs_radius
+            obs_msg.d_right = obs_d - obs_radius
+
+            # Get evasion direction from _decide_obstacle_strategy_gb_aware (same as Global opt centerline shift)
+            # This ensures Local opt and Global opt use the same evasion direction
+            _, shift_direction = self._decide_obstacle_strategy_gb_aware(obs_s, obs_d, obs_radius)
+            # shift_direction is the direction to shift centerline, which is the evasion direction
+            evasion_side = shift_direction  # 'left' or 'right'
+
+            # Calculate d_apex using LOCAL_OPT_EVASION_DIST
+            if evasion_side == "left":
+                d_apex = obs_d + obs_radius + LOCAL_OPT_EVASION_DIST
+                # Clamp to wall margin
+                max_d = w_left - LOCAL_OPT_WALL_MARGIN
+                d_apex = min(d_apex, max_d)
+            else:
+                d_apex = obs_d - obs_radius - LOCAL_OPT_EVASION_DIST
+                # Clamp to wall margin
+                min_d = -(w_right - LOCAL_OPT_WALL_MARGIN)
+                d_apex = max(d_apex, min_d)
+
+            # rospy.loginfo(f"[{self.name}]   Evasion: side={more_space}, d_apex={d_apex:.2f}m (evasion_dist={LOCAL_OPT_EVASION_DIST}m)")
+            rospy.loginfo(f"[{self.name}]   Evasion: side={evasion_side}, d_apex={d_apex:.2f}m (evasion_dist={LOCAL_OPT_EVASION_DIST}m)")
+
+            # Define avoidance region: start_idx to end_idx
+            start_idx = int((obs_s - LOCAL_OPT_RANGE) / wpnt_dist) % n_gb
+            end_idx = int((obs_s + LOCAL_OPT_RANGE) / wpnt_dist) % n_gb
+
+            # Build index list for this avoidance region
+            if end_idx > start_idx:
+                region_indices = list(range(start_idx, end_idx + 1))
+            else:  # wrap-around
+                region_indices = list(range(start_idx, n_gb)) + list(range(0, end_idx + 1))
+
+            n_region = len(region_indices)
+            if n_region < 5:
+                rospy.logwarn(f"[{self.name}]   Region too small ({n_region}), skipping")
+                continue
+
+            # Build control points for cubic spline with wall margin constraints:
+            # 5 control points: start, 1/4, apex (1/2), 3/4, end
+            # Each intermediate point is clamped to wall margin
+
+            def get_wall_clamped_d(s_val, target_d):
+                """Clamp target_d to maintain wall margin at given s position"""
+                idx = int(s_val / wpnt_dist) % n_gb
+                wpnt = gb_wpnts_list[idx]
+                w_l = wpnt.d_left
+                w_r = wpnt.d_right
+                # Clamp to wall margin
+                max_d = w_l - LOCAL_OPT_WALL_MARGIN
+                min_d = -(w_r - LOCAL_OPT_WALL_MARGIN)
+                return np.clip(target_d, min_d, max_d)
+
+            # Calculate s positions for intermediate control points (5 points: start, 1/4, apex, 3/4, end)
+            s_quarter = (obs_s - LOCAL_OPT_RANGE * 0.5) % ref_max_s
+            s_three_quarter = (obs_s + LOCAL_OPT_RANGE * 0.5) % ref_max_s
+
+            # d values: use LOCAL_OPT_MID_D_RATIO for 1/4 and 3/4 points
+            # With wall margin clamping
+            d_quarter = get_wall_clamped_d(s_quarter, d_apex * LOCAL_OPT_MID_D_RATIO)
+            d_apex_clamped = get_wall_clamped_d(obs_s, d_apex)
+            d_three_quarter = get_wall_clamped_d(s_three_quarter, d_apex * LOCAL_OPT_MID_D_RATIO)
+
+            # Convert to XY
+            quarter_xy = self.converter.get_cartesian(np.array([s_quarter]), np.array([d_quarter]))
+            apex_xy_clamped = self.converter.get_cartesian(np.array([obs_s]), np.array([d_apex_clamped]))
+            three_quarter_xy = self.converter.get_cartesian(np.array([s_three_quarter]), np.array([d_three_quarter]))
+
+            # Build control points array
+            ctrl_pts = []
+            ctrl_s_param = []
+            cumul_dist = 0.0
+
+            # Point 0: Start (GB)
+            ctrl_pts.append([gb_xy[start_idx, 0], gb_xy[start_idx, 1]])
+            ctrl_s_param.append(cumul_dist)
+
+            # Point 1: 1/4 point (wall-clamped)
+            pt1 = [quarter_xy[0, 0], quarter_xy[1, 0]]
+            cumul_dist += np.sqrt((pt1[0] - ctrl_pts[-1][0])**2 + (pt1[1] - ctrl_pts[-1][1])**2)
+            ctrl_pts.append(pt1)
+            ctrl_s_param.append(cumul_dist)
+
+            # Point 2: Apex (wall-clamped)
+            pt2 = [apex_xy_clamped[0, 0], apex_xy_clamped[1, 0]]
+            cumul_dist += np.sqrt((pt2[0] - ctrl_pts[-1][0])**2 + (pt2[1] - ctrl_pts[-1][1])**2)
+            ctrl_pts.append(pt2)
+            ctrl_s_param.append(cumul_dist)
+
+            # Point 3: 3/4 point (wall-clamped)
+            pt3 = [three_quarter_xy[0, 0], three_quarter_xy[1, 0]]
+            cumul_dist += np.sqrt((pt3[0] - ctrl_pts[-1][0])**2 + (pt3[1] - ctrl_pts[-1][1])**2)
+            ctrl_pts.append(pt3)
+            ctrl_s_param.append(cumul_dist)
+
+            # Point 4: End (GB)
+            pt4 = [gb_xy[end_idx, 0], gb_xy[end_idx, 1]]
+            cumul_dist += np.sqrt((pt4[0] - ctrl_pts[-1][0])**2 + (pt4[1] - ctrl_pts[-1][1])**2)
+            ctrl_pts.append(pt4)
+            ctrl_s_param.append(cumul_dist)
+
+            ctrl_pts = np.array(ctrl_pts)
+            ctrl_s_param = np.array(ctrl_s_param)
+
+            # Fit cubic spline with clamped boundary conditions (match GB tangent)
+            start_psi = gb_psi[start_idx]
+            end_psi = gb_psi[end_idx]
+
+            try:
+                spline_x = CubicSpline(ctrl_s_param, ctrl_pts[:, 0],
+                                       bc_type=((1, np.cos(start_psi)), (1, np.cos(end_psi))))
+                spline_y = CubicSpline(ctrl_s_param, ctrl_pts[:, 1],
+                                       bc_type=((1, np.sin(start_psi)), (1, np.sin(end_psi))))
+            except Exception as e:
+                rospy.logwarn(f"[{self.name}]   CubicSpline failed: {e}, skipping")
+                continue
+
+            rospy.loginfo(f"[{self.name}]   Control points: d_quarter={d_quarter:.2f}, d_apex={d_apex_clamped:.2f}, d_3quarter={d_three_quarter:.2f} (mid_ratio={LOCAL_OPT_MID_D_RATIO})")
+
+            # Sample spline at each GB index in the region
+            total_arc = ctrl_s_param[-1]
+            for i, idx in enumerate(region_indices):
+                t = i / (n_region - 1) * total_arc
+
+                result_xy[idx, 0] = spline_x(t)
+                result_xy[idx, 1] = spline_y(t)
+                merged_indices.add(idx)
+
+                # Calculate psi from spline derivative
+                dx_dt = spline_x(t, 1)
+                dy_dt = spline_y(t, 1)
+                result_psi[idx] = np.arctan2(dy_dt, dx_dt)
+
+                # Calculate kappa from spline second derivative
+                d2x_dt2 = spline_x(t, 2)
+                d2y_dt2 = spline_y(t, 2)
+                speed_sq = dx_dt**2 + dy_dt**2
+                if speed_sq > 1e-6:
+                    result_kappa[idx] = (dx_dt * d2y_dt2 - dy_dt * d2x_dt2) / (speed_sq ** 1.5)
+
+            # Record transition points for later smoothing
+            transition_points.append(start_idx)
+            transition_points.append(end_idx)
+
+            rospy.loginfo(f"[{self.name}]   Avoidance spline: indices {start_idx}-{end_idx}, {n_region} points")
+
+        # Restore original vehicle state
+        self.cur_x = orig_cur_x
+        self.cur_y = orig_cur_y
+        self.cur_s = orig_cur_s
+        self.cur_d = orig_cur_d
+        self.cur_yaw = orig_cur_yaw
+
+        rospy.loginfo(f"[{self.name}] Modified {len(merged_indices)}/{n_gb} points, rest is original GB")
+
+        # Final smoothing at transition points (where avoidance meets GB)
+        # Using BPoly.from_derivatives for smooth curves with tangent control
+        from scipy.interpolate import BPoly
+
+        for trans_idx in transition_points:
+            # Generate control point indices evenly distributed within ±SMOOTH_TRANS_MARGIN
+            n_ctrl = SMOOTH_TRANS_NUM_CTRL_PTS
+            ctrl_indices = []
+            for i in range(n_ctrl):
+                # -SMOOTH_TRANS_MARGIN to +SMOOTH_TRANS_MARGIN, evenly spaced
+                offset = -SMOOTH_TRANS_MARGIN + (2 * SMOOTH_TRANS_MARGIN) * i / (n_ctrl - 1)
+                idx = (trans_idx + int(round(offset))) % n_gb
+                ctrl_indices.append(idx)
+
+            # Get XY and psi at control points
+            ctrl_xy = np.array([result_xy[i] for i in ctrl_indices])
+            ctrl_psi = np.array([result_psi[i] for i in ctrl_indices])
+
+            # Calculate tangent vectors (unit direction * scale)
+            tangents = np.array([
+                [np.cos(ctrl_psi[i]) * SMOOTH_TRANS_SCALE, np.sin(ctrl_psi[i]) * SMOOTH_TRANS_SCALE]
+                for i in range(n_ctrl)
+            ])
+
+            # Calculate cumulative arc length between control points
+            ctrl_s = [0.0]
+            for i in range(1, n_ctrl):
+                d = np.linalg.norm(ctrl_xy[i] - ctrl_xy[i-1])
+                ctrl_s.append(ctrl_s[-1] + d)
+            ctrl_s = np.array(ctrl_s)
+
+            # Skip if points are too close
+            if ctrl_s[-1] < 0.5:
+                rospy.logwarn(f"[{self.name}]   Transition {trans_idx}: points too close, skipping")
+                continue
+
+            try:
+                # Build derivatives array for BPoly: [(point, tangent), ...]
+                derivs_x = np.array([[ctrl_xy[i, 0], tangents[i, 0]] for i in range(n_ctrl)])
+                derivs_y = np.array([[ctrl_xy[i, 1], tangents[i, 1]] for i in range(n_ctrl)])
+
+                poly_x = BPoly.from_derivatives(ctrl_s, derivs_x)
+                poly_y = BPoly.from_derivatives(ctrl_s, derivs_y)
+            except Exception as e:
+                rospy.logwarn(f"[{self.name}]   Transition {trans_idx}: BPoly failed: {e}")
+                continue
+
+            # Build list of indices to smooth (from first to last control point)
+            idx_start = ctrl_indices[0]
+            idx_end = ctrl_indices[-1]
+            if idx_end > idx_start:
+                smooth_indices = list(range(idx_start, idx_end + 1))
+            else:  # wrap-around
+                smooth_indices = list(range(idx_start, n_gb)) + list(range(0, idx_end + 1))
+
+            n_smooth = len(smooth_indices)
+            total_arc = ctrl_s[-1]
+
+            # Apply smoothed values
+            for i, idx in enumerate(smooth_indices):
+                t = i / (n_smooth - 1) * total_arc
+
+                result_xy[idx, 0] = poly_x(t)
+                result_xy[idx, 1] = poly_y(t)
+
+                # Calculate psi from derivative
+                dx_dt = poly_x(t, 1)
+                dy_dt = poly_y(t, 1)
+                result_psi[idx] = np.arctan2(dy_dt, dx_dt)
+
+                # Calculate kappa from second derivative
+                d2x_dt2 = poly_x(t, 2)
+                d2y_dt2 = poly_y(t, 2)
+                speed_sq = dx_dt**2 + dy_dt**2
+                if speed_sq > 1e-6:
+                    result_kappa[idx] = (dx_dt * d2y_dt2 - dy_dt * d2x_dt2) / (speed_sq ** 1.5)
+
+            rospy.loginfo(f"[{self.name}]   Smoothed transition at {trans_idx}: {n_smooth} points ({n_ctrl} ctrl pts, scale={SMOOTH_TRANS_SCALE})")
+
+        # Recalculate s from XY (need to redo after restoring XY)
+        diffs = np.diff(np.vstack([result_xy, result_xy[0:1]]), axis=0)
+        seg_lengths = np.sqrt(np.sum(diffs**2, axis=1))
+        s_new = np.zeros(n_gb)
+        s_new[1:] = np.cumsum(seg_lengths[:-1])
+
+        # ===== Velocity calculation =====
+        if RECOMPUTE_LOCAL_OPT_SPEED:
+            try:
+                # Get kappa-based velocity
+                vx_kappa = self._recalculate_velocity_from_curvature(result_kappa, seg_lengths)
+
+                if USE_VEL_BLENDING:
+                    # Blend kappa velocity with GB velocity near obstacles
+                    rospy.loginfo(f"[{self.name}] Computing blended velocity (kappa + GB)...")
+
+                    # Build obstacle distance map for blending
+                    obs_s_list = []
+                    for obs_pos, obs_radius in obstacles:
+                        obs_s_arr, _ = self.converter.get_frenet(
+                            np.array([obs_pos[0]]), np.array([obs_pos[1]])
+                        )
+                        obs_s_list.append(float(obs_s_arr[0]))
+
+                    # Blend velocity: near obstacle = avg(kappa, GB), far = GB only
+                    vx_profile = np.zeros(n_gb)
+                    blend_range = VEL_BLEND_RANGE
+                    blend_transition = VEL_BLEND_TRANSITION
+
+                    for i in range(n_gb):
+                        s_i = i * wpnt_dist
+
+                        # Find minimum distance to any obstacle
+                        min_dist = float('inf')
+                        for obs_s in obs_s_list:
+                            dist = min(
+                                abs(s_i - obs_s),
+                                abs(s_i - obs_s + ref_max_s),
+                                abs(s_i - obs_s - ref_max_s)
+                            )
+                            min_dist = min(min_dist, dist)
+
+                        if min_dist < blend_range:
+                            # Inside blend zone: weighted blend of kappa and GB
+                            # VEL_BLEND_GB_WEIGHT: 0=100% kappa, 0.5=average, 1=100% GB
+                            vx_profile[i] = vx_kappa[i] * (1 - VEL_BLEND_GB_WEIGHT) + gb_vx[i] * VEL_BLEND_GB_WEIGHT
+                        elif min_dist < blend_range + blend_transition:
+                            # Transition zone: blend → GB
+                            t = (min_dist - blend_range) / blend_transition
+                            v_blended = vx_kappa[i] * (1 - VEL_BLEND_GB_WEIGHT) + gb_vx[i] * VEL_BLEND_GB_WEIGHT
+                            vx_profile[i] = v_blended * (1 - t) + gb_vx[i] * t
+                        else:
+                            # Outside: use GB velocity
+                            vx_profile[i] = gb_vx[i]
+
+                    rospy.loginfo(f"[{self.name}] Velocity blended (GB_weight={VEL_BLEND_GB_WEIGHT}): "
+                                 f"kappa min={np.min(vx_kappa):.2f}, result min={np.min(vx_profile):.2f}, max={np.max(vx_profile):.2f} m/s")
+                else:
+                    # Use kappa velocity only (no blending)
+                    vx_profile = vx_kappa
+                    rospy.loginfo(f"[{self.name}] Velocity from kappa: min={np.min(vx_profile):.2f}, max={np.max(vx_profile):.2f} m/s")
+
+            except Exception as e:
+                rospy.logwarn(f"[{self.name}] Velocity calculation failed: {e}, using GB speed")
+                vx_profile = gb_vx
+        else:
+            rospy.loginfo(f"[{self.name}] RECOMPUTE_LOCAL_OPT_SPEED=False, using GB speed")
+            vx_profile = gb_vx
+
+        trajectory_opt = np.column_stack([
+            s_new,
+            result_xy[:, 0],
+            result_xy[:, 1],
+            result_psi,
+            result_kappa,
+            vx_profile,
+            np.zeros(n_gb)
+        ])
+
+        # Calculate bounds from reftrack
+        reftrack_xy = reftrack[:, :2]
+        n_ref = len(reftrack_xy)
+        psi_ref = np.zeros(n_ref)
+        for i in range(n_ref):
+            i_next = (i + 1) % n_ref
+            dx = reftrack_xy[i_next, 0] - reftrack_xy[i, 0]
+            dy = reftrack_xy[i_next, 1] - reftrack_xy[i, 1]
+            psi_ref[i] = np.arctan2(dy, dx)
+
+        normvecs = tph.calc_normal_vectors.calc_normal_vectors(psi_ref)
+        w_right = reftrack[:, 2:3]
+        w_left = reftrack[:, 3:4]
+        bound_r = reftrack_xy - w_right * normvecs
+        bound_l = reftrack_xy + w_left * normvecs
+        # Add obstacles to boundary (for _more_space debug visualization)
+        # Use same criterion as Global opt: bound_side from _decide_obstacle_strategy_gb_aware
+        for obs_idx, (obs_pos, obs_radius) in enumerate(obstacles):
+            # Get the shift direction (same as evasion direction used above)
+            obs_s_arr, obs_d_arr = self.converter.get_frenet(
+                np.array([obs_pos[0]]), np.array([obs_pos[1]])
+            )
+            obs_s = float(obs_s_arr[0])
+            obs_d = float(obs_d_arr[0])
+
+            _, bound_side = self._decide_obstacle_strategy_gb_aware(obs_s, obs_d, obs_radius)
+
+            # Add obstacle to OPPOSITE bound (we shift away from obstacle, so obstacle is on opposite side)
+            if bound_side == 'left':
+                # Shift left means obstacle is on right side
+                bound_r = self._add_obstacle_to_bound(bound_r, obs_pos, obs_radius)
+                rospy.loginfo(f"[{self.name}] LOCAL_OPT: Added obstacle {obs_idx+1} to RIGHT bound (shift={bound_side})")
+            else:
+                # Shift right means obstacle is on left side
+                bound_l = self._add_obstacle_to_bound(bound_l, obs_pos, obs_radius)
+                rospy.loginfo(f"[{self.name}] LOCAL_OPT: Added obstacle {obs_idx+1} to LEFT bound (shift={bound_side})")
+
+        rospy.loginfo(f"[{self.name}] Local opt complete: {trajectory_opt.shape[0]} points (full track)")
+
+        return trajectory_opt, bound_r, bound_l
 
     def _smooth_trajectory_output(
         self,
@@ -3757,6 +4567,7 @@ class ObstacleSpliner:
         Recalculate velocity profile from curvature using vehicle dynamics.
 
         Uses same method as state_machine's update_velocity and GB optimizer.
+        Applies Savgol filter to kappa for smoother velocity profile.
 
         Args:
             kappa: Curvature array [rad/m]
@@ -3767,13 +4578,23 @@ class ObstacleSpliner:
         """
         from vel_planner.vel_planner import calc_vel_profile
 
+        # Smooth kappa to reduce velocity spikes from noisy curvature
+        kappa_for_vel = kappa.copy()
+        if KAPPA_SMOOTH_WINDOW > 0 and len(kappa) > KAPPA_SMOOTH_WINDOW:
+            from scipy.signal import savgol_filter
+            # Savgol filter: window must be odd, polyorder < window
+            window = KAPPA_SMOOTH_WINDOW if KAPPA_SMOOTH_WINDOW % 2 == 1 else KAPPA_SMOOTH_WINDOW + 1
+            polyorder = min(3, window - 1)
+            kappa_for_vel = savgol_filter(kappa, window, polyorder, mode='wrap')
+            rospy.loginfo(f"[{self.name}] Kappa smoothed: window={window}, polyorder={polyorder}")
+
         # Use same parameters as GB optimizer (closed track)
         vx_profile = calc_vel_profile(
             ggv=self.ggv,
             ax_max_machines=self.ax_max_machines,
             b_ax_max_machines=self.b_ax_max_machines,
             v_max=self.pars["veh_params"]["v_max"],
-            kappa=kappa,
+            kappa=kappa_for_vel,
             el_lengths=el_lengths,
             closed=True,  # Fixed path is closed loop
             filt_window=self.pars["vel_calc_opts"]["vel_profile_conv_filt_window"],
@@ -3825,7 +4646,7 @@ class ObstacleSpliner:
                 arc_lengths[i] = arc_lengths[i-1] + segment_length
 
             # Create temporary converter for d coordinate calculation
-            temp_fixed_converter = FrenetConverter(xy[:, 0], xy[:, 1])
+            temp_fixed_converter = FrenetConverter(xy[:, 0], xy[:, 1], xy[:, 2] if xy.shape[1] > 2 else None)
             s_coord, d_coord = temp_fixed_converter.get_frenet(xy[:, 0], xy[:, 1])
 
             rospy.loginfo(f"[{self.name}] Using FIXED PATH coordinates: total_arc_length={arc_lengths[-1]:.2f}m")
@@ -3919,7 +4740,7 @@ class ObstacleSpliner:
         # ===== HJ ADDED: Create obstacles-only version for GridFilter =====
         obstacles_only_bw = bw.copy()
         # ===== HJ ADDED END =====
-        obstacle_radius_m = 0.25  # 0.5m diameter
+        obstacle_radius_m = OBSTACLE_RADIUS
         line_thickness_m = 0.4    # 0.4m thick line
 
         obstacle_radius_px = int(obstacle_radius_m / map_resolution)
@@ -4125,33 +4946,27 @@ class ObstacleSpliner:
         #     rospy.loginfo(f"[{self.name}] Found {len(closed_contours)} closed contour in skeleton (OK)")
         # # ===== HJ ADDED END =====
 
-        # Calculate line length of every contour to get the real centerline
-        line_lengths = []
-        for cont in closed_contours:
+        # Calculate the line length of every contour to get the real centerline
+        # (Same logic as global_planner_node.extract_centerline)
+        line_lengths = [math.inf] * len(closed_contours)
+        for i, cont in enumerate(closed_contours):
             line_length = 0
             for k, pnt in enumerate(cont):
                 line_length += np.sqrt((pnt[0][0] - cont[k - 1][0][0]) ** 2 +
-                                     (pnt[0][1] - cont[k - 1][0][1]) ** 2)
-            line_lengths.append(line_length)
+                                       (pnt[0][1] - cont[k - 1][0][1]) ** 2)
+            # Accept all contours (same as global_planner_node with test_on_car=False)
+            line_lengths[i] = line_length
 
-        # # Log all contour lengths for debugging (only if multiple contours)
-        # if len(closed_contours) > 1:
-        #     rospy.logerr(f"[{self.name}] Contour lengths:")
-        #     for i, length in enumerate(line_lengths):
-        #         rospy.logerr(f"[{self.name}]   Contour {i}: {length:.1f} pixels")
+        # Take the shortest line (same as global_planner_node)
+        min_line_length = min(line_lengths)
 
-        # Take the shortest line (innermost contour = centerline)
-        # NOTE: In mapping, longest is outer wall, shortest is usually centerline
-        min_length_index = np.argmin(line_lengths)
+        if min_line_length == math.inf:
+            rospy.logerr(f"[{self.name}] Only invalid closed contour line lengths")
+            return None
+
+        min_length_index = line_lengths.index(min_line_length)
         smallest_contour = np.array(closed_contours[min_length_index]).flatten()
         rospy.loginfo(f"[{self.name}] Selected contour {min_length_index} as centerline (length={line_lengths[min_length_index]:.1f} pixels)")
-
-        # ===== HJ MODIFIED: Take the longest contour when obstacles present =====
-        # When obstacles are present, longest contour is the main track path
-        # Shorter contours are usually noise/residue around obstacles
-        # max_length_index = np.argmax(line_lengths)
-        # smallest_contour = np.array(closed_contours[max_length_index]).flatten()
-        # rospy.loginfo(f"[{self.name}] Selected contour {max_length_index} as centerline (length={line_lengths[max_length_index]:.1f} pixels)")
 
         # Reshape from [x1,y1,x2,y2,...] to [[x1,y1],[x2,y2],...]
         len_reshape = int(len(smallest_contour) / 2)
@@ -4244,10 +5059,9 @@ class ObstacleSpliner:
                 if not opened:
                     closed_contours.append(cont)
 
-        # Must have exactly 2 closed contours (outer and inner bounds)
+        # there must not be more (or less) than two closed contour (same as global_planner_node)
         if len(closed_contours) != 2:
-            rospy.logerr(f"[{self.name}] Expected 2 track bounds, found {len(closed_contours)}")
-            return None, None
+            raise IOError(f"More than two track bounds detected! Found {len(closed_contours)}")
 
         # Longest contour is outer boundary, shortest is inner
         bound_long = max(closed_contours, key=len)
@@ -4285,13 +5099,19 @@ class ObstacleSpliner:
         self,
         centerline_m: np.ndarray,
         bound_r_m: np.ndarray,
-        bound_l_m: np.ndarray
+        bound_l_m: np.ndarray,
+        update_viz: bool = False,
+        obstacles: List[Tuple[np.ndarray, float]] = None
     ) -> np.ndarray:
         """
         Calculate reftrack [x, y, w_tr_right, w_tr_left] from centerline and bounds.
         Uses XY Euclidean minimum distance (like global_planner_node.py lines 968-990).
 
         IMPORTANT: Interpolates bounds to 0.1m stepsize before distance calculation.
+
+        Args:
+            update_viz: If True, update centerline_modification_viz with actual bounds used
+            obstacles: List of obstacles for visualization (required if update_viz=True)
         """
         # Interpolate bounds to 0.1m stepsize (like global_planner_node.py line 972-975)
         # Add dummy columns for w_tr_right, w_tr_left (required by interp_track)
@@ -4333,6 +5153,22 @@ class ObstacleSpliner:
             f"[{self.name}] Calculated reftrack distances: "
             f"avg_right={np.mean(reftrack[:, 2]):.2f}m, avg_left={np.mean(reftrack[:, 3]):.2f}m"
         )
+
+        # Update visualization with actual bounds used for optimization
+        if update_viz and obstacles is not None:
+            # Get original centerline for comparison (use modified as both if not available)
+            original_centerline = getattr(self, '_viz_original_centerline', centerline_m)
+            self._visualize_centerline_modification(
+                original_centerline=original_centerline,
+                modified_centerline=centerline_m,
+                original_bound_r=bound_r_m,  # Show actual bounds used
+                original_bound_l=bound_l_m,  # Show actual bounds used
+                modified_bound_r=bound_r_m,  # Same (already modified with obstacles)
+                modified_bound_l=bound_l_m,  # Same (already modified with obstacles)
+                obstacles=obstacles,
+                save_path=None
+            )
+            rospy.loginfo(f"[{self.name}] Updated visualization with actual optimization bounds")
 
         return reftrack
 
@@ -4587,6 +5423,7 @@ class ObstacleSpliner:
             rospy.loginfo(f"[{self.name}] Loaded original boundaries: LEFT={len(boundary_left)}, RIGHT={len(boundary_right)}")
 
             # Add obstacle circular boundaries from verified_obs
+            # Use Fixed path Frenet to determine which side the obstacle is on
             if verified_obs is not None and len(verified_obs) > 0:
                 for sector_id, obs_id, obs_s, obs_d in verified_obs:
                     # Convert GB Frenet (s, d) to XY
@@ -4595,14 +5432,17 @@ class ObstacleSpliner:
                     obs_y = obs_xy[1][0]
                     obs_pos = np.array([obs_x, obs_y])
 
-                    # Use default obstacle size (0.5m diameter)
-                    obs_radius = 0.25  # 0.5m / 2
+                    # Use default obstacle size from global parameter
+                    obs_radius = OBSTACLE_RADIUS
                     offset = 0.0  # ~m offset from obstacle edge
                     num_points = 100  # Number of points around circle
 
-                    # Determine which wall is closer to obstacle center
-                    dist_to_left = np.min(np.linalg.norm(boundary_left - obs_pos, axis=1))
-                    dist_to_right = np.min(np.linalg.norm(boundary_right - obs_pos, axis=1))
+                    # Determine which side obstacle is on using Fixed path Frenet
+                    # This ensures consistency with the avoidance direction
+                    obs_s_fixed, obs_d_fixed = self.fixed_converter.get_frenet(
+                        np.array([obs_x]), np.array([obs_y])
+                    )
+                    obs_d_fixed = float(obs_d_fixed[0])
 
                     # Generate circular boundary points around obstacle
                     angles = np.linspace(0, 2*np.pi, num_points, endpoint=False)
@@ -4615,13 +5455,15 @@ class ObstacleSpliner:
 
                     circle_points = np.array(circle_points)
 
-                    # Add to closer wall
-                    if dist_to_left <= dist_to_right:
+                    # Add to boundary based on Fixed path Frenet d value
+                    # d > 0: obstacle is on LEFT of Fixed path → add to LEFT boundary
+                    # d < 0: obstacle is on RIGHT of Fixed path → add to RIGHT boundary
+                    if obs_d_fixed > 0:
                         boundary_left = np.vstack([boundary_left, circle_points])
-                        rospy.loginfo(f"[{self.name}] Added obstacle #{obs_id} (sector={sector_id}) to LEFT boundary (dist={dist_to_left:.2f}m, xy={obs_x:.2f},{obs_y:.2f})")
+                        rospy.loginfo(f"[{self.name}] Added obstacle #{obs_id} (sector={sector_id}) to LEFT boundary (fixed_d={obs_d_fixed:.2f}m, xy={obs_x:.2f},{obs_y:.2f})")
                     else:
                         boundary_right = np.vstack([boundary_right, circle_points])
-                        rospy.loginfo(f"[{self.name}] Added obstacle #{obs_id} (sector={sector_id}) to RIGHT boundary (dist={dist_to_right:.2f}m, xy={obs_x:.2f},{obs_y:.2f})")
+                        rospy.loginfo(f"[{self.name}] Added obstacle #{obs_id} (sector={sector_id}) to RIGHT boundary (fixed_d={obs_d_fixed:.2f}m, xy={obs_x:.2f},{obs_y:.2f})")
 
             rospy.loginfo(f"[{self.name}] Final boundaries: LEFT={len(boundary_left)} points, RIGHT={len(boundary_right)} points")
 
@@ -4660,11 +5502,153 @@ class ObstacleSpliner:
                 wpnt = self.fixed_path_wpnts.wpnts[i]
                 rospy.loginfo(f"  Wpnt {i}: xy=({wpnt.x_m:.2f}, {wpnt.y_m:.2f}), d_left={wpnt.d_left:.2f}, d_right={wpnt.d_right:.2f}")
 
+            # Visualize Fixed path boundaries in RViz
+            self._visualize_fixed_path_boundaries(boundary_left, boundary_right, verified_obs)
+
         except Exception as e:
             rospy.logerr(f"[{self.name}] Failed to calculate Fixed path boundaries: {e}")
             import traceback
             traceback.print_exc()
     # ===== HJ ADDED END =====
+
+    def _visualize_fixed_path_boundaries(
+        self,
+        boundary_left: np.ndarray,
+        boundary_right: np.ndarray,
+        verified_obs: List[Tuple[int, int, float, float]]
+    ):
+        """
+        Visualize Fixed path boundaries with obstacles in RViz.
+        Similar to _visualize_centerline_modification but for LOCAL_OPT mode.
+
+        Publishes to /fixed_path_boundaries_viz
+        """
+        try:
+            # Create publisher if not exists
+            if not hasattr(self, 'fixed_boundary_viz_pub'):
+                self.fixed_boundary_viz_pub = rospy.Publisher(
+                    '/fixed_path_boundaries_viz', MarkerArray, queue_size=1, latch=True
+                )
+                rospy.loginfo(f"[{self.name}] Created RViz marker publisher: /fixed_path_boundaries_viz")
+
+            marker_array = MarkerArray()
+            marker_id = 0
+
+            # 1. Left boundary (cyan points)
+            left_marker = Marker()
+            left_marker.header.frame_id = "map"
+            left_marker.header.stamp = rospy.Time.now()
+            left_marker.ns = "fixed_bound_left"
+            left_marker.id = marker_id
+            marker_id += 1
+            left_marker.type = Marker.POINTS
+            left_marker.action = Marker.ADD
+            left_marker.scale.x = 0.05  # point size
+            left_marker.scale.y = 0.05
+            left_marker.color.r = 0.0
+            left_marker.color.g = 1.0
+            left_marker.color.b = 1.0
+            left_marker.color.a = 0.8
+            left_marker.pose.orientation.w = 1.0
+
+            for pt in boundary_left:
+                from geometry_msgs.msg import Point
+                p = Point()
+                p.x = pt[0]
+                p.y = pt[1]
+                p.z = 0.1
+                left_marker.points.append(p)
+
+            marker_array.markers.append(left_marker)
+
+            # 2. Right boundary (magenta points)
+            right_marker = Marker()
+            right_marker.header.frame_id = "map"
+            right_marker.header.stamp = rospy.Time.now()
+            right_marker.ns = "fixed_bound_right"
+            right_marker.id = marker_id
+            marker_id += 1
+            right_marker.type = Marker.POINTS
+            right_marker.action = Marker.ADD
+            right_marker.scale.x = 0.05  # point size
+            right_marker.scale.y = 0.05
+            right_marker.color.r = 1.0
+            right_marker.color.g = 0.0
+            right_marker.color.b = 1.0
+            right_marker.color.a = 0.8
+            right_marker.pose.orientation.w = 1.0
+
+            for pt in boundary_right:
+                from geometry_msgs.msg import Point
+                p = Point()
+                p.x = pt[0]
+                p.y = pt[1]
+                p.z = 0.1
+                right_marker.points.append(p)
+
+            marker_array.markers.append(right_marker)
+
+            # 3. Fixed path (green line)
+            if hasattr(self, 'fixed_path_wpnts') and self.fixed_path_wpnts is not None:
+                path_marker = Marker()
+                path_marker.header.frame_id = "map"
+                path_marker.header.stamp = rospy.Time.now()
+                path_marker.ns = "fixed_path"
+                path_marker.id = marker_id
+                marker_id += 1
+                path_marker.type = Marker.LINE_STRIP
+                path_marker.action = Marker.ADD
+                path_marker.scale.x = 0.08
+                path_marker.color.r = 0.0
+                path_marker.color.g = 1.0
+                path_marker.color.b = 0.0
+                path_marker.color.a = 1.0
+                path_marker.pose.orientation.w = 1.0
+
+                for wpnt in self.fixed_path_wpnts.wpnts:
+                    from geometry_msgs.msg import Point
+                    p = Point()
+                    p.x = wpnt.x_m
+                    p.y = wpnt.y_m
+                    p.z = 0.15
+                    path_marker.points.append(p)
+
+                marker_array.markers.append(path_marker)
+
+            # 4. Obstacles (red spheres)
+            if verified_obs is not None:
+                for sector_id, obs_id, obs_s, obs_d in verified_obs:
+                    obs_xy = self.converter.get_cartesian([obs_s], [obs_d])
+                    obs_x = obs_xy[0][0]
+                    obs_y = obs_xy[1][0]
+
+                    obs_marker = Marker()
+                    obs_marker.header.frame_id = "map"
+                    obs_marker.header.stamp = rospy.Time.now()
+                    obs_marker.ns = "fixed_obstacles"
+                    obs_marker.id = marker_id
+                    marker_id += 1
+                    obs_marker.type = Marker.CYLINDER
+                    obs_marker.action = Marker.ADD
+                    obs_marker.pose.position.x = obs_x
+                    obs_marker.pose.position.y = obs_y
+                    obs_marker.pose.position.z = 0.2
+                    obs_marker.pose.orientation.w = 1.0
+                    obs_marker.scale.x = OBSTACLE_RADIUS * 2
+                    obs_marker.scale.y = OBSTACLE_RADIUS * 2
+                    obs_marker.scale.z = 0.4
+                    obs_marker.color.r = 1.0
+                    obs_marker.color.g = 0.0
+                    obs_marker.color.b = 0.0
+                    obs_marker.color.a = 0.8
+
+                    marker_array.markers.append(obs_marker)
+
+            self.fixed_boundary_viz_pub.publish(marker_array)
+            rospy.loginfo(f"[{self.name}] Published Fixed path boundaries visualization ({len(marker_array.markers)} markers)")
+
+        except Exception as e:
+            rospy.logwarn(f"[{self.name}] Failed to visualize Fixed path boundaries: {e}")
 
     def _is_polygon_ccw(self, points: np.ndarray) -> bool:
         """
@@ -5205,6 +6189,95 @@ class ObstacleSpliner:
             marker_array.markers.append(right_marker)
 
         self.more_space_debug_pub.publish(marker_array)
+
+    def _publish_local_opt_debug_viz(self, xy_before: np.ndarray, xy_after: np.ndarray, obstacles: list):
+        """
+        Publish visualization for local optimization debugging.
+        - GREEN: Path before smoothing (raw spline samples merged with GB)
+        - RED: Path after smoothing
+        - YELLOW spheres: Obstacle positions
+        """
+        from visualization_msgs.msg import MarkerArray
+        from geometry_msgs.msg import Point
+
+        # Create publisher if not exists
+        if not hasattr(self, 'local_opt_debug_pub'):
+            self.local_opt_debug_pub = rospy.Publisher(
+                '/local_opt_debug', MarkerArray, queue_size=1, latch=True
+            )
+
+        marker_array = MarkerArray()
+
+        # Before smoothing path (GREEN) - LINE_STRIP
+        before_marker = Marker()
+        before_marker.header.frame_id = "map"
+        before_marker.header.stamp = rospy.Time.now()
+        before_marker.ns = "before_smoothing"
+        before_marker.id = 0
+        before_marker.type = Marker.LINE_STRIP
+        before_marker.action = Marker.ADD
+        before_marker.scale.x = 0.05  # Line width
+        before_marker.color.r = 0.0
+        before_marker.color.g = 1.0
+        before_marker.color.b = 0.0
+        before_marker.color.a = 1.0
+        before_marker.pose.orientation.w = 1.0
+
+        for i in range(len(xy_before)):
+            p = Point()
+            p.x = xy_before[i, 0]
+            p.y = xy_before[i, 1]
+            p.z = 0.15
+            before_marker.points.append(p)
+        marker_array.markers.append(before_marker)
+
+        # After smoothing path (RED) - LINE_STRIP
+        after_marker = Marker()
+        after_marker.header.frame_id = "map"
+        after_marker.header.stamp = rospy.Time.now()
+        after_marker.ns = "after_smoothing"
+        after_marker.id = 1
+        after_marker.type = Marker.LINE_STRIP
+        after_marker.action = Marker.ADD
+        after_marker.scale.x = 0.05
+        after_marker.color.r = 1.0
+        after_marker.color.g = 0.0
+        after_marker.color.b = 0.0
+        after_marker.color.a = 1.0
+        after_marker.pose.orientation.w = 1.0
+
+        for i in range(len(xy_after)):
+            p = Point()
+            p.x = xy_after[i, 0]
+            p.y = xy_after[i, 1]
+            p.z = 0.1
+            after_marker.points.append(p)
+        marker_array.markers.append(after_marker)
+
+        # Obstacle positions (YELLOW spheres)
+        for obs_idx, (obs_pos, obs_radius) in enumerate(obstacles):
+            obs_marker = Marker()
+            obs_marker.header.frame_id = "map"
+            obs_marker.header.stamp = rospy.Time.now()
+            obs_marker.ns = "obstacles"
+            obs_marker.id = obs_idx + 10
+            obs_marker.type = Marker.CYLINDER
+            obs_marker.action = Marker.ADD
+            obs_marker.pose.position.x = obs_pos[0]
+            obs_marker.pose.position.y = obs_pos[1]
+            obs_marker.pose.position.z = 0.1
+            obs_marker.pose.orientation.w = 1.0
+            obs_marker.scale.x = obs_radius * 2
+            obs_marker.scale.y = obs_radius * 2
+            obs_marker.scale.z = 0.3
+            obs_marker.color.r = 1.0
+            obs_marker.color.g = 1.0
+            obs_marker.color.b = 0.0
+            obs_marker.color.a = 0.8
+            marker_array.markers.append(obs_marker)
+
+        self.local_opt_debug_pub.publish(marker_array)
+        rospy.loginfo(f"[{self.name}] Published local_opt_debug: GREEN=before smoothing, RED=after smoothing")
 
 if __name__ == "__main__":
     spliner = ObstacleSpliner()

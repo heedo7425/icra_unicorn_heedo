@@ -1,0 +1,13 @@
+description: Floor height [m]
+file: height_map.bin
+width: 287
+height: 479
+resolution: 0.05
+origin: [-2.42594, -4.79433, 0.0]
+dtype: float32
+nan_value: NaN (no data)
+stats:
+  min: -0.427958
+  max: 0.132385
+  mean: -0.212691
+  valid_cells: 106485

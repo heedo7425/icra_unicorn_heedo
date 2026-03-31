@@ -1,0 +1,14 @@
+description: Filtered slope (height Gaussian sigma=1 + median 3x3)
+file: slope_map_filtered.bin
+width: 287
+height: 479
+resolution: 0.05
+origin: [-2.42594, -4.79433, 0.0]
+dtype: float32
+nan_value: NaN (no data)
+stats:
+  min: 0.000636543
+  max: 1.57416
+  mean: 0.0497062
+  valid_cells: 106477
+  max_deg: 57.5739

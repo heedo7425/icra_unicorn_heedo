@@ -112,6 +112,8 @@ class ObstaclePublisher:
 
             obs_marker.pose.position.x = obs.x_m
             obs_marker.pose.position.y = obs.y_m
+            ### HJ : use z_m for 3D marker visualization
+            obs_marker.pose.position.z = obs.z_m
             obs_marker.pose.orientation.w = 1
             obs_markers.markers.append(obs_marker)
 
@@ -152,7 +154,8 @@ class ObstaclePublisher:
 
         # Resmaple opponent waypoints to match ego waypoints
 
-        opponent_xy = self.glob2frenet([wpnt.x_m for wpnt in opponent_wpnts_list], [wpnt.y_m for wpnt in opponent_wpnts_list])
+        ### HJ : pass z_m for 3D frenet conversion
+        opponent_xy = self.glob2frenet([wpnt.x_m for wpnt in opponent_wpnts_list], [wpnt.y_m for wpnt in opponent_wpnts_list], [wpnt.z_m for wpnt in opponent_wpnts_list])
         opponent_s = opponent_xy.s
         opponent_d = opponent_xy.d
         sorted_indices = sorted(range(len(opponent_s)), key=lambda i: opponent_s[i])
@@ -216,6 +219,8 @@ class ObstaclePublisher:
             resp = self.frenet2glob([self.dynamic_obstacle.s_center], [self.dynamic_obstacle.d_center])
             self.dynamic_obstacle.x_m = resp.x[0]
             self.dynamic_obstacle.y_m = resp.y[0]
+            ### HJ : fill z_m from frenet2glob 3D response
+            self.dynamic_obstacle.z_m = resp.z[0] if hasattr(resp, 'z') and len(resp.z) > 0 else 0.0
             
             # Build s and d on selected reference line (self.waypoints_topic) by simply incrementing s and d=0
             # self.dynamic_obstacle.s_start = (self.dynamic_obstacle.s_start + self.dyn_obstacle_speed * self.looptime + self.starting_s) % max_s

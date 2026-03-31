@@ -69,11 +69,12 @@ class Controller_manager:
         rospy.loginfo(f"[{self.name}] Using {self.LUT_name}")
         
         self.use_sim = rospy.get_param('/sim')
-        self.wheelbase = rospy.get_param('/vesc/wheelbase', 0.321) # NUCX
+        self.wheelbase = rospy.get_param('/vesc/wheelbase', 0.36) # NUCX
         self.measuring = rospy.get_param('/measure', False)
         
         self.state_machine_rate = rospy.get_param('state_machine/rate') #rate in hertz
         self.position_in_map = [] # current position in map frame
+        self.position_z = 0.0  # ### HJ : z coordinate for 3D nearest waypoint search
         # ===== HJ MODIFIED: Dual Frenet position system =====
         self.position_in_map_frenet = [] # current position in frenet coordinates (GB or Fixed depending on mode)
         self.position_in_map_frenet_gb = [] # GB Frenet position
@@ -148,7 +149,7 @@ class Controller_manager:
         for i in range(5):
             # waiting for this message twice, as the republisher needs it first to compute the wanted param
             waypoints = rospy.wait_for_message('/global_waypoints', WpntArray)
-        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in waypoints.wpnts])
+        self.waypoints = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in waypoints.wpnts])
 
         # ===== HJ MODIFIED: Dual track length for GB and Fixed =====
         self.track_length_gb = rospy.get_param("/global_republisher/track_length")
@@ -158,7 +159,7 @@ class Controller_manager:
         # ===== HJ MODIFIED END =====
 
         # ===== HJ MODIFIED: Initialize GB converter and set as default =====
-        self.converter_gb = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        self.converter_gb = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         self.converter = self.converter_gb  # Default to GB
         rospy.loginfo(f"[{self.name}] Initialized GB Frenet converter")
         # ===== HJ MODIFIED END =====
@@ -250,7 +251,7 @@ class Controller_manager:
         rospy.Subscriber("/vesc/odom", Odometry, self.vesc_odom_cb)
         rospy.Subscriber("/save_start_traj", Bool, self.save_start_traj_cb)
 
-        self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
+        self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1], self.waypoints[:, 2])
         rospy.loginfo(f"[{self.name}] initialized FrenetConverter object")
         
     def init_mapping(self):
@@ -386,9 +387,12 @@ class Controller_manager:
     def car_state_cb(self, data: PoseStamped):
         x = data.pose.position.x
         y = data.pose.position.y
-        theta = euler_from_quaternion([data.pose.orientation.x, data.pose.orientation.y, 
+        theta = euler_from_quaternion([data.pose.orientation.x, data.pose.orientation.y,
                                        data.pose.orientation.z, data.pose.orientation.w])[2]
         self.position_in_map = np.array([x, y, theta])[np.newaxis]
+        ### HJ : store z separately for 3D nearest waypoint search
+        self.position_z = data.pose.position.z
+        ### HJ : end
 
     # ===== HJ MODIFIED: Split Frenet callbacks for GB and Fixed =====
     def car_state_frenet_gb_cb(self, data: Odometry):
@@ -447,8 +451,8 @@ class Controller_manager:
 
         # Only create if not already created
         if self.converter_fixed is None:
-            fixed_wpnts = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
-            self.converter_fixed = FrenetConverter(fixed_wpnts[:, 0], fixed_wpnts[:, 1])
+            fixed_wpnts = np.array([[wpnt.x_m, wpnt.y_m, wpnt.z_m] for wpnt in data.wpnts])
+            self.converter_fixed = FrenetConverter(fixed_wpnts[:, 0], fixed_wpnts[:, 1], fixed_wpnts[:, 2])
 
             # Calculate Fixed track length (last waypoint's s value)
             self.track_length_fixed = data.wpnts[-1].s_m
@@ -480,26 +484,37 @@ class Controller_manager:
 
         self.waypoint_list_in_map = []
         
+        ### HJ : waypoint layout [x, y, z, speed, safety_ratio, s, kappa, psi, ax, d]
+        ###       indices:        0  1  2  3      4              5  6      7    8   9
         for waypoint in data.local_wpnts:
-            waypoint_in_map = [waypoint.x_m, waypoint.y_m]
             speed = waypoint.vx_mps
             if waypoint.d_right + waypoint.d_left != 0:
-                self.waypoint_list_in_map.append([waypoint_in_map[0],
-                                                  waypoint_in_map[1], 
-                                                  speed, 
-                                                  min(waypoint.d_left, waypoint.d_right)/(waypoint.d_right + waypoint.d_left), 
-                                                  waypoint.s_m, waypoint.kappa_radpm, waypoint.psi_rad, waypoint.ax_mps2, waypoint.d_m]
-                                                )
+                safety_ratio = min(waypoint.d_left, waypoint.d_right) / (waypoint.d_right + waypoint.d_left)
             else:
-                self.waypoint_list_in_map.append([waypoint_in_map[0], waypoint_in_map[1], speed, 0, waypoint.s_m, waypoint.kappa_radpm, waypoint.psi_rad, waypoint.ax_mps2, waypoint.d_m])
+                safety_ratio = 0
+            self.waypoint_list_in_map.append([
+                waypoint.x_m,         # 0
+                waypoint.y_m,         # 1
+                waypoint.z_m,         # 2
+                speed,                # 3
+                safety_ratio,         # 4
+                waypoint.s_m,         # 5
+                waypoint.kappa_radpm, # 6
+                waypoint.psi_rad,     # 7
+                waypoint.ax_mps2,     # 8
+                waypoint.d_m,         # 9
+            ])
+        ### HJ : end
         self.waypoint_array_in_map = np.array(self.waypoint_list_in_map)
         self.waypoint_safety_counter = 0
         self.state = data.state
         
     def imu_cb(self, data):
         self.acc_now[1:] = self.acc_now[:-1]
-        self.acc_now[0] = -data.linear_acceleration.x # vesc is rotated 90 deg, so (-acc_y) == (long_acc)
-        
+        # self.acc_now[0] = -data.linear_acceleration.x # Micro Strain
+
+        self.acc_now[0] = -data.linear_acceleration.y # vesc is rotated 90 deg -y is +x dir
+
         self.yaw_rate = -data.angular_velocity.z # vesc is rotated 90 deg, so (-acc_y) == (long_acc)
         self.controller.yaw_rate = self.yaw_rate
 
@@ -554,7 +569,11 @@ class Controller_manager:
                 self.measure_pub.publish(end-start)
                 
             ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
-            # ack_msg = self.create_ack_msg(0, acceleration, jerk, steering_angle)
+            
+            # #-------------------------------Force Speed--------------------------------
+            # ack_msg = self.create_ack_msg(2.5, acceleration, jerk, steering_angle)
+            # #-------------------------------Force Speed--------------------------------
+
 
             self.drive_pub.publish(ack_msg)
             if self.measuring:
@@ -649,7 +668,8 @@ class Controller_manager:
         lookahead_marker.color.a = 1.0
         lookahead_marker.pose.position.x = lookahead_point[0]
         lookahead_marker.pose.position.y = lookahead_point[1]
-        lookahead_marker.pose.position.z = 0
+        ### HJ : use actual z from L1 point for 3D visualization
+        lookahead_marker.pose.position.z = lookahead_point[2] if len(lookahead_point) > 2 else 0
 
         lookahead_marker.pose.orientation.x = 0
         lookahead_marker.pose.orientation.y = 0
@@ -676,7 +696,8 @@ class Controller_manager:
         future_position_marker.color.a = 1.0
         future_position_marker.pose.position.x = future_position[0,0]
         future_position_marker.pose.position.y = future_position[0,1]
-        future_position_marker.pose.position.z = 0
+        ### HJ : use spline-interpolated z for 3D visualization
+        future_position_marker.pose.position.z = self.controller.future_position_z
 
         future_position_marker.pose.orientation.x = quaternions[0]
         future_position_marker.pose.orientation.y = quaternions[1]
@@ -702,7 +723,8 @@ class Controller_manager:
         lookahead_marker.color.a = 1.0
         lookahead_marker.pose.position.x = lookahead_point[0]
         lookahead_marker.pose.position.y = lookahead_point[1]
-        lookahead_marker.pose.position.z = 0
+        ### HJ : use actual z for 3D visualization
+        lookahead_marker.pose.position.z = lookahead_point[2] if len(lookahead_point) > 2 else 0
         lookahead_marker.pose.orientation.x = 0
         lookahead_marker.pose.orientation.y = 0
         lookahead_marker.pose.orientation.z = 0
@@ -726,10 +748,11 @@ class Controller_manager:
         opponent_marker.color.b = 0.0
         opponent_marker.color.a = 1.0
         if self.opponent is not None:
-            pos = self.converter.get_cartesian([self.opponent[0]], [self.opponent[1]])
+            ### HJ : use 3D cartesian for opponent marker visualization
+            pos = self.converter.get_cartesian_3d([self.opponent[0]], [self.opponent[1]])
             opponent_marker.pose.position.x = pos[0]
             opponent_marker.pose.position.y = pos[1]
-            opponent_marker.pose.position.z = 0
+            opponent_marker.pose.position.z = pos[2]
 
         opponent_marker.pose.orientation.x = 0
         opponent_marker.pose.orientation.y = 0

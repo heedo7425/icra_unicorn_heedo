@@ -7,3 +7,13 @@
 [submodule "state_estimation/particle_filter_python3"]
 	path = state_estimation/particle_filter_python3
 	url = https://github.com/jsryu118/particle_filter_python3.git
+[submodule "state_estimation/GLIL_unicorn_racing"]
+	path = state_estimation/GLIL_unicorn_racing
+	url = git@github.com:HangyoCho/GLIL_unicorn_racing.git
+	branch = feature/thirdparty-integration
+[submodule "perception/2.5d-detection"]
+	path = perception/2.5d_detection
+	url = git@github.com:HangyoCho/2.5d_detection.git
+[submodule "sensors/livox_ros_driver2"]
+	path = sensors/livox_ros_driver2
+	url = https://github.com/Livox-SDK/livox_ros_driver2.git

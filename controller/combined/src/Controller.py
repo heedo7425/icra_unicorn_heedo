@@ -157,7 +157,8 @@ class Controller:
         self.future_lat_e_norm = 0.0
         self.lat_acc = 0.0
         self.boost_mode = False
- 
+        self.future_position_z = 0.0  ### HJ : z from track spline for future position
+
     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
         # Updating parameters from manager
         self.state = state
@@ -196,13 +197,13 @@ class Controller:
         if len(self.waypoint_array_in_map[self.idx_nearest_waypoint:]) > 2:
             # calculate curvature of global optimizer waypoints
             # ===== HJ MODIFIED: Add safety check for empty slice =====
-            curvature_slice = self.waypoint_array_in_map[self.idx_nearest_waypoint+10:self.idx_nearest_waypoint+20,5]
+            curvature_slice = self.waypoint_array_in_map[self.idx_nearest_waypoint+10:self.idx_nearest_waypoint+20,6]
             if len(curvature_slice) > 0:
                 self.curvature_waypoints = np.mean(abs(curvature_slice))
             else:
                 # Fallback: use current waypoint curvature
                 if len(self.waypoint_array_in_map) > self.idx_nearest_waypoint:
-                    self.curvature_waypoints = abs(self.waypoint_array_in_map[self.idx_nearest_waypoint, 5])
+                    self.curvature_waypoints = abs(self.waypoint_array_in_map[self.idx_nearest_waypoint, 6])
                 else:
                     self.curvature_waypoints = 0.0
             # ===== HJ MODIFIED END =====
@@ -255,17 +256,27 @@ class Controller:
         speed = self.AEB_for_weird_local_wpnt(speed)
  
         return speed, acceleration, jerk, steering_angle, L1_point, L1_distance, self.idx_nearest_waypoint, self.curvature_waypoints, self.future_position
- 
+
     def AEB_for_weird_local_wpnt(self, speed):
-        nearest_local_wpnt = self.waypoint_array_in_map[self.idx_nearest_waypoint,:2]
-        
-        local_wpnt_dist = np.sqrt( (self.position_in_map[0,0] - nearest_local_wpnt[0])**2 + (self.position_in_map[0,1] - nearest_local_wpnt[1])**2)
-        
+        dists = np.linalg.norm(self.waypoint_array_in_map[:, :2] - self.position_in_map[0, :2], axis=1)
+        local_wpnt_dist = np.min(dists)
+    
         if local_wpnt_dist >= self.AEB_thres:
             return 2.0
         else :
             return speed
- 
+
+    #-------------------------HJ Emergency Editing--------------------------
+    # def AEB_for_weird_local_wpnt(self, speed):
+    #     dists = np.linalg.norm(self.waypoint_array_in_map[:, :2] - self.position_in_map[0, :2], axis=1)
+    #     local_wpnt_dist = np.min(dists)
+    #
+    #     if local_wpnt_dist >= self.AEB_thres:
+    #         return speed
+    #     else :
+    #         return speed
+    #-------------------------HJ Emergency Editing--------------------------
+
     def calc_steering_angle_for_future(self, future_L1_point, L1_distance, yaw, furture_lat_e_norm, v):
         """
         The purpose of this function is to calculate the steering angle based on the L1 point, desired lateral acceleration and velocity
@@ -296,6 +307,8 @@ class Controller:
             mrk.id = i
             mrk.pose.position.x = self.future_position[0, 0]
             mrk.pose.position.y = self.future_position[0, 1]
+            ### HJ : use spline-interpolated z for 3D marker
+            mrk.pose.position.z = self.future_position_z
             mrk.pose.orientation.w = 1
             marks.markers.append(mrk)
  
@@ -308,7 +321,7 @@ class Controller:
             adv_ts_st = self.speed_lookahead_for_steer
             la_position_steer = [self.future_position[0, 0] + v[0]*adv_ts_st, self.future_position[0, 1] + v[1]*adv_ts_st]
             idx_future_la_steer = self.nearest_waypoint(la_position_steer, self.waypoint_array_in_map[:, :2])
-            speed_la_for_lu = self.waypoint_array_in_map[idx_future_la_steer, 2]
+            speed_la_for_lu = self.waypoint_array_in_map[idx_future_la_steer, 3]
             
         speed_for_lu = self.speed_adjust_lat_err(speed_la_for_lu, furture_lat_e_norm)
  
@@ -367,7 +380,13 @@ class Controller:
         if abs(steering_angle - self.curr_steering_angle) > threshold:
             self.logger_info(f"steering angle clipped")
         steering_angle = np.clip(steering_angle, self.curr_steering_angle - threshold, self.curr_steering_angle + threshold)
-        steering_angle = np.clip(steering_angle,-0.53,0.53)
+        # steering_angle = np.clip(steering_angle,-0.53,0.53)
+        
+        #-------------------------0329 HJ-----------------------------
+        # For HOBAO
+        steering_angle = np.clip(steering_angle,-0.6632,0.6632)
+        #-------------------------0329 HJ-----------------------------
+
 
         # ===== HJ ADDED: Final NaN check before returning =====
         if np.isnan(steering_angle):
@@ -404,7 +423,7 @@ class Controller:
         
         L1_distance = np.clip(L1_distance, lower_bound, self.t_clip_max)
  
-        future_L1_point = self.waypoint_at_distance_before_car(L1_distance, self.waypoint_array_in_map[:,:2], self.future_idx_nearest_waypoint)
+        future_L1_point = self.waypoint_at_distance_before_car(L1_distance, self.waypoint_array_in_map, self.future_idx_nearest_waypoint)
  
         return future_L1_point, L1_distance
     
@@ -426,7 +445,7 @@ class Controller:
         la_position = [self.position_in_map[0, 0] + v[0]*adv_ts_sp, self.position_in_map[0, 1] + v[1]*adv_ts_sp]
         idx_la_position = self.nearest_waypoint(la_position, self.waypoint_array_in_map[:, :2])
         idx_la_position = np.clip(idx_la_position + offset, 0, len(self.waypoint_array_in_map) -1)
-        global_speed = self.waypoint_array_in_map[idx_la_position, 2]
+        global_speed = self.waypoint_array_in_map[idx_la_position, 3]
         cur_speed = self.speed_now
  
         if cur_speed < 0:
@@ -434,7 +453,7 @@ class Controller:
  
         if (self.state == "START"
             and self.boost_mode
-            and self.waypoint_array_in_map[0,7] > 0):
+            and self.waypoint_array_in_map[0,8] > 0):
             if (global_speed-cur_speed) > 0:
                 global_speed = self.start_speed
             elif self.cur_state_speed - cur_speed > 0:
@@ -568,15 +587,20 @@ class Controller:
         future_position = self.future_position[0, :2]
         idx_future_local_wpnts = self.nearest_waypoint(future_position, self.waypoint_array_in_map[:, :2])
         # ===== HJ MODIFIED: Use signed d values, take abs() of difference =====
-        future_local_wpnts_d = self.waypoint_array_in_map[idx_future_local_wpnts,8]  # Keep sign
+        future_local_wpnts_d = self.waypoint_array_in_map[idx_future_local_wpnts,9]  # Keep sign
 
+        ### HJ : use 3D frenet conversion for lateral error (z-aware nearest search)
         try:
-            future_potision_s, future_position_d = self.converter.get_frenet([self.future_position[0,0]],[self.future_position[0,1]])
+            future_potision_s, future_position_d = self.converter.get_frenet_3d(
+                np.array([self.future_position[0,0]]),
+                np.array([self.future_position[0,1]]),
+                np.array([self.future_position_z]))
             future_position_d = future_position_d[0]  # Keep sign
             future_lat_err = abs(future_position_d - future_local_wpnts_d)  # Distance between car and waypoint
         except (ValueError, Exception) as e:
             rospy.logwarn_throttle(1.0, f"[Controller] Frenet conversion failed: {e}, returning 0 for lateral error norm")
             return 0.0, 0.0
+        ### HJ : end
         # ===== HJ MODIFIED END =====
 
         max_lat_e = 1
@@ -614,7 +638,7 @@ class Controller:
         """
  
         heading = self.position_in_map[0,2]
-        map_heading = self.waypoint_array_in_map[self.idx_nearest_waypoint, 6]
+        map_heading = self.waypoint_array_in_map[self.idx_nearest_waypoint, 7]
         if abs(heading - map_heading) > np.pi:
             heading_error = 2*np.pi - abs(heading- map_heading)
         else:
@@ -744,6 +768,14 @@ class Controller:
         future_x = x_current + v * np.cos(psi_current + beta_fused) * T
         future_y = y_current + v * np.sin(psi_current + beta_fused) * T
 
+        ### HJ : estimate future z from track spline (vehicle follows track surface)
+        try:
+            future_s = self.converter.get_approx_s(np.array([future_x]), np.array([future_y]))
+            self.future_position_z = float(self.converter.spline_z(future_s[0]))
+        except Exception:
+            self.future_position_z = 0.0
+        ### HJ : end
+
         # 5. Predict future heading:
         # Option A: Model-based prediction
         future_psi_model = psi_current + (v / (L_f + L_r)) * np.sin(beta_fused) * T
@@ -777,7 +809,7 @@ class Controller:
         position_array = np.array([position]*len(waypoints))
         distances_to_position = np.linalg.norm(abs(position_array - waypoints), axis=1)
         return np.argmin(distances_to_position)
- 
+
     def waypoint_at_distance_before_car(self, distance, waypoints, idx_waypoint_behind_car):
         """
         Calculates the waypoint at a certain frenet distance in front of the car
@@ -790,17 +822,22 @@ class Controller:
             distance = self.t_clip_min
         d_distance = distance
  
-        # Extract only waypoints ahead of current index
+        ### HJ : use 3D distance for lookahead accumulation on sloped tracks
         waypoints_ahead = waypoints[idx_waypoint_behind_car:]
- 
-        # Compute segment-wise distances between waypoints
-        deltas = np.diff(waypoints_ahead, axis=0)
+
+        ### HJ : x=0, y=1, z=2 — compute 3D segment distances
+        if waypoints_ahead.shape[1] > 2:
+            deltas = np.diff(waypoints_ahead[:, :3], axis=0)
+        else:
+            deltas = np.diff(waypoints_ahead[:, :2], axis=0)
         seg_lengths = np.linalg.norm(deltas, axis=1)
- 
+
         # Compute cumulative distances
         cum_lengths = np.cumsum(seg_lengths)
- 
+
         # Find the first index where cumulative distance exceeds lookahead
         idx_offset = min(np.searchsorted(cum_lengths, d_distance), len(waypoints_ahead) - 1)
- 
-        return waypoints_ahead[idx_offset]
+
+        ### HJ : return xyz for 3D marker visualization (steering still uses xy)
+        return waypoints_ahead[idx_offset, :3]
+        ### HJ : end

@@ -358,70 +358,55 @@ def __solver_fb_closed(p_ggv: np.ndarray,
     # cut vx_profile to car's top speed
     vx_profile[vx_profile > v_max] = v_max
 
-    """We need to calculate the speed profile for two laps to get the correct starting and ending velocity."""
+    """Use 3 laps and extract the middle lap to avoid boundary effects."""
 
-    # double arrays
-    vx_profile_double = np.concatenate((vx_profile, vx_profile), axis=0)
-    radii_double = np.concatenate((radii, radii), axis=0)
-    el_lengths_double = np.concatenate((el_lengths, el_lengths), axis=0)
-    mu_double = np.concatenate((mu, mu), axis=0)
-    p_ggv_double = np.concatenate((p_ggv, p_ggv), axis=0)
+    # Triple arrays (3 laps)
+    vx_profile_triple = np.concatenate((vx_profile, vx_profile, vx_profile), axis=0)
+    radii_triple = np.concatenate((radii, radii, radii), axis=0)
+    el_lengths_triple = np.concatenate((el_lengths, el_lengths, el_lengths), axis=0)
+    mu_triple = np.concatenate((mu, mu, mu), axis=0)
+    p_ggv_triple = np.concatenate((p_ggv, p_ggv, p_ggv), axis=0)
 
-    # HJ ADD: Iterate forward-backward passes until convergence
-    # Previously only ran once, which was insufficient for tracks with incompatible start/end curvatures
-    max_iterations = 3
-    for iteration in range(max_iterations):
-        # calculate acceleration profile
-        vx_profile_double = __solver_fb_acc_profile(p_ggv=p_ggv_double,
-                                                    ax_max_machines=ax_max_machines,
-                                                    v_max=v_max,
-                                                    radii=radii_double,
-                                                    el_lengths=el_lengths_double,
-                                                    mu=mu_double,
-                                                    vx_profile=vx_profile_double,
-                                                    backwards=False,
-                                                    dyn_model_exp=dyn_model_exp,
-                                                    drag_coeff=drag_coeff,
-                                                    m_veh=m_veh,
-                                                    b_ax_max_machines=b_ax_max_machines)
+    # Forward pass on 3 laps
+    vx_profile_triple = __solver_fb_acc_profile(p_ggv=p_ggv_triple,
+                                                ax_max_machines=ax_max_machines,
+                                                v_max=v_max,
+                                                radii=radii_triple,
+                                                el_lengths=el_lengths_triple,
+                                                mu=mu_triple,
+                                                vx_profile=vx_profile_triple,
+                                                backwards=False,
+                                                dyn_model_exp=dyn_model_exp,
+                                                drag_coeff=drag_coeff,
+                                                m_veh=m_veh,
+                                                b_ax_max_machines=b_ax_max_machines)
 
-        # use second lap of acceleration profile
-        vx_profile_double = np.concatenate((vx_profile_double[no_points:], vx_profile_double[no_points:]), axis=0)
+    # Backward pass on 3 laps
+    vx_profile_triple = __solver_fb_acc_profile(p_ggv=p_ggv_triple,
+                                                ax_max_machines=ax_max_machines,
+                                                v_max=v_max,
+                                                radii=radii_triple,
+                                                el_lengths=el_lengths_triple,
+                                                mu=mu_triple,
+                                                vx_profile=vx_profile_triple,
+                                                backwards=True,
+                                                dyn_model_exp=dyn_model_exp,
+                                                drag_coeff=drag_coeff,
+                                                m_veh=m_veh,
+                                                b_ax_max_machines=b_ax_max_machines)
 
-        # calculate deceleration profile
-        vx_profile_double = __solver_fb_acc_profile(p_ggv=p_ggv_double,
-                                                    ax_max_machines=ax_max_machines,
-                                                    v_max=v_max,
-                                                    radii=radii_double,
-                                                    el_lengths=el_lengths_double,
-                                                    mu=mu_double,
-                                                    vx_profile=vx_profile_double,
-                                                    backwards=True,
-                                                    dyn_model_exp=dyn_model_exp,
-                                                    drag_coeff=drag_coeff,
-                                                    m_veh=m_veh,
-                                                    b_ax_max_machines=b_ax_max_machines)
+    # Extract middle lap (lap 2) - this has proper boundary conditions from both sides
+    vx_profile = vx_profile_triple[no_points:2*no_points]
 
-        # use second lap of deceleration profile
-        vx_profile_double = np.concatenate((vx_profile_double[no_points:], vx_profile_double[no_points:]), axis=0)
-
-        # HJ ADD: Check convergence
-        v_start = vx_profile_double[0]
-        v_end = vx_profile_double[no_points - 1]
-        mismatch = abs(v_end - v_start)
-
-        if mismatch < 0.1:  # Converged to within 0.1 m/s
-            print(f"Closed loop converged after {iteration + 1} iterations (mismatch: {mismatch:.3f} m/s)")
-            break
+    # Check continuity at closing point
+    final_mismatch = abs(vx_profile[-1] - vx_profile[0])
+    if final_mismatch < 0.1:
+        print(f"Closed loop converged (mismatch: {final_mismatch:.3f} m/s)")
     else:
-        # HJ ADD: Did not converge warning
-        print(f"WARNING: Closed loop did not converge after {max_iterations} iterations (mismatch: {mismatch:.3f} m/s)")
-
-    # use second lap as final result
-    vx_profile = vx_profile_double[no_points:]
-
+        print(f"WARNING: Closed loop mismatch: {final_mismatch:.3f} m/s")
     return vx_profile
-
+        
+    
 
 def __solver_fb_acc_profile(p_ggv: np.ndarray,
                             ax_max_machines: np.ndarray,

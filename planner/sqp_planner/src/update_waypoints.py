@@ -17,11 +17,6 @@ class UpdateWaypoints:
         # Initialize the node
         rospy.init_node('waypoint_updater', anonymous=True)
 
-        # Subscriber
-        rospy.Subscriber("/car_state/odom_frenet", Odometry, self.odom_cb)
-        rospy.Subscriber("/state_machine", String, self.state_machine_cb)
-        rospy.Subscriber("/dynamic_prediction_tuner_node/parameter_updates", Config, self.dyn_param_cb)
-
         # Waypoint publisher
         self.wpnts_updated_pub = rospy.Publisher("/global_waypoints_updated", WpntArray, queue_size=10)
         self.marker_pub = rospy.Publisher("/updated_waypoints_marker", MarkerArray, queue_size=10)
@@ -44,6 +39,11 @@ class UpdateWaypoints:
         self.wpnts_updated_msg = WpntArray()
         self.s_points_array = np.array([])
         self.update_waypoints = True
+
+        # Subscriber
+        rospy.Subscriber("/car_state/odom_frenet", Odometry, self.odom_cb)
+        rospy.Subscriber("/state_machine", String, self.state_machine_cb)
+        rospy.Subscriber("/dynamic_prediction_tuner_node/parameter_updates", Config, self.dyn_param_cb)
         
 ### Callbacks ###
     def state_machine_cb(self, data: String):

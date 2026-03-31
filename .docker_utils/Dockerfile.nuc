@@ -2,8 +2,10 @@
 # Container Creation for the F110 race-stack at Center for Project Based Learning, ETH
 #
 
-FROM base_x86:latest
+FROM base_x86_nuc14:latest
 
+# update install_utils from host (base image may have stale version)
+ADD ./.devcontainer/.install_utils /.install_utils
 
 # initial user setup
 ARG USER 
@@ -17,9 +19,12 @@ WORKDIR /home/${USER}/catkin_ws
 RUN mkdir -p /home/${USER}/catkin_ws/src
 
 # initialize workspace and make sure no sim packages are built
-RUN catkin init && . /opt/ros/noetic/setup.bash && . /.install_utils/catkin_skiplist_sim.sh
+RUN catkin init && . /opt/ros/noetic/setup.bash && catkin config --merge-devel && . /.install_utils/catkin_skiplist_sim.sh
 
-# complete cartographer installation and rosdeps
+# complete cartographer installation and rosdeps (rosdep init needs root)
+USER root
+RUN rm -f /etc/ros/rosdep/sources.list.d/20-default.list && rosdep init
+USER $USER
 RUN . /.install_utils/cartographer_dep.sh
 
 USER root

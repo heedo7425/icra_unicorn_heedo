@@ -2,7 +2,7 @@
 <launch>  
     <arg name="racecar_version" default="$(env CAR_NAME)"  doc="Physical racecar used. Possible values: UNICORNx" />
     <arg name="map"/>
-    <arg name="use_vesc_imu" default="False" doc="whether use built-in vesc imu or microstrain" />
+    <arg name="use_vesc_imu" default="true" doc="whether use built-in vesc imu or microstrain" />
 
     <param name="use_sim_time" value="true" />
 

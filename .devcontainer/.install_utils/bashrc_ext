@@ -23,15 +23,30 @@ echo "ROS_DISTRO $ROS_DISTRO"
 # automatically get zerotier IP. Be careful! it does not work if do not have an ip assigned with the correct prefix, "192.168." in this case, and it might not work if you have multiple ips with the same prefix
 # export ROS_HOSTNAME=$( ifconfig | awk '/inet 192.168./ {print $2}' )
 
-export ROS_HOSTNAME=localhost
-export ROS_IP=localhost
+# export ROS_HOSTNAME=localhost
+# export ROS_IP=localhost
 
-# export ROS_HOSTNAME='192.168.50.23'
-# export ROS_IP='192.168.50.23'
-# export CAR_NAME="SRX1"
+export ROS_HOSTNAME='192.168.70.3'
+export ROS_IP='192.168.70.3'
+export CAR_NAME="SRX1"
 
-# export ROS_HOSTNAME='192.168.50.38'
-# export ROS_IP='192.168.50.38'
-export CAR_NAME="SRX2"
 
 export ROS_MASTER_URI="http://${ROS_HOSTNAME}:11311"
+
+### HJ : permanently switch settings in ~/.bashrc
+# usage: set_car HOBAO
+set_car() {
+  sed -i "s/^export CAR_NAME=.*/export CAR_NAME=\"$1\"/" ~/.bashrc
+  export CAR_NAME="$1"
+  echo "CAR_NAME permanently set to $1"
+}
+# usage: set_ip 192.168.70.3
+set_ip() {
+  sed -i "s/^export ROS_HOSTNAME=.*/export ROS_HOSTNAME='$1'/" ~/.bashrc
+  sed -i "s/^export ROS_IP=.*/export ROS_IP='$1'/" ~/.bashrc
+  sed -i "s|^export ROS_MASTER_URI=.*|export ROS_MASTER_URI=\"http://$1:11311\"|" ~/.bashrc
+  export ROS_HOSTNAME="$1"
+  export ROS_IP="$1"
+  export ROS_MASTER_URI="http://$1:11311"
+  echo "ROS_HOSTNAME/IP/MASTER_URI permanently set to $1"
+}

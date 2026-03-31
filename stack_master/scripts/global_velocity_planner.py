@@ -53,14 +53,13 @@ class VelocityPlanner:
         self.dyn_model_exp = self.pars["vel_calc_opts"]["dyn_model_exp"] 
 
 
-
         self.v_max = 12.0
-        self.ax_max_motor = 3.9
-        self.ax_max_brake = 7.0
-        self.dyn_model_exp = 1.0
+        self.ax_max_motor = 6.3
+        self.ax_max_brake = 9.0
+        self.dyn_model_exp = 1.2
 
-        self.a_y_max = 5.0
-        self.a_x_max = 7.0
+        self.a_y_max = 6.5
+        self.a_x_max = 9
 
         self.ggv[:,1] = self.a_x_max
         self.ggv[:,2] = self.a_y_max

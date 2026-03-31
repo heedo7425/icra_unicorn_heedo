@@ -3,3 +3,5 @@ float64 d
 ---
 float64 x
 float64 y
+### HJ : add z for 3D frenet conversion
+float64 z

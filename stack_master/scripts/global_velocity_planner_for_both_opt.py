@@ -22,7 +22,11 @@ import shutil
 class VelocityPlanner:
 
     # ===== HJ ADDED: Flag to save modified parameters to CSV files =====
+
+    # SAVE_CONFIG = True  # Set to True to save modified parameters and backup originals
+
     SAVE_CONFIG = False  # Set to True to save modified parameters and backup originals
+
     # ===== HJ ADDED END =====
 
     def __init__(self):
@@ -57,19 +61,31 @@ class VelocityPlanner:
         self.filt_window = self.pars["vel_calc_opts"]["vel_profile_conv_filt_window"]
         self.dyn_model_exp = self.pars["vel_calc_opts"]["dyn_model_exp"] 
 
-
-#---------------------------------------
-
         self.v_max = 12.0
-        self.ax_max_motor = 6.3
-        self.ax_max_brake = 9.0
-        self.dyn_model_exp = 1.2
+        self.ax_max_motor = 7
+        self.ax_max_brake = 7
+        self.dyn_model_exp = 1.1
 
-        self.a_y_max = 6.5
-        self.a_x_max = 9
-
+        self.a_y_max = 5.5
+        self.a_x_max = 7.0
 #---------------------------------------
 
+        # self.v_max = 10.0
+        # self.ax_max_motor = 5
+        # self.ax_max_brake = 7
+        # self.dyn_model_exp = 1.0
+
+        # self.a_y_max = 4.5
+        # self.a_x_max = 5
+#---------------------------------------
+        # self.v_max = 15.0
+        # self.ax_max_motor = 12.0
+        # self.ax_max_brake = 9.0
+        # self.dyn_model_exp = 1.4
+
+        # self.a_y_max = 8.0
+        # self.a_x_max = 13.0
+        #aggresive
 #---------------------------------------
 
         # self.v_max = 12.0

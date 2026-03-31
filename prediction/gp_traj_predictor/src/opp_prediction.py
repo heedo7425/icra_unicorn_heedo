@@ -5,15 +5,18 @@ import numpy as np
 import rospy
 from std_msgs.msg import Bool, Float32, String
 from nav_msgs.msg import Odometry
-from f110_msgs.msg import ObstacleArray, WpntArray, Wpnt, Obstacle, ObstacleArray, OpponentTrajectory, OppWpnt, Prediction, PredictionArray
+from f110_msgs.msg import ObstacleArray, WpntArray, Wpnt, Obstacle, ObstacleArray, OpponentTrajectory, OppWpnt, Prediction, PredictionArray, OTWpntArray
 from visualization_msgs.msg import Marker, MarkerArray
 from frenet_conversion.srv import Glob2FrenetArr, Frenet2GlobArr
+from frenet_converter.frenet_converter import FrenetConverter  # HJ ADDED: For smart static Frenet conversion
 import time
 from dynamic_reconfigure.msg import Config
 import copy
 
 from std_srvs.srv import SetBool, SetBoolResponse
 from tf.transformations import euler_from_quaternion
+
+OPP_TRAJ_USE_THRESHOLD = 0.35
 
 class OppTrajPredictor:
     def __init__(self):
@@ -25,7 +28,11 @@ class OppTrajPredictor:
         self.glob2frenet = rospy.ServiceProxy("convert_glob2frenetarr_service", Glob2FrenetArr)
         self.frenet2glob = rospy.ServiceProxy("convert_frenet2globarr_service", Frenet2GlobArr)
         self.loop_rate = 10 #Hz
-        
+
+        # HJ ADDED: Use vd-based prediction for reactive vehicles
+        self.USE_V_D = rospy.get_param('~use_vd_prediction', True)
+        rospy.loginfo(f"[Opp. Pred.] USE_V_D prediction: {self.USE_V_D}")
+
         # Publisher
         self.marker_pub_beginn = rospy.Publisher("/opponent_predict/beginn", Marker, queue_size=10)
         self.marker_pub_end = rospy.Publisher("/opponent_predict/end", Marker, queue_size=10)
@@ -44,16 +51,27 @@ class OppTrajPredictor:
         self.wpnts_updated = list()
         self.state = String()
 
+        # HJ ADDED: Smart static mode support
+        self.smart_static_active = False
+        self.smart_static_wpnts = list()
+        self.smart_converter = None  # FrenetConverter for smart static path
+        self.smart_wpnts_gb_frenet = list()  # SMART waypoints converted to GB Frenet (s_m, d_m)
+
         self.speed_offset = 0 # m/s
 
         # Subscriber - register AFTER initializing callback data
         rospy.Subscriber("/tracking/obstacles", ObstacleArray, self.opponent_state_cb)
         rospy.Subscriber("/car_state/odom_frenet", Odometry, self.odom_cb)
         rospy.Subscriber(self.opponent_traj_topic, OpponentTrajectory, self.opponent_trajectory_cb)
-        rospy.Subscriber('/global_waypoints_updated', WpntArray, self.wpnts_updated_cb)
+        # HJ MODIFIED: Use global_waypoints_scaled instead of global_waypoints_updated (not published)
+        # rospy.Subscriber('/global_waypoints_updated', WpntArray, self.wpnts_updated_cb)
+        rospy.Subscriber('/global_waypoints_scaled', WpntArray, self.wpnts_updated_cb)
         rospy.Subscriber("/centerline_waypoints", WpntArray, self.center_wpnts_cb)
         rospy.Subscriber("/state_machine", String, self.state_cb)
         rospy.Subscriber("/dynamic_prediction_tuner_node/parameter_updates", Config, self.dyn_param_cb)
+        # HJ ADDED: Smart static mode support
+        rospy.Subscriber("/planner/avoidance/smart_static_active", Bool, self.smart_static_active_cb)
+        rospy.Subscriber("/planner/avoidance/smart_static_otwpnts", OTWpntArray, self.smart_static_wpnts_cb)
 
         # Service server
         rospy.Service('/init_opp_trajectory', SetBool, self.init_opp_bool)
@@ -68,6 +86,10 @@ class OppTrajPredictor:
         self.max_a = 5.5 # m/s^2
         self.min_a = 5 # m/s^2
         self.max_expire_counter = 10
+
+        # HJ ADDED: Obstacle size parameter
+        self.obstacle_half_width = rospy.get_param('~obstacle_half_width', 0.3)  # m
+        rospy.loginfo(f"[Opp. Pred.] Obstacle half width: {self.obstacle_half_width}m")
 
         # Number of time steps before prediction expires. Set when prediction is published.
         self.expire_counter = 0
@@ -204,6 +226,37 @@ class OppTrajPredictor:
             f" max_expire_counter: {self.max_expire_counter}"
         )
 
+    # HJ ADDED: Smart static mode callbacks
+    def smart_static_active_cb(self, data: Bool):
+        self.smart_static_active = data.data
+
+    def smart_static_wpnts_cb(self, data: OTWpntArray):
+        self.smart_static_wpnts = data.wpnts  # Extract Wpnt[] from OTWpntArray
+
+        # Create FrenetConverter for smart static path (only once)
+        if len(self.smart_static_wpnts) > 1 and self.smart_converter is None:
+            try:
+                x_arr = np.array([wpnt.x_m for wpnt in self.smart_static_wpnts])
+                y_arr = np.array([wpnt.y_m for wpnt in self.smart_static_wpnts])
+                z_arr = np.array([wpnt.z_m for wpnt in self.smart_static_wpnts])
+                self.smart_converter = FrenetConverter(x_arr, y_arr, z_arr)
+                rospy.loginfo(f"[Opp. Pred.] Created FrenetConverter for SMART static path ({len(self.smart_static_wpnts)} waypoints)")
+
+                # Convert SMART waypoints to GB Frenet for convergence target using glob2frenet service
+                self.smart_wpnts_gb_frenet = []
+                x_list = [wpnt.x_m for wpnt in self.smart_static_wpnts]
+                y_list = [wpnt.y_m for wpnt in self.smart_static_wpnts]
+
+                # Call glob2frenet service to convert all SMART waypoints to GB Frenet at once
+                result = self.glob2frenet(x_list, y_list)
+                for i in range(len(result.s)):
+                    self.smart_wpnts_gb_frenet.append({'s_m': result.s[i], 'd_m': result.d[i]})
+                rospy.loginfo(f"[Opp. Pred.] Converted SMART waypoints to GB Frenet ({len(self.smart_wpnts_gb_frenet)} points)")
+
+            except Exception as e:
+                rospy.logerr(f"[Opp. Pred.] Failed to create FrenetConverter for SMART path: {e}")
+                self.smart_converter = None
+
 
     ### HELPER FUNCTIONS ###
     def marker_init(self, a = 1, r = 1, g = 0, b = 0, id = 0):
@@ -237,9 +290,10 @@ class OppTrajPredictor:
 
         rospy.loginfo("[Opp. Pred.] Opponent Predictor wating...")
         rospy.wait_for_message("/global_waypoints", WpntArray)
+        # HJ MODIFIED: Use global_waypoints_scaled instead of global_waypoints_updated (not published)
+        # rospy.wait_for_message("/global_waypoints_updated", WpntArray)
         rospy.wait_for_message("/global_waypoints_scaled", WpntArray)
-        rospy.wait_for_message("/global_waypoints_updated", WpntArray)
-        rospy.loginfo("[Opp. Pred.] Updated waypoints recived!")
+        rospy.loginfo("[Opp. Pred.] Scaled waypoints recived!")
         rospy.wait_for_message(self.opponent_traj_topic, OpponentTrajectory)
         rospy.loginfo("[Opp. Pred.] Opponent waypoints recived!")
         rospy.wait_for_message("/tracking/obstacles", ObstacleArray)
@@ -252,60 +306,178 @@ class OppTrajPredictor:
 
             prediction_obs_pred_arr = PredictionArray()
 
+            # HJ DEBUG
+            rospy.logwarn_throttle(2.0, f"[Opp Pred DEBUG] opponent_pos obstacles count: {len(opponent_pos_copy.obstacles)}")
+
             if len(opponent_pos_copy.obstacles) != 0:
+                # HJ ADDED: Check if SMART mode is active (for final Prediction conversion only)
+                use_smart_frenet = self.smart_static_active and self.smart_converter is not None
+
+                # All internal calculations use GB Frenet (original behavior)
                 current_ego_s = self.car_odom.pose.pose.position.x
                 current_opponent_s = opponent_pos_copy.obstacles[0].s_center
-                
+
                 # Handle wrap around
                 if current_ego_s > self.max_s_updated * (2/3) and current_opponent_s < self.max_s_updated * (1/3):
                     current_opponent_s += self.max_s_updated
-                    
+
                 current_opponent_d = opponent_pos_copy.obstacles[0].d_center
-                
-                s_points_center_array = np.array([wpnt.s_m for wpnt in self.center_wpnts_msg.wpnts])
-                approx_opponent_center_indx = np.abs(s_points_center_array - current_opponent_s).argmin()
-                opponent_approx_center_d = self.center_wpnts_msg.wpnts[approx_opponent_center_indx].d_m
-                
+
+                # Find center d for convergence: centerline (GB) or smart path (SMART mode)
+                if use_smart_frenet and len(self.smart_wpnts_gb_frenet) > 0:
+                    # SMART mode: converge to SMART path (in GB Frenet coordinates)
+                    smart_s_array_gb = np.array([wpnt['s_m'] for wpnt in self.smart_wpnts_gb_frenet])
+                    approx_opponent_center_indx = np.abs(smart_s_array_gb - current_opponent_s).argmin()
+                    opponent_approx_center_d = self.smart_wpnts_gb_frenet[approx_opponent_center_indx]['d_m']
+                else:
+                    # GB mode: converge to centerline
+                    s_points_center_array = np.array([wpnt.s_m for wpnt in self.center_wpnts_msg.wpnts])
+                    approx_opponent_center_indx = np.abs(s_points_center_array - current_opponent_s).argmin()
+                    opponent_approx_center_d = self.center_wpnts_msg.wpnts[approx_opponent_center_indx].d_m
+
                 current_opponent_v = opponent_pos_copy.obstacles[0].vs
-                
-                approx_s_points_global_array = np.array([wpnt.s_m for wpnt in self.wpnts_opponent])
-                opponent_approx_indx = np.abs(approx_s_points_global_array - current_opponent_s).argmin()
-                opponent_approx_raceline_d = self.wpnts_opponent[opponent_approx_indx].d_m
-                
+
+                # HJ ADDED: Safety check for opponent trajectory availability
+                has_opponent_raceline = len(self.wpnts_opponent) > 1 and self.opponent_lap_count is not None
+
+                if has_opponent_raceline:
+                    approx_s_points_global_array = np.array([wpnt.s_m for wpnt in self.wpnts_opponent])
+                    opponent_approx_indx = np.abs(approx_s_points_global_array - current_opponent_s).argmin()
+                    opponent_approx_raceline_d = self.wpnts_opponent[opponent_approx_indx].d_m
+                else:
+                    # No opponent trajectory yet - use current position as reference
+                    approx_s_points_global_array = np.array([])
+                    opponent_approx_raceline_d = current_opponent_d
+
                 start = time.process_time()
 
-                if abs(current_opponent_d - opponent_approx_raceline_d) > 0.25 or self.opponent_lap_count < 1:
+                # ===== ORIGINAL FUNCTION (before HJ modification) =====
+                # if abs(current_opponent_d - opponent_approx_raceline_d) > 0.25 or self.opponent_lap_count < 1:
+                #     self.force_trailing_pub.publish(True)
+                #
+                #     obstacle_list = []
+                #     prediction_list = []
+                #
+                #     opp_marker_array = MarkerArray()
+                #
+                #     for i in range(self.time_steps):
+                #         w = i / (self.time_steps - 1)
+                #
+                #         interpolated_d = (1 - w) * current_opponent_d + w * opponent_approx_center_d
+                #
+                #         obs = Obstacle()
+                #         obs.id = i
+                #         obs.s_start = current_opponent_s
+                #         obs.s_end = current_opponent_s
+                #         obs.s_center = current_opponent_s + i * current_opponent_v * self.dt
+                #         obs.d_center = interpolated_d
+                #         obs.d_left = obs.d_center + 0.25
+                #         obs.d_right = obs.d_center - 0.25
+                #         obs.size = opponent_pos_copy.obstacles[0].size
+                #         obs.vs = current_opponent_v
+                #         obs.vd = 0
+                #         obs.is_actually_a_gap = False
+                #         obs.is_static = False
+                #         obstacle_list.append(obs)
+                #
+                #         pds = Prediction()
+                #         pds.id = i
+                #         pds.pred_s = obs.s_center
+                #         pds.pred_d = obs.d_center
+                #         prediction_list.append(pds)
+                # ===== ORIGINAL FUNCTION END =====
+
+                ############################# HJ MODIFIED START #############################
+                # Choose prediction method based on USE_V_D flag
+                # Use original method for first lap (no learned trajectory yet)
+                # Use vd method only after 1 lap AND when lateral deviation > 0.25m
+                use_vd_method = self.USE_V_D and self.opponent_lap_count >= 1 and abs(current_opponent_d - opponent_approx_raceline_d) > OPP_TRAJ_USE_THRESHOLD
+                use_original_method = (not self.USE_V_D or self.opponent_lap_count < 1) and (abs(current_opponent_d - opponent_approx_raceline_d) > OPP_TRAJ_USE_THRESHOLD or self.opponent_lap_count < 1)
+
+                # ===== HJ MODIFIED: Blend learned raceline vd with current vd =====
+                if use_vd_method:
                     self.force_trailing_pub.publish(True)
-                    
+
                     obstacle_list = []
                     prediction_list = []
 
                     opp_marker_array = MarkerArray()
-                    
+
+                    # Get current lateral velocity from tracking
+                    current_opponent_vd = opponent_pos_copy.obstacles[0].vd
+
+                    # Decay factor for lateral velocity (reactive movements dampen over time)
+                    vd_decay = 0.6  # vd reduces by 40% per timestep
+
+                    # Blending weight: how much to trust current vd vs learned raceline
+                    # 0.0 = pure raceline, 1.0 = pure current vd
+                    vd_blend_weight = 0.3  # Favor current reactive behavior
+
+                    # Check if opponent trajectory is available for blending
+                    has_opponent_trajectory = len(self.wpnts_opponent) > 1 and hasattr(self, 'max_s_opponent')
+
                     for i in range(self.time_steps):
-                        w = i / (self.time_steps - 1)
-                        
-                        interpolated_d = (1 - w) * current_opponent_d + w * opponent_approx_center_d
-                        
+                        # Get opponent's future s position
+                        future_s = current_opponent_s + i * current_opponent_v * self.dt
+
+                        # Extract learned raceline's lateral velocity (only if trajectory available)
+                        raceline_vd = 0.0
+                        if has_opponent_trajectory:
+                            future_opponent_idx = np.abs(approx_s_points_global_array - future_s % self.max_s_opponent).argmin()
+                            next_opponent_idx = (future_opponent_idx + 1) % len(self.wpnts_opponent)
+
+                            # Calculate raceline's d change rate (vd from learned trajectory)
+                            raceline_d_current = self.wpnts_opponent[future_opponent_idx].d_m
+                            raceline_d_next = self.wpnts_opponent[next_opponent_idx].d_m
+                            raceline_vs = self.wpnts_opponent[future_opponent_idx].proj_vs_mps
+
+                            # Avoid division by zero
+                            if raceline_vs > 0.1:
+                                s_step = self.wpnts_opponent[next_opponent_idx].s_m - self.wpnts_opponent[future_opponent_idx].s_m
+                                if s_step < 0:  # Handle wrap-around
+                                    s_step += self.max_s_opponent
+                                raceline_vd = (raceline_d_next - raceline_d_current) / (s_step / raceline_vs) if s_step > 0 else 0.0
+
+                        # Blend current vd with raceline vd, then apply decay
+                        decayed_current_vd = current_opponent_vd * (vd_decay ** i)
+                        blended_vd = vd_blend_weight * decayed_current_vd + (1 - vd_blend_weight) * raceline_vd
+
+                        # Apply blended lateral velocity
+                        lateral_displacement = 0.0
+                        for j in range(i + 1):
+                            step_vd = vd_blend_weight * current_opponent_vd * (vd_decay ** j) + (1 - vd_blend_weight) * raceline_vd
+                            lateral_displacement += step_vd * self.dt
+
+                        predicted_d = current_opponent_d + lateral_displacement
+
                         obs = Obstacle()
                         obs.id = i
                         obs.s_start = current_opponent_s
                         obs.s_end = current_opponent_s
-                        obs.s_center = current_opponent_s + i * current_opponent_v * self.dt
-                        obs.d_center = interpolated_d
-                        obs.d_left = obs.d_center + 0.25
-                        obs.d_right = obs.d_center - 0.25
+                        obs.s_center = future_s
+                        obs.d_center = predicted_d
+                        obs.d_left = obs.d_center + self.obstacle_half_width
+                        obs.d_right = obs.d_center - self.obstacle_half_width
                         obs.size = opponent_pos_copy.obstacles[0].size
                         obs.vs = current_opponent_v
-                        obs.vd = 0
+                        obs.vd = blended_vd
                         obs.is_actually_a_gap = False
                         obs.is_static = False
                         obstacle_list.append(obs)
 
                         pds = Prediction()
                         pds.id = i
-                        pds.pred_s = obs.s_center
-                        pds.pred_d = obs.d_center
+                        # HJ MODIFIED: Use SMART Frenet if active, otherwise GB Frenet
+                        if use_smart_frenet:
+                            # Convert GB prediction to SMART Frenet using smart_converter
+                            pos_cart = self.frenet2glob([obs.s_center % self.max_s_updated], [obs.d_center])
+                            result = self.smart_converter.get_frenet(np.array([pos_cart.x[0]]), np.array([pos_cart.y[0]]))
+                            pds.pred_s = float(result[0])
+                            pds.pred_d = float(result[1])
+                        else:
+                            # GB mode: use obs.s_center and obs.d_center directly
+                            pds.pred_s = obs.s_center
+                            pds.pred_d = obs.d_center
                         prediction_list.append(pds)
 
                         marker = Marker()
@@ -323,14 +495,14 @@ class OppTrajPredictor:
 
                         marker.scale.x = 0.15
                         marker.scale.y = 0.15
-                        marker.scale.z = 0.15  # height
+                        marker.scale.z = 0.15
                         marker.color.a = 0.8
                         marker.color.r = 0.0
                         marker.color.g = 1.0
                         marker.color.b = 0.0
 
                         opp_marker_array.markers.append(marker)
-                        
+
                     prediction_obs_arr = ObstacleArray(header = rospy.Header(stamp = rospy.Time.now(), frame_id = "map"), obstacles = obstacle_list)
                     self.prediction_obs_pub.publish(prediction_obs_arr)
 
@@ -338,8 +510,87 @@ class OppTrajPredictor:
                     self.prediction_obs_pred_pub.publish(prediction_obs_pred_arr)
 
                     self.opp_marker_pub.publish(opp_marker_array)
-                    
+
                     self.expire_counter = 0
+
+                # ===== ORIGINAL METHOD: Linear interpolation to center =====
+                elif use_original_method:
+                    self.force_trailing_pub.publish(True)
+
+                    obstacle_list = []
+                    prediction_list = []
+
+                    opp_marker_array = MarkerArray()
+
+                    for i in range(self.time_steps):
+                        w = i / (self.time_steps - 1)
+
+                        interpolated_d = (1 - w) * current_opponent_d + w * opponent_approx_center_d
+
+                        obs = Obstacle()
+                        obs.id = i
+                        obs.s_start = current_opponent_s
+                        obs.s_end = current_opponent_s
+                        obs.s_center = current_opponent_s + i * current_opponent_v * self.dt
+                        obs.d_center = interpolated_d
+                        obs.d_left = obs.d_center + self.obstacle_half_width
+                        obs.d_right = obs.d_center - self.obstacle_half_width
+                        obs.size = opponent_pos_copy.obstacles[0].size
+                        obs.vs = current_opponent_v
+                        obs.vd = 0
+                        obs.is_actually_a_gap = False
+                        obs.is_static = False
+                        obstacle_list.append(obs)
+
+                        pds = Prediction()
+                        pds.id = i
+                        # HJ MODIFIED: Use SMART Frenet if active, otherwise GB Frenet
+                        if use_smart_frenet:
+                            # Convert GB prediction to SMART Frenet using smart_converter
+                            pos_cart = self.frenet2glob([obs.s_center % self.max_s_updated], [obs.d_center])
+                            result = self.smart_converter.get_frenet(np.array([pos_cart.x[0]]), np.array([pos_cart.y[0]]))
+                            pds.pred_s = float(result[0])
+                            pds.pred_d = float(result[1])
+                        else:
+                            # GB mode: use obs.s_center and obs.d_center directly
+                            pds.pred_s = obs.s_center
+                            pds.pred_d = obs.d_center
+                        prediction_list.append(pds)
+
+                        marker = Marker()
+                        marker.header.stamp = rospy.Time.now()
+                        marker.header.frame_id = "map"
+                        marker.id = i
+                        marker.type = Marker.CYLINDER
+                        marker.action = Marker.ADD
+                        marker.pose.orientation.w = 1.0
+
+                        pos = self.frenet2glob([obs.s_center % self.max_s_updated], [obs.d_center])
+                        marker.pose.position.x = pos.x[0]
+                        marker.pose.position.y = pos.y[0]
+                        marker.pose.position.z = 0.1
+
+                        marker.scale.x = 0.15
+                        marker.scale.y = 0.15
+                        marker.scale.z = 0.15
+                        marker.color.a = 0.8
+                        marker.color.r = 1.0  # Red for original method
+                        marker.color.g = 0.0
+                        marker.color.b = 0.0
+
+                        opp_marker_array.markers.append(marker)
+
+                    prediction_obs_arr = ObstacleArray(header = rospy.Header(stamp = rospy.Time.now(), frame_id = "map"), obstacles = obstacle_list)
+                    self.prediction_obs_pub.publish(prediction_obs_arr)
+
+                    prediction_obs_pred_arr = PredictionArray(header = rospy.Header(stamp = rospy.Time.now(), frame_id = "map"), id = opponent_pos_copy.obstacles[0].id, predictions = prediction_list)
+                    self.prediction_obs_pred_pub.publish(prediction_obs_pred_arr)
+
+                    self.opp_marker_pub.publish(opp_marker_array)
+
+                    self.expire_counter = 0
+                # ===== HJ MODIFIED END =====
+                #############################
                 else:
                     self.force_trailing_pub.publish(False)
                     
@@ -374,8 +625,8 @@ class OppTrajPredictor:
                         obs.s_end = current_opponent_s + opponent_speed * self.dt
                         obs.s_center = (obs.s_start + obs.s_end) / 2
                         obs.d_center = opponent_d
-                        obs.d_left = opponent_d + 0.25
-                        obs.d_right = opponent_d - 0.25
+                        obs.d_left = opponent_d + self.obstacle_half_width
+                        obs.d_right = opponent_d - self.obstacle_half_width
                         obs.size = opponent_pos_copy.obstacles[0].size
                         obs.vs = opponent_speed
                         obs.vd = 0
@@ -385,8 +636,19 @@ class OppTrajPredictor:
 
                         pds = Prediction()
                         pds.id = i
-                        pds.pred_s = (obs.s_start + obs.s_end) / 2
-                        pds.pred_d = opponent_d
+                        # HJ MODIFIED: Use SMART Frenet if active, otherwise GB Frenet
+                        if use_smart_frenet:
+                            # Convert GB prediction to SMART Frenet using smart_converter
+                            s_gb = (obs.s_start + obs.s_end) / 2
+                            d_gb = opponent_d
+                            pos_cart = self.frenet2glob([s_gb % self.max_s_updated], [d_gb])
+                            result = self.smart_converter.get_frenet(np.array([pos_cart.x[0]]), np.array([pos_cart.y[0]]))
+                            pds.pred_s = float(result[0])
+                            pds.pred_d = float(result[1])
+                        else:
+                            # GB mode
+                            pds.pred_s = (obs.s_start + obs.s_end) / 2
+                            pds.pred_d = opponent_d
                         prediction_list.append(pds)
 
                         marker = Marker()

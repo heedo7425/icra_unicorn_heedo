@@ -19,9 +19,11 @@
     </group>
   
     <arg name="config_dir" default="$(find stack_master)/config/$(arg racecar_version)/SE/slam" />
-    <arg name="config_base" default="mapping.lua" />
+    <!-- <arg name="config_base" default="mapping.lua" /> -->
+    <arg name="config_base" default="mapping_vesc.lua" />
     <arg name="scan_topic" default="/scan" />
-    <arg name="imu_topic" default="/imu/data"/>
+    <!-- <arg name="imu_topic" default="/imu/data"/> -->
+    <arg name="imu_topic" default="/vesc/sensors/imu/raw"/>
     <arg name="odom_topic" default="/vesc/odom" />  
   
     <node name="cartographer_node" pkg="cartographer_ros"

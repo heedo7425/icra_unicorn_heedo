@@ -7,7 +7,7 @@
     <arg name="map" value="$(arg map)" />
   </include>
   
-  <node pkg="perception" type="dynamic_tracker_server.py" name="dyn_perception" output="screen" />
+  <node pkg="abp_detection" type="dynamic_tracker_server.py" name="dyn_perception" output="screen" />
 
   <node pkg="grid_filter" type="grid_filter_test.py" name="grid_filter" output="screen">
     <param name="map" value="$(arg map)" />

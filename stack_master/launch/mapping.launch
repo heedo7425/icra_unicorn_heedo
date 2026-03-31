@@ -8,7 +8,7 @@
     <arg name="create_map" default="True" doc="Set false if you use only global optimization" />
     <arg name="create_global_path" default="True" doc="Set false if you want to save map only" />
     <arg name="show_plots" default="False" doc="Set true if you want see the result with images" />
-    <arg name="use_vesc_imu" default="False" doc="whether use built-in vesc imu or microstrain" />
+    <arg name="use_vesc_imu" default="True" doc="whether use built-in vesc imu or microstrain" />
 
     <param name="racecar_version" value="$(arg racecar_version)" />
 
