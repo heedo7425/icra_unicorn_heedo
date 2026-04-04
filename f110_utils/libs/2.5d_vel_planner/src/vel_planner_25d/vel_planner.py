@@ -18,7 +18,8 @@ def calc_vel_profile(ax_max_machines: np.ndarray,
                      v_start: float = None,
                      v_end: float = None,
                      filt_window: int = None,
-                     slope: np.ndarray = None) -> np.ndarray:  ### HJ : slope array for 2.5D gravity correction
+                     slope: np.ndarray = None,
+                     track_3d_params: dict = None) -> np.ndarray:  ### HJ : slope + track_3d_params for g_tilde
     """
     author:
     Alexander Heilmeier
@@ -200,7 +201,8 @@ def calc_vel_profile(ax_max_machines: np.ndarray,
                                           m_veh=m_veh,
                                           op_mode=op_mode,
                                           b_ax_max_machines=b_ax_max_machines,
-                                          slope=slope)  ### HJ : slope
+                                          slope=slope,
+                                          track_3d_params=track_3d_params)  ### HJ : slope + g_tilde
 
     else:
         vx_profile = __solver_fb_closed(p_ggv=p_ggv,
@@ -214,7 +216,8 @@ def calc_vel_profile(ax_max_machines: np.ndarray,
                                         m_veh=m_veh,
                                         op_mode=op_mode,
                                         b_ax_max_machines=b_ax_max_machines,
-                                        slope=slope)  ### HJ : slope
+                                        slope=slope,
+                                        track_3d_params=track_3d_params)  ### HJ : g_tilde
 
     # ------------------------------------------------------------------------------------------------------------------
     # POSTPROCESSING ---------------------------------------------------------------------------------------------------
@@ -241,7 +244,8 @@ def __solver_fb_unclosed(p_ggv: np.ndarray,
                          mu: np.ndarray = None,
                          v_end: float = None,
                          dyn_model_exp: float = 1.0,
-                         slope: np.ndarray = None) -> np.ndarray:  ### HJ : slope
+                         slope: np.ndarray = None,
+                         track_3d_params: dict = None) -> np.ndarray:  ### HJ : g_tilde
 
     # ------------------------------------------------------------------------------------------------------------------
     # FORWARD BACKWARD SOLVER ------------------------------------------------------------------------------------------
@@ -288,7 +292,8 @@ def __solver_fb_unclosed(p_ggv: np.ndarray,
                                          drag_coeff=drag_coeff,
                                          m_veh=m_veh,
                                          b_ax_max_machines=b_ax_max_machines,
-                                         slope=slope)  ### HJ : slope
+                                         slope=slope,
+                                         track_3d_params=track_3d_params)  ### HJ : g_tilde
 
     # consider v_end
     if v_end is not None and vx_profile[-1] > v_end:
@@ -307,7 +312,8 @@ def __solver_fb_unclosed(p_ggv: np.ndarray,
                                          drag_coeff=drag_coeff,
                                          m_veh=m_veh,
                                          b_ax_max_machines=b_ax_max_machines,
-                                         slope=slope)  ### HJ : slope
+                                         slope=slope,
+                                         track_3d_params=track_3d_params)  ### HJ : g_tilde
 
     return vx_profile
 
@@ -323,7 +329,8 @@ def __solver_fb_closed(p_ggv: np.ndarray,
                        b_ax_max_machines: np.ndarray,
                        mu: np.ndarray = None,
                        dyn_model_exp: float = 1.0,
-                       slope: np.ndarray = None) -> np.ndarray:  ### HJ : slope
+                       slope: np.ndarray = None,
+                       track_3d_params: dict = None) -> np.ndarray:  ### HJ : g_tilde
 
     # ------------------------------------------------------------------------------------------------------------------
     # FORWARD BACKWARD SOLVER ------------------------------------------------------------------------------------------
@@ -379,6 +386,16 @@ def __solver_fb_closed(p_ggv: np.ndarray,
     p_ggv_triple = np.concatenate((p_ggv, p_ggv, p_ggv), axis=0)
     ### HJ : triple slope for 3-lap boundary effect removal
     slope_triple = np.concatenate((slope, slope, slope), axis=0)
+    ### HJ : triple track_3d_params arrays
+    if track_3d_params is not None:
+        track_3d_params_triple = {}
+        for key, val in track_3d_params.items():
+            if isinstance(val, np.ndarray):
+                track_3d_params_triple[key] = np.concatenate((val, val, val), axis=0)
+            else:
+                track_3d_params_triple[key] = val  # scalar (e.g. h)
+    else:
+        track_3d_params_triple = None
 
     # Forward pass on 3 laps
     vx_profile_triple = __solver_fb_acc_profile(p_ggv=p_ggv_triple,
@@ -393,7 +410,8 @@ def __solver_fb_closed(p_ggv: np.ndarray,
                                                 drag_coeff=drag_coeff,
                                                 m_veh=m_veh,
                                                 b_ax_max_machines=b_ax_max_machines,
-                                                slope=slope_triple)  ### HJ : slope
+                                                slope=slope_triple,
+                                                track_3d_params=track_3d_params_triple)  ### HJ : g_tilde
 
     # Backward pass on 3 laps
     vx_profile_triple = __solver_fb_acc_profile(p_ggv=p_ggv_triple,
@@ -408,7 +426,8 @@ def __solver_fb_closed(p_ggv: np.ndarray,
                                                 drag_coeff=drag_coeff,
                                                 m_veh=m_veh,
                                                 b_ax_max_machines=b_ax_max_machines,
-                                                slope=slope_triple)  ### HJ : slope
+                                                slope=slope_triple,
+                                                track_3d_params=track_3d_params_triple)  ### HJ : g_tilde
 
     # Extract middle lap (lap 2) - this has proper boundary conditions from both sides
     vx_profile = vx_profile_triple[no_points:2*no_points]
@@ -435,7 +454,8 @@ def __solver_fb_acc_profile(p_ggv: np.ndarray,
                             b_ax_max_machines: np.ndarray,
                             dyn_model_exp: float = 1.0,
                             backwards: bool = False,
-                            slope: np.ndarray = None) -> np.ndarray:  ### HJ : slope
+                            slope: np.ndarray = None,
+                            track_3d_params: dict = None) -> np.ndarray:  ### HJ : g_tilde
 
     # ------------------------------------------------------------------------------------------------------------------
     # PREPARATIONS -----------------------------------------------------------------------------------------------------
@@ -446,6 +466,17 @@ def __solver_fb_acc_profile(p_ggv: np.ndarray,
     ### HJ : default slope to zeros if not provided
     if slope is None:
         slope = np.zeros(no_points)
+
+    ### HJ : flipud track_3d_params arrays for backward pass
+    if track_3d_params is not None:
+        if backwards:
+            t3d_mod = {}
+            for key, val in track_3d_params.items():
+                t3d_mod[key] = np.flipud(val) if isinstance(val, np.ndarray) else val
+        else:
+            t3d_mod = track_3d_params
+    else:
+        t3d_mod = None
 
     # check for reversed direction
     if backwards:
@@ -459,7 +490,7 @@ def __solver_fb_acc_profile(p_ggv: np.ndarray,
         radii_mod = radii
         el_lengths_mod = el_lengths
         mu_mod = mu
-        slope_mod = slope  ### HJ : slope
+        slope_mod = slope
         mode = 'accel_forw'
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -501,7 +532,9 @@ def __solver_fb_acc_profile(p_ggv: np.ndarray,
                                            drag_coeff=drag_coeff,
                                            m_veh=m_veh,
                                            b_ax_max_machines=b_ax_max_machines,
-                                           slope=slope_mod[i])  ### HJ : slope at point i
+                                           slope=slope_mod[i],
+                                           track_3d_params=t3d_mod,
+                                           point_idx=i)  ### HJ : g_tilde at point i
 
             vx_possible_next = math.sqrt(math.pow(vx_profile[i], 2) + 2 * ax_possible_cur * el_lengths_mod[i])
 
@@ -526,7 +559,9 @@ def __solver_fb_acc_profile(p_ggv: np.ndarray,
                                                     drag_coeff=drag_coeff,
                                                     m_veh=m_veh,
                                                     b_ax_max_machines=b_ax_max_machines,
-                                                    slope=slope_mod[i + 1])  ### HJ : slope at point i+1
+                                                    slope=slope_mod[i + 1],
+                                                    track_3d_params=t3d_mod,
+                                                    point_idx=i + 1)  ### HJ : g_tilde at point i+1
 
                     vx_tmp = math.sqrt(math.pow(vx_profile[i], 2) + 2 * ax_possible_next * el_lengths_mod[i])
 
@@ -567,7 +602,9 @@ def calc_ax_poss(vx_start: float,
                  b_ax_max_machines: np.ndarray,
                  ax_max_machines: np.ndarray = None,
                  mode: str = 'accel_forw',
-                 slope: float = 0.0) -> float:  ### HJ : slope (rad, uphill positive)
+                 slope: float = 0.0,
+                 track_3d_params: dict = None,
+                 point_idx: int = 0) -> float:  ### HJ : g_tilde with full 3D params
     """
     This function returns the possible longitudinal acceleration in the current step/point.
 
@@ -618,12 +655,39 @@ def calc_ax_poss(vx_start: float,
     # CONSIDER TIRE POTENTIAL ------------------------------------------------------------------------------------------
     # ------------------------------------------------------------------------------------------------------------------
 
-    ### HJ : Effect 2 — grip scaling by cos(slope) due to reduced normal load on slope
-    grip_scale = math.cos(slope)
+    ### HJ : g_tilde — effective gravity considering 3D terrain effects
+    ### Based on TUMRT calc_apparent_accelerations (track3D.py L860)
+    ### g_tilde = fmax(w_dot - V_omega + (omega_x² - omega_y²)*h + g*cos(mu)*cos(phi), 0)
+    g = 9.81
+
+    if track_3d_params is not None:
+        i = point_idx
+        mu_t = track_3d_params['mu'][i]
+        phi_t = track_3d_params['phi'][i]
+        omega_x_t = track_3d_params['omega_x'][i]
+        omega_y_t = track_3d_params['omega_y'][i]
+        h_t = track_3d_params['h']
+
+        # V_omega: velocity x road rotation interaction (dominant term for convex/concave terrain)
+        # V_omega = (-Omega_x*sin(chi) + Omega_y*cos(chi)) * s_dot * V
+        # chi ≈ 0 (raceline close to centerline direction), s_dot ≈ V
+        V_omega = omega_y_t * vx_start * vx_start
+
+        # centrifugal: (omega_x² - omega_y²) * h
+        centrifugal = (omega_x_t**2 - omega_y_t**2) * h_t * vx_start**2
+
+        # w_dot ≈ 0 (requires n and Omega_x, both small for no-bank tracks)
+
+        # g_tilde = fmax(w_dot - V_omega + centrifugal + g*cos(mu)*cos(phi), 0)
+        g_tilde = max(-V_omega + centrifugal + g * math.cos(mu_t) * math.cos(phi_t), 0.0)
+        grip_scale = g_tilde / g
+    else:
+        # fallback: simple cos(slope) scaling
+        grip_scale = math.cos(slope)
 
     # calculate possible and used accelerations (considering tires)
-    ax_max_tires = mu * np.interp(vx_start, ggv[:, 0], ggv[:, 1]) * grip_scale  ### HJ : scaled by cos(μ)
-    ay_max_tires = mu * np.interp(vx_start, ggv[:, 0], ggv[:, 2]) * grip_scale  ### HJ : scaled by cos(μ)
+    ax_max_tires = mu * np.interp(vx_start, ggv[:, 0], ggv[:, 1]) * grip_scale
+    ay_max_tires = mu * np.interp(vx_start, ggv[:, 0], ggv[:, 2]) * grip_scale
     ay_used = math.pow(vx_start, 2) / radius
 
     # during forward acceleration and backward deceleration ax_max_tires must be considered positive, during forward
@@ -663,8 +727,11 @@ def calc_ax_poss(vx_start: float,
     # calculate equivalent longitudinal acceleration of drag force at the current speed
     ax_drag = -math.pow(vx_start, 2) * drag_coeff / m_veh
 
-    ### HJ : Effect 1 — longitudinal gravity force: uphill (slope>0) resists acceleration, downhill helps
-    ax_gravity = -9.81 * math.sin(slope)
+    ### HJ : Effect 1 — longitudinal gravity force
+    ### slope convention: slope < 0 = uphill, slope > 0 = downhill
+    ### uphill: sin(slope) < 0 -> ax_gravity < 0 (resists acceleration)
+    ### downhill: sin(slope) > 0 -> ax_gravity > 0 (helps acceleration)
+    ax_gravity = 9.81 * math.sin(slope)
 
     # drag and gravity reduce the possible acceleration in the forward case and increase it in the backward case
     if mode in ['accel_forw', 'decel_forw']:

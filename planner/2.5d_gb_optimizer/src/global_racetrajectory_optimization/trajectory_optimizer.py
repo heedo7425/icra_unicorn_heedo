@@ -406,6 +406,22 @@ def trajectory_optimizer(input_path: str,
         print("INFO [2.5D]: slope range: [%.3f, %.3f] rad (%.1f ~ %.1f deg)" %
               (np.min(slope), np.max(slope), np.degrees(np.min(slope)), np.degrees(np.max(slope))))
         print("INFO [2.5D]: z range: [%.3f, %.3f] m" % (np.min(z_fine), np.max(z_fine)))
+
+        ### HJ : interpolate phi from CSV (road surface roll, doesn't change with lateral offset)
+        ### omega and track_3d_params are computed after kappa calculation below
+        csv_3d_raw = np.genfromtxt(file_paths["track_file"], comments='#', delimiter=',')
+        if np.isnan(csv_3d_raw[0, 0]):
+            csv_3d_raw = csv_3d_raw[1:]
+        if np.allclose(csv_3d_raw[0, 1:3], csv_3d_raw[-1, 1:3], atol=1e-6):
+            csv_3d_raw = csv_3d_raw[:-1]
+        if csv_3d_raw.shape[1] == 15:
+            s_csv = csv_3d_raw[:, 0]
+            phi_csv = csv_3d_raw[:, 6]
+            s_csv_norm = s_csv / s_csv[-1]
+            s_rl_norm = s_points_opt_interp / s_points_opt_interp[-1]
+            phi_rl = np.interp(s_rl_norm, s_csv_norm, phi_csv)
+        else:
+            phi_rl = np.zeros_like(slope)
     else:
         raceline_interp, a_opt, coeffs_x_opt, coeffs_y_opt, spline_inds_opt_interp, t_vals_opt_interp, \
             s_points_opt_interp, spline_lengths_opt, el_lengths_opt_interp = tph.create_raceline.\
@@ -426,6 +442,54 @@ def trajectory_optimizer(input_path: str,
                           coeffs_y=coeffs_y_opt,
                           ind_spls=spline_inds_opt_interp,
                           t_spls=t_vals_opt_interp)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # COMPUTE 3D TRACK PARAMETERS FOR g_tilde (if 3D track) -----------------------------------------------------------
+    # ------------------------------------------------------------------------------------------------------------------
+
+    ### HJ : compute omega and d_omega from raceline data via Euler->body Jacobian
+    ### J(mu, phi) . [dphi/ds, dmu/ds, dtheta/ds]^T = [omega_x, omega_y, omega_z]^T
+    if has_z:
+        mu_rl = slope
+        dmu_ds_rl = np.gradient(mu_rl, s_points_opt_interp)
+        dphi_ds_rl = np.gradient(phi_rl, s_points_opt_interp)
+        dtheta_ds_rl = kappa_opt  # dtheta/ds = curvature
+
+        # full Jacobian (including phi)
+        omega_x_rl = dphi_ds_rl - np.sin(mu_rl) * dtheta_ds_rl
+        omega_y_rl = np.cos(phi_rl) * dmu_ds_rl + np.cos(mu_rl) * np.sin(phi_rl) * dtheta_ds_rl
+        omega_z_rl = -np.sin(phi_rl) * dmu_ds_rl + np.cos(mu_rl) * np.cos(phi_rl) * dtheta_ds_rl
+
+        # d_omega: derivative of omega w.r.t. s
+        d_omega_x_rl = np.gradient(omega_x_rl, s_points_opt_interp)
+        d_omega_y_rl = np.gradient(omega_y_rl, s_points_opt_interp)
+        d_omega_z_rl = np.gradient(omega_z_rl, s_points_opt_interp)
+
+        # cog height from vehicle params
+        h_cog = pars["veh_params"].get("cog_z", 0.074)
+
+        track_3d_params = {
+            'mu': mu_rl,
+            'phi': phi_rl,
+            'omega_x': omega_x_rl,
+            'omega_y': omega_y_rl,
+            'omega_z': omega_z_rl,
+            'd_omega_x': d_omega_x_rl,
+            'd_omega_y': d_omega_y_rl,
+            'd_omega_z': d_omega_z_rl,
+            'dmu_ds': dmu_ds_rl,
+            'h': h_cog,
+        }
+
+        print("INFO [2.5D g_tilde]: computed from raceline (K=%d pts)" % len(mu_rl))
+        print("INFO [2.5D g_tilde]: mu range: [%.4f, %.4f] rad" % (mu_rl.min(), mu_rl.max()))
+        print("INFO [2.5D g_tilde]: phi range: [%.6f, %.6f] rad" % (phi_rl.min(), phi_rl.max()))
+        print("INFO [2.5D g_tilde]: omega_x: [%.6f, %.6f]" % (omega_x_rl.min(), omega_x_rl.max()))
+        print("INFO [2.5D g_tilde]: omega_y: [%.6f, %.6f]" % (omega_y_rl.min(), omega_y_rl.max()))
+        print("INFO [2.5D g_tilde]: omega_z: [%.6f, %.6f]" % (omega_z_rl.min(), omega_z_rl.max()))
+        print("INFO [2.5D g_tilde]: h (cog_z): %.4f m" % h_cog)
+    else:
+        track_3d_params = None
 
     # ------------------------------------------------------------------------------------------------------------------
     # CALCULATE VELOCITY AND ACCELERATION PROFILE ----------------------------------------------------------------------
@@ -464,7 +528,7 @@ def trajectory_optimizer(input_path: str,
         if len(small_el) > 0:
             print(f"WARNING: Found {len(small_el)} very small el_lengths at indices: {small_el}")
 
-        ### HJ : pass slope array to vel_planner_25d for 2.5D gravity correction
+        ### HJ : pass slope + track_3d_params for full g_tilde correction
         vx_profile_opt = calc_vel_profile(ggv=ggv,
                                           ax_max_machines=ax_max_machines,
                                           b_ax_max_machines=b_ax_max_machines,
@@ -476,7 +540,8 @@ def trajectory_optimizer(input_path: str,
                                           dyn_model_exp=pars["vel_calc_opts"]["dyn_model_exp"],
                                           drag_coeff=pars["veh_params"]["dragcoeff"],
                                           m_veh=pars["veh_params"]["mass"],
-                                          slope=slope)
+                                          slope=slope,
+                                          track_3d_params=track_3d_params)
 
     # calculate longitudinal acceleration profile
     vx_profile_opt_cl = np.append(vx_profile_opt, vx_profile_opt[0])
