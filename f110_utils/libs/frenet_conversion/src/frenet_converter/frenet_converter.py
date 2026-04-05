@@ -220,8 +220,10 @@ class FrenetConverter:
             # find nearest waypoint among height-filtered candidates
             nearest_idx = np.argmin(d_sq)
 
-            if d_sq[nearest_idx] == np.inf:
-                # fallback: all filtered out, use simple 3D nearest
+            ### HJ : fallback if all filtered out OR nearest > 2m
+            max_valid_dist_sq = 2.0 * 2.0  # 2m threshold
+            if d_sq[nearest_idx] == np.inf or d_sq[nearest_idx] > max_valid_dist_sq:
+                # fallback: use simple 3D nearest
                 result_indices[qi] = np.argmin(d_sq_all)
                 continue
 

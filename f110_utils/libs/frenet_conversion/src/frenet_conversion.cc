@@ -311,9 +311,11 @@ namespace frenet_conversion{
           break;
         }
       }
-      // ### HJ : fallback — if all filters failed, use simple 3D nearest
-      if (min_dist == INFINITY) {
-        ROS_WARN_THROTTLE(1.0, "[FrenetConverter] All filters failed, using simple 3D nearest");
+      // ### HJ : fallback — if all filters failed or result too far, use simple 3D nearest
+      double max_valid_dist_sq = 2.0 * 2.0;  // 2m threshold
+      if (min_dist == INFINITY || min_dist > max_valid_dist_sq) {
+        ROS_WARN_THROTTLE(1.0, "[FrenetConverter] Filters failed or dist>2m (%.2fm), using simple 3D nearest",
+                          std::sqrt(min_dist));
         for (int i = 0; i < (int)wpt_array_.size(); i++) {
           double d_squared = std::pow(x - wpt_array_[i].x_m, 2) +
                              std::pow(y - wpt_array_[i].y_m, 2) +
