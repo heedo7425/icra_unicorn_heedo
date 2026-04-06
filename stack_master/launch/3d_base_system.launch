@@ -18,6 +18,8 @@
     doc="Whether to use built-in VESC IMU or Microstrain" />
   <arg name="enable_smart_scaling" default="True"
     doc="Enable smart waypoints velocity scaling" />
+  <arg name="use_local_racing_line" default="false"
+    doc="Enable event-triggered local racing line replanning" />
 
   <param name="map"             value="$(arg map)" />
   <param name="racecar_version" value="$(arg racecar_version)" />
@@ -72,7 +74,26 @@
   <node pkg="sector_tuner" type="sector_server.py" name="dyn_sector_speed" output="screen" />
   <node pkg="sector_tuner" type="vel_scaler_node.py" name="velocity_scaler" output="screen">
     <param name="enable_smart_scaling" value="$(arg enable_smart_scaling)" />
+    <!-- ### IY : remap when local racing line mux is active -->
+    <remap if="$(arg use_local_racing_line)"
+           from="/global_waypoints_scaled" to="/global_waypoints_scaled_raw" />
   </node>
+
+  <!-- ### IY : Local racing line mux node (event-triggered) -->
+  <group if="$(arg use_local_racing_line)">
+    <node pkg="global_line_3d" type="local_raceline_mux_node.py"
+          name="local_raceline_mux" output="screen">
+      <param name="d_threshold" value="0.3" />
+      <param name="v_threshold" value="1.5" />
+      <param name="convergence_d_threshold" value="0.1" />
+      <param name="convergence_v_threshold" value="0.5" />
+      <param name="optimization_horizon" value="10.0" />
+      <param name="N_steps" value="30" />
+      <param name="gg_mode" value="diamond" />
+      <param name="safety_distance" value="0.05" />
+      <param name="smoothed_track_file" value="gazebo_wall_2_3d_smoothed.csv" />
+    </node>
+  </group>
 
   <!-- Overtaking sector server -->
   <rosparam ns="ot_map_params" command="load"

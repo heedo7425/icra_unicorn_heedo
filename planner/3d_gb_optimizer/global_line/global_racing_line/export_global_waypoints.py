@@ -172,57 +172,58 @@ def export_waypoints():
         y_raw[k] = float(cart[1])
         z_raw[k] = float(cart[2])
 
-    # ── Step 2: 레이싱라인 실제 arc length 계산 ──
-    ds_real = np.sqrt(np.diff(x_raw)**2 + np.diff(y_raw)**2 + np.diff(z_raw)**2)
-    arc_raw = np.zeros(n_points)
-    arc_raw[1:] = np.cumsum(ds_real)
-    total_length = arc_raw[-1]
-
     ### HJ : CubicSpline 보간 (C² 연속, 기존 np.interp 선형보간 대체)
-    # ── Step 3: 실제 arc length 기준 등간격 재보간 (CubicSpline) ──
+    ### IY : periodic CubicSpline으로 폐곡선 연결부 oscillation 제거
+    # ── Step 3: periodic CubicSpline + 등간격 0.1m 재보간 ──
     spacing = params['waypoint_spacing']
-    n_new = int(total_length / spacing) + 1
-    arc_new = np.linspace(0, total_length, n_new)
 
-    # 폐곡선: 끝점을 시작점과 일치시켜 periodic BC 적용
-    # periodic BC → 시작/끝에서 1,2차 미분 연속 (C² 연속)
-    # arc_cl = np.append(arc_raw, total_length)  # BUG: arc_raw[-1] == total_length → 중복값 → strictly increasing 위반
-    ds_close = np.linalg.norm([x_raw[0] - x_raw[-1],
-                               y_raw[0] - y_raw[-1],
-                               z_raw[0] - z_raw[-1]])
-    arc_cl = np.append(arc_raw, total_length + ds_close)
-    x_cl = np.append(x_raw, x_raw[0])
-    y_cl = np.append(y_raw, y_raw[0])
-    z_cl = np.append(z_raw, z_raw[0])
+    # 중복 끝점 제거 (raw[-1] == raw[0])
+    x_r, y_r, z_r = x_raw[:-1], y_raw[:-1], z_raw[:-1]
+    v_r = v_opt[:-1]
+    ax_r = ax_opt[:-1]
+    s_opt_r = s_opt[:-1]
+    n_opt_r = n_opt[:-1]
 
-    cs_x = CubicSpline(arc_cl, x_cl, bc_type='periodic')
-    cs_y = CubicSpline(arc_cl, y_cl, bc_type='periodic')
-    cs_z = CubicSpline(arc_cl, z_cl, bc_type='periodic')
+    # arc length 계산 (마지막→첫 점 closure gap 포함)
+    ds_r = np.sqrt(np.diff(x_r)**2 + np.diff(y_r)**2 + np.diff(z_r)**2)
+    ds_close = np.sqrt((x_r[0] - x_r[-1])**2 + (y_r[0] - y_r[-1])**2 + (z_r[0] - z_r[-1])**2)
+    arc_r = np.zeros(len(x_r) + 1)
+    arc_r[1:-1] = np.cumsum(ds_r)
+    arc_r[-1] = arc_r[-2] + ds_close  # 한 바퀴 전체
+    total_loop = arc_r[-1]
+
+    # periodic CubicSpline (첫=끝 값 동일, C² 연속 보장)
+    cs_x = CubicSpline(arc_r, np.append(x_r, x_r[0]), bc_type='periodic')
+    cs_y = CubicSpline(arc_r, np.append(y_r, y_r[0]), bc_type='periodic')
+    cs_z = CubicSpline(arc_r, np.append(z_r, z_r[0]), bc_type='periodic')
+
+    # 등간격 리샘플링 (endpoint=False: 폐곡선이므로 마지막 점 ≠ 시작점)
+    n_new = round(total_loop / spacing)
+    arc_new = np.linspace(0, total_loop, n_new, endpoint=False)
 
     x_new = cs_x(arc_new)
     y_new = cs_y(arc_new)
     z_new = cs_z(arc_new)
 
-    # v, ax, s_opt, n_opt는 선형보간 유지 (스플라인 필요 없음)
-    v_new = np.interp(arc_new, arc_raw, v_opt)
-    ax_new = np.interp(arc_new, arc_raw, ax_opt)
-    s_opt_new = np.interp(arc_new, arc_raw, s_opt)
-    n_opt_new = np.interp(arc_new, arc_raw, n_opt)
+    # v, ax, s_opt, n_opt 보간 (arc length 기준, 선형보간)
+    arc_r_inner = arc_r[:-1]  # 중복 끝점 제외한 arc values
+    v_new = np.interp(arc_new, arc_r_inner, v_r, period=total_loop)
+    ax_new = np.interp(arc_new, arc_r_inner, ax_r, period=total_loop)
+    s_opt_new = np.interp(arc_new, arc_r_inner, s_opt_r, period=total_loop)
+    n_opt_new = np.interp(arc_new, arc_r_inner, n_opt_r, period=total_loop)
 
-    # ── Step 4: heading, kappa 계산 (스플라인 미분으로 해석적 계산) ──
-    dx_ds = cs_x(arc_new, 1)  # 1차 미분: dx/ds
-    dy_ds = cs_y(arc_new, 1)  # 1차 미분: dy/ds
-    psi = np.arctan2(dy_ds, dx_ds)
+    # ── Step 4: heading, kappa, pitch 계산 (스플라인 미분) ──
+    dx_dt = cs_x(arc_new, 1)
+    dy_dt = cs_y(arc_new, 1)
+    psi = np.arctan2(dy_dt, dx_dt)
 
-    # curvature: κ = (x'y'' - y'x'') / (x'² + y'²)^(3/2)
-    d2x_ds2 = cs_x(arc_new, 2)
-    d2y_ds2 = cs_y(arc_new, 2)
-    kappa = (dx_ds * d2y_ds2 - dy_ds * d2x_ds2) / (dx_ds**2 + dy_ds**2)**1.5
+    d2x_dt2 = cs_x(arc_new, 2)
+    d2y_dt2 = cs_y(arc_new, 2)
+    kappa = (dx_dt * d2y_dt2 - dy_dt * d2x_dt2) / (dx_dt**2 + dy_dt**2)**1.5
 
-    # pitch (mu_rad): slope angle from raceline xyz directly
-    dz_ds = cs_z(arc_new, 1)
-    mu = -np.arcsin(np.clip(dz_ds / np.sqrt(dx_ds**2 + dy_ds**2 + dz_ds**2), -1.0, 1.0))
-    ### HJ : end
+    dz_dt = cs_z(arc_new, 1)
+    mu = -np.arcsin(np.clip(dz_dt / np.sqrt(dx_dt**2 + dy_dt**2 + dz_dt**2), -1.0, 1.0))
+    ### IY : end
 
     # ── Step 5: 트랙 경계 거리 계산 + waypoints 생성 ──
     waypoints = []
@@ -292,6 +293,12 @@ def export_waypoints():
             'wpnts': waypoints,
         },
         'trackbounds_markers': {'markers': trackbounds_markers},
+        ### IY : centerline 기준 s, n (local racing line solver 초기 guess용)
+        ### Wpnt msg에 없는 필드이므로 별도 섹션으로 저장
+        'centerline_ref': {
+            's_center_m': [float(s_opt_new[k]) for k in range(n_new)],
+            'n_center_m': [float(n_opt_new[k]) for k in range(n_new)],
+        },
     }
 
     with open(output_path, 'w') as f:
@@ -302,7 +309,7 @@ def export_waypoints():
     print(f'입력: {raceline_path}')
     print(f'출력: {output_path}')
     print(f'  waypoints: {n_new}개 (spacing={spacing}m)')
-    print(f'  실제 총 경로 길이: {total_length:.3f}m')
+    print(f'  실제 총 경로 길이: {total_loop:.3f}m')
     print(f'  laptime: {laptime:.3f}s')
     print(f'  v: [{v_new.min():.2f}, {v_new.max():.2f}] m/s')
     print(f'  z: [{z_new.min():.3f}, {z_new.max():.3f}] m')

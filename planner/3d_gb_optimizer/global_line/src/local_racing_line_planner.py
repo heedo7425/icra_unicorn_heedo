@@ -216,7 +216,8 @@ class LocalRacinglinePlanner():
             ay: float,
             safety_distance: float,
             prev_solution: dict,
-            V_min: float = 5.0,
+            ### IY : V_min 5.0→0.5 (RC car v_max=12, 원래 dallaraAV21용 값이었음)
+            V_min: float = 0.5,
             V_max: float = 1e3
     ):
         V_max = min(self.vehicle_params['v_max'], V_max)
@@ -263,11 +264,15 @@ class LocalRacinglinePlanner():
         horizon = self.ocp.solver_options.tf
 
         if prev_solution:
-            s_prev = np.unwrap(
-                prev_solution['s'],
-                discont=self.track_handler.s[-1] / 2.0,
-                period=self.track_handler.s[-1]
-            )
+            ### IY : np.unwrap period arg는 numpy>=1.21 — 수동 처리로 호환성 확보
+            s_prev = prev_solution['s'].copy()
+            track_len = self.track_handler.s[-1]
+            for i in range(1, len(s_prev)):
+                diff = s_prev[i] - s_prev[i - 1]
+                if diff < -track_len / 2.0:
+                    s_prev[i:] += track_len
+                elif diff > track_len / 2.0:
+                    s_prev[i:] -= track_len
             if s < s_prev[0]:
                 if s < self.track_handler.s[-1] / 2.0:
                     s += self.track_handler.s[-1]
