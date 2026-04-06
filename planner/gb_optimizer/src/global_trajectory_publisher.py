@@ -4,7 +4,7 @@ import rospy
 from rospy import loginfo
 from std_msgs.msg import String, Float32
 from f110_msgs.msg import WpntArray
-from visualization_msgs.msg import MarkerArray
+from visualization_msgs.msg import MarkerArray, Marker
 
 from readwrite_global_waypoints import read_global_waypoints
 
@@ -30,8 +30,11 @@ class GlobalRepublisher:
         self.glb_wpnts_pub = rospy.Publisher('global_waypoints', WpntArray, queue_size=10)
         self.glb_markers_pub = rospy.Publisher('global_waypoints/markers', MarkerArray, queue_size=10)
         self.vis_track_bnds = rospy.Publisher('trackbounds/markers', MarkerArray, queue_size=10)
-        ### HJ : velocity markers publisher
+        ### HJ : velocity markers publisher + subscriber (so vel_planner updates are remembered)
         self.glb_vel_markers_pub = rospy.Publisher('global_waypoints/vel_markers', MarkerArray, queue_size=10)
+        rospy.Subscriber('/global_waypoints/vel_markers', MarkerArray, self.glb_vel_markers_cb)
+        ### HJ : tuned velocity markers — built from latest global_waypoints velocity
+        self.glb_vel_markers_tuned_pub = rospy.Publisher('global_waypoints/vel_markers_tuned', MarkerArray, queue_size=10)
         ### HJ : end
 
         # shortest_path
@@ -111,6 +114,10 @@ class GlobalRepublisher:
     def lattice_cb(self, data):
         self.graph_lattice = data
 
+    ### HJ : vel_markers callback so velocity_planner updates are remembered
+    def glb_vel_markers_cb(self, data):
+        self.glb_vel_markers = data
+
     def global_republisher(self):
         rate = rospy.Rate(0.5)  # in Hertz
         while not rospy.is_shutdown():
@@ -135,6 +142,27 @@ class GlobalRepublisher:
             ### HJ : publish velocity markers
             if self.glb_vel_markers is not None:
                 self.glb_vel_markers_pub.publish(self.glb_vel_markers)
+            ### HJ : build and publish tuned vel_markers from current global_waypoints velocity
+            if self.glb_wpnts is not None:
+                tuned_markers = MarkerArray()
+                scale_factor = 0.1317
+                for i, wp in enumerate(self.glb_wpnts.wpnts):
+                    m = Marker()
+                    m.header.frame_id = 'map'
+                    m.type = m.CYLINDER
+                    height = wp.vx_mps * scale_factor
+                    m.scale.x = 0.1
+                    m.scale.y = 0.1
+                    m.scale.z = height
+                    m.color.a = 0.5  # semi-transparent
+                    m.color.b = 1.0  # blue
+                    m.id = i
+                    m.pose.position.x = wp.x_m
+                    m.pose.position.y = wp.y_m
+                    m.pose.position.z = height / 2.0
+                    m.pose.orientation.w = 1
+                    tuned_markers.markers.append(m)
+                self.glb_vel_markers_tuned_pub.publish(tuned_markers)
             ### HJ : end
 
             rate.sleep()
