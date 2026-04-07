@@ -125,11 +125,13 @@ void Detect::pathCb(const f110_msgs::WpntArray::ConstPtr &msg)
     d_left_array_.push_back(wp.d_left - boundaries_inflation_);
 
     geometry_msgs::Point p;
-    frenet_converter_.GetGlobalPoint(wp.s_m, -wp.d_right + boundaries_inflation_, &p.x, &p.y);
+    // ### HJ : add z output for 3D frenet API (2D obstacle, z unused)
+    frenet_converter_.GetGlobalPoint(wp.s_m, -wp.d_right + boundaries_inflation_, &p.x, &p.y, &p.z);
     p.z = 0;
     points.push_back(p);
 
-    frenet_converter_.GetGlobalPoint(wp.s_m, wp.d_left - boundaries_inflation_, &p.x, &p.y);
+    frenet_converter_.GetGlobalPoint(wp.s_m, wp.d_left - boundaries_inflation_, &p.x, &p.y, &p.z);
+    p.z = 0;
     points.push_back(p);
   }
 
@@ -629,7 +631,8 @@ void Detect::publishObstaclesMessage()
   for (size_t i = 0; i < tracked_obstacles_.size(); i++) {
     double s,d;
     int idx_i;
-    frenet_converter_.GetFrenetPoint(tracked_obstacles_[i].center_x, tracked_obstacles_[i].center_y, \
+    // ### HJ : add z=0.0 for 3D frenet API (2D obstacle)
+    frenet_converter_.GetFrenetPoint(tracked_obstacles_[i].center_x, tracked_obstacles_[i].center_y, 0.0, \
                                                                             &s, &d, &idx_i, true);
 
     f110_msgs::Obstacle obsMsg;
@@ -681,7 +684,8 @@ void Detect::publishObstaclesMessage()
     if (fixed_path_available_ && fixed_converter_initialized_) {
       double s_fixed, d_fixed;
       int idx_fixed;
-      fixed_frenet_converter_.GetFrenetPoint(tracked_obstacles_[i].center_x, tracked_obstacles_[i].center_y,
+      // ### HJ : add z=0.0 for 3D frenet API (2D obstacle)
+      fixed_frenet_converter_.GetFrenetPoint(tracked_obstacles_[i].center_x, tracked_obstacles_[i].center_y, 0.0,
                                              &s_fixed, &d_fixed, &idx_fixed, true);
 
       obsMsg.s_start_fixed = s_fixed - tracked_obstacles_[i].size / 2.0;

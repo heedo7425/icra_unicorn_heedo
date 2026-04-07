@@ -29,7 +29,7 @@ cd "$ROOT_SCRIPT_DIR/third_party"
 
 if [ ! -d "Instrumentor" ]; then
   echo "${YELLOW}Cloning and compiling the source code${NORMAL}"
-  git clone --branch main --depth 1 git@github.com:mattiapzz/Instrumentor.git
+  git clone --branch main --depth 1 https://github.com/mattiapzz/Instrumentor.git
   cd Instrumentor 
   echo "${YELLOW}Compiling and installing Instrumentor${NORMAL}"
   mkdir build
