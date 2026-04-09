@@ -1,6 +1,13 @@
 import numpy as np
 import math
 import trajectory_planning_helpers.conv_filt
+try:
+    import rospy
+    HAS_ROSPY = True
+except ImportError:
+    HAS_ROSPY = False
+
+_g_friction_cache = None  # module-level friction cache
 
 
 def calc_vel_profile(ax_max_machines: np.ndarray,
@@ -186,6 +193,35 @@ def calc_vel_profile(ax_max_machines: np.ndarray,
     ### HJ : default slope to zeros if not provided (pure 2D behavior)
     if slope is None:
         slope = np.zeros(kappa.size)
+
+    # Cache friction sector params once (avoid repeated rosparam calls)
+    _friction_cache = None
+    if HAS_ROSPY:
+        try:
+            n_sec = rospy.get_param('/friction_map_params/n_sectors', 0)
+            if n_sec > 0:
+                _friction_cache = {
+                    'global_friction_limit': rospy.get_param('/friction_map_params/global_friction_limit', 1.0),
+                    'n_sectors': n_sec,
+                    'sectors': []
+                }
+                for si in range(n_sec):
+                    _friction_cache['sectors'].append({
+                        'start': rospy.get_param(f'/friction_map_params/Sector{si}/start', 0),
+                        'end': rospy.get_param(f'/friction_map_params/Sector{si}/end', 0),
+                        's_start': rospy.get_param(f'/friction_map_params/Sector{si}/s_start', -1.0),
+                        's_end': rospy.get_param(f'/friction_map_params/Sector{si}/s_end', -1.0),
+                        'friction': rospy.get_param(f'/friction_map_params/Sector{si}/friction', 1.0),
+                    })
+        except Exception:
+            pass
+
+    # Store friction cache as module-level for access from calc_ax_poss
+    # regardless of whether track_3d_params is None or not
+    global _g_friction_cache
+    _g_friction_cache = _friction_cache
+    if track_3d_params is not None:
+        track_3d_params['_friction_cache'] = _friction_cache
 
     # call solver
     if not closed:
@@ -406,6 +442,17 @@ def __solver_fb_closed(p_ggv: np.ndarray,
             ### HJ : nonlinear grip scaling (same as calc_ax_poss)
             grip_scale_i = math.pow(g_tilde_i / 9.81, grip_scale_exp) if g_tilde_i > 0 else 0.0
 
+            # Apply per-waypoint friction scaling from cached friction params (clamp by limit)
+            fc = track_3d_params.get('_friction_cache', None)
+            if fc is not None:
+                fric_limit = fc.get('global_friction_limit', 1.0)
+                fric = 1.0
+                for sec in fc['sectors']:
+                    if sec['start'] <= i <= sec['end']:
+                        fric = min(sec['friction'], fric_limit)
+                        break
+                grip_scale_i *= fric
+
             # ay_max with grip_scale, ax_max WITHOUT grip_scale (for diamond ratio)
             ay_max_i = mu_mean * np.interp(vx_i, p_ggv[0, :, 0], p_ggv[0, :, 2]) * grip_scale_i
             ax_max_raw = mu_mean * np.interp(vx_i, p_ggv[0, :, 0], p_ggv[0, :, 1])  # original, no grip_scale
@@ -431,6 +478,21 @@ def __solver_fb_closed(p_ggv: np.ndarray,
                 if dmu_i > 1e-4:
                     v_gtilde_max = math.sqrt(9.81 * math.cos(mu_i) / dmu_i)
                     vx_profile[i] = min(vx_profile[i], v_gtilde_max)
+
+    # Friction-only Vmax correction (applies even for 2D, when track_3d_params is None)
+    if _g_friction_cache is not None and track_3d_params is None:
+        fric_limit = _g_friction_cache.get('global_friction_limit', 1.0)
+        for i in range(len(vx_profile)):
+            fric = 1.0
+            for sec in _g_friction_cache['sectors']:
+                if sec['start'] <= i <= sec['end']:
+                    fric = min(sec['friction'], fric_limit)
+                    break
+            if fric < 1.0 and radii[i] < 1e4:
+                ay_max_fric = mu_mean * np.interp(vx_profile[i], p_ggv[0, :, 0], p_ggv[0, :, 2]) * fric
+                if ay_max_fric > 0:
+                    v_lat = math.sqrt(ay_max_fric * radii[i])
+                    vx_profile[i] = min(vx_profile[i], v_lat)
 
     # Pre-slope braking: Vmax from margin before slope entry through slope end
     if track_3d_params is not None:
@@ -694,7 +756,8 @@ def calc_ax_poss(vx_start: float,
                  slope: float = 0.0,
                  track_3d_params: dict = None,
                  point_idx: int = 0,
-                 grip_scale_exp: float = 1.0) -> float:  ### HJ : g_tilde + nonlinear grip
+                 grip_scale_exp: float = 1.0,
+                 s_m: float = -1.0) -> float:  # s position for friction sector lookup (-1=use point_idx)
     """
     This function returns the possible longitudinal acceleration in the current step/point.
 
@@ -775,6 +838,22 @@ def calc_ax_poss(vx_start: float,
     else:
         # fallback: simple cos(slope) scaling with nonlinear exponent
         grip_scale = math.pow(math.cos(slope), grip_scale_exp)
+
+    # Apply per-waypoint friction scaling from cached friction params (clamp by global limit)
+    fc = _g_friction_cache
+    if fc is not None:
+        fric_limit = fc.get('global_friction_limit', 1.0)
+        fric = 1.0
+        for sec in fc['sectors']:
+            if s_m >= 0 and sec['s_start'] >= 0:
+                if sec['s_start'] <= s_m <= sec['s_end']:
+                    fric = min(sec['friction'], fric_limit)
+                    break
+            else:
+                if sec['start'] <= point_idx <= sec['end']:
+                    fric = min(sec['friction'], fric_limit)
+                    break
+        grip_scale *= fric
 
     ### HJ : ax_tilde constraint inside Kamm circle (3d_gb_optimizer와 동일)
     ###

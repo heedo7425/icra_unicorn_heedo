@@ -80,8 +80,9 @@ class VelocityPlanner:
         rospy.Subscriber("/planner/avoidance/smart_static_otwpnts", OTWpntArray, self.smart_static_wpnts_callback)
 
         # Dynamic reconfigure server (rqt real-time tuning)
+        self._init_phase = True               # block all changed=True during init
         self.dyn_reconfig_initialized = False  # skip first callback (Server auto-calls on init)
-        self.dyn_reconfig_changed = False      # True after first rqt change
+        self.dyn_reconfig_changed = False
         self.dyn_srv = Server(VelPlanner3DConfig, self._dyn_reconfig_callback)
 
         # Push yaml values to dynamic_reconfigure server (overrides cfg defaults)
@@ -97,8 +98,22 @@ class VelocityPlanner:
             'slope_brake_margin': self.slope_brake_margin,
             'slope_brake_vmax': self.slope_brake_vmax,
         })
-        # Reset changed flag — don't publish until user actually changes rqt
         self.dyn_reconfig_changed = False
+
+        # Friction sector subscriber
+        from dynamic_reconfigure.msg import Config as DynConfig
+        rospy.Subscriber("/dyn_sector_friction/parameter_updates", DynConfig, self.friction_changed_cb)
+
+        # Init complete — now allow rqt changes to trigger recalculation
+        self._init_phase = False
+        self.dyn_reconfig_changed = False
+
+    def friction_changed_cb(self, msg):
+        """Friction sector changed — trigger vel_planner recalculation"""
+        if not hasattr(self, '_friction_first_skipped'):
+            self._friction_first_skipped = True
+            return
+        self.dyn_reconfig_changed = True
 
     def _load_vel_planner_params(self):
         """Load vel planner params from yaml file"""
@@ -162,8 +177,9 @@ class VelocityPlanner:
             rospy.loginfo("[VelPlanner3D] Dynamic reconfigure initialized (no publish)")
             return config
 
-        # Mark as changed so wpnts_callback starts publishing
-        self.dyn_reconfig_changed = True
+        # Mark as changed so wpnts_callback recalculates (skip during init)
+        if not getattr(self, '_init_phase', True):
+            self.dyn_reconfig_changed = True
 
         self.v_max = config.v_max
         self.ax_max_motor = config.ax_max_motor
@@ -318,21 +334,18 @@ class VelocityPlanner:
         return track_3d_params, slope
 
     def wpnts_callback(self, msg):
-        # Do not publish until rqt has been changed
+        wpnts = msg.wpnts
+
+        # Only recalculate when rqt vel_planner or friction has been changed
         if not self.dyn_reconfig_changed:
             return
-        # Publish once per rqt change, then wait for next change
         self.dyn_reconfig_changed = False
-
-        wpnts = msg.wpnts
 
         kappa = np.array([wp.kappa_radpm for wp in wpnts])
         el_lengths = 0.1 * np.ones(len(kappa))
-
-        # Build 3D track params from waypoint mu_rad
         track_3d_params, slope = self._build_track_3d_params(wpnts)
 
-        # 3D velocity profile (with slope + g_tilde correction)
+        # 3D velocity profile
         vx_profile = calc_vel_profile(ggv=self.ggv,
                                       ax_max_machines=self.ax_max_machines,
                                       b_ax_max_machines=self.b_ax_max_machines,
@@ -355,7 +368,6 @@ class VelocityPlanner:
         ax_profile = tph.calc_ax_profile.calc_ax_profile(vx_profile=vx_profile_opt_cl,
                                                          el_lengths=el_lengths,
                                                          eq_length_output=False)
-
         for i in range(len(ax_profile)):
             wpnts[i].ax_mps2 = ax_profile[i]
 
@@ -363,7 +375,7 @@ class VelocityPlanner:
         print("NEW 3D Vel Profile Pub")
         self.glb_wpnts_pub.publish(msg)
 
-        # 2D velocity profile (no 3D correction) for comparison markers
+        # 2D velocity profile (no 3D correction, with friction) for comparison markers
         vx_profile_2d = calc_vel_profile(ggv=self.ggv,
                                           ax_max_machines=self.ax_max_machines,
                                           b_ax_max_machines=self.b_ax_max_machines,

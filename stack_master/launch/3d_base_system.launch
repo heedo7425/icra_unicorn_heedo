@@ -107,6 +107,10 @@
   <node pkg="static_obstacle_sector_tuner" type="static_obs_sector_server.py"
         name="dyn_sector_static_obstacle" output="screen" />
 
+  <!-- Friction sector tuner -->
+  <node pkg="friction_sector_tuner" type="friction_sector_server.py"
+        name="dyn_sector_friction" output="screen" />
+
   <!-- State indicator -->
   <group unless="$(arg sim)">
     <!-- Real: LED + state display -->

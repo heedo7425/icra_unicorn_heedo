@@ -34,6 +34,12 @@ class SectorSlicer:
     def slice_loop(self):
         print('Waiting for global waypoints...')
         rospy.wait_for_message('/global_waypoints', WpntArray)
+        while self.glb_wpnts is None and not rospy.is_shutdown():
+            rospy.sleep(0.1)
+        print('Waiting for track bounds...')
+        rospy.wait_for_message('/trackbounds/markers', MarkerArray)
+        while self.track_bounds is None and not rospy.is_shutdown():
+            rospy.sleep(0.1)
 
         self.sector_gui()
         print('Selected Sector IDXs:', self.sector_pnts)

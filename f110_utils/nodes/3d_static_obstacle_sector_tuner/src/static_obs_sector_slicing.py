@@ -32,7 +32,13 @@ class StaticObstacleSectorSlicer:
     def slice_loop(self):
         rospy.loginfo('Waiting for global waypoints...')
         rospy.wait_for_message('/global_waypoints', WpntArray)
-        rospy.loginfo('Waypoints received. Starting 3D GUI.')
+        while self.glb_wpnts is None and not rospy.is_shutdown():
+            rospy.sleep(0.1)
+        rospy.loginfo('Waiting for track bounds...')
+        rospy.wait_for_message('/trackbounds/markers', MarkerArray)
+        while self.track_bounds is None and not rospy.is_shutdown():
+            rospy.sleep(0.1)
+        rospy.loginfo('Waypoints and bounds received. Starting 3D GUI.')
 
         self.sector_gui()
         rospy.loginfo(f'Selected Static Obstacle Sector Indices: {self.sector_pnts_indices}')
