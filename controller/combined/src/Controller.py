@@ -165,11 +165,37 @@ class Controller:
         self.lat_pred_horizon = rospy.get_param('L1_controller/lat_pred_horizon', 0.3)
         self.lat_pred_alpha = rospy.get_param('L1_controller/lat_pred_alpha', 0.3)
         rospy.loginfo(f"[Controller] Lateral correction mode: {self.lat_correction_mode}")
-        self.speed_ff_gain = rospy.get_param('L1_controller/speed_ff_gain', 0.0)
+        self.speed_ff_gain_accel = rospy.get_param('L1_controller/speed_ff_gain_accel', 0.0)
+        self.speed_ff_gain_brake = rospy.get_param('L1_controller/speed_ff_gain_brake', 0.0)
+        self.ff_accel_lookahead = rospy.get_param('L1_controller/ff_accel_lookahead', 0.0)
+        self.ff_brake_lookahead = rospy.get_param('L1_controller/ff_brake_lookahead', 0.0)
+
+        ### HJ : friction-ellipse accel limiter params
+        self.accel_limiter_enabled = rospy.get_param('L1_controller/accel_limiter_enabled', True)
+        self.accel_lim_ax_max = rospy.get_param('L1_controller/accel_lim_ax_max', 5.0)
+        self.accel_lim_ay_max = rospy.get_param('L1_controller/accel_lim_ay_max', 4.5)
+        ### HJ : end
+
+        ### HJ : yaw rate feedback (oversteer/understeer compensation)
+        self.K_yr = rospy.get_param('L1_controller/K_yr', 0.0)
+        ### HJ : end
+
+        ### HJ : GP steering correction
+        self.gp_steer_enabled = False
+        self.gp_steer_model = None
+        self._load_gp_model()
+        self._gp_reload_counter = 0
         ### HJ : end
         self.future_position_z = 0.0  ### HJ : z from track spline for future position
 
     def main_loop(self, state, position_in_map, waypoint_array_in_map, speed_now, opponent, position_in_map_frenet, acc_now, track_length):
+        ### HJ : GP hot-reload check (~every 2s at 40Hz)
+        self._gp_reload_counter += 1
+        if self._gp_reload_counter >= 80:
+            self._gp_reload_counter = 0
+            self._try_reload_gp()
+        ### HJ : end
+
         # Updating parameters from manager
         self.state = state
         self.position_in_map = position_in_map
@@ -387,9 +413,21 @@ class Controller:
         # modifying steer based on lateral error
  
         steering_angle = self.steer_scaling_for_lat_err(steering_angle, self.future_lat_err)
- 
+
+        ### HJ : yaw rate feedback — compensate oversteer/understeer
+        if self.K_yr > 0 and abs(self.speed_now) > 0.5:
+            expected_yr = self.speed_now * np.tan(steering_angle) / self.wheelbase
+            yr_error = expected_yr - self.yaw_rate  # >0: understeer, <0: oversteer
+            steering_angle += self.K_yr * yr_error
+        ### HJ : end
+
+        ### HJ : GP steering correction
+        if self.gp_steer_enabled and self.gp_steer_model is not None:
+            steering_angle = self._apply_gp_correction(steering_angle, yaw)
+        ### HJ : end
+
         #-------------------------Steering Scaling-----------------------------
- 
+
         # limit change of steering angle
         threshold = 0.4
         if abs(steering_angle - self.curr_steering_angle) > threshold:
@@ -504,10 +542,46 @@ class Controller:
  
         speed_command = self.speed_adjust_lat_err(speed_command, lat_e_norm)
 
-        ### HJ : acceleration feedforward — help VESC respond faster
-        if hasattr(self, 'speed_ff_gain') and self.speed_ff_gain > 0:
-            target_ax = self.waypoint_array_in_map[idx_la_position, 8]  # ax_mps2
-            speed_command += self.speed_ff_gain * target_ax
+        ### HJ : acceleration feedforward — independent lookahead & gain for accel/brake
+        # accel lookahead: 0 → fall back to speed_lookahead (idx_la_position)
+        if self.ff_accel_lookahead > 0:
+            la_acc = [self.position_in_map[0, 0] + v[0]*self.ff_accel_lookahead,
+                      self.position_in_map[0, 1] + v[1]*self.ff_accel_lookahead]
+            idx_ff_accel = self.nearest_waypoint(la_acc, self.waypoint_array_in_map[:, :2])
+            idx_ff_accel = np.clip(idx_ff_accel + offset, 0, len(self.waypoint_array_in_map) - 1)
+        else:
+            idx_ff_accel = idx_la_position
+
+        # brake lookahead: 0 → fall back to speed_lookahead (idx_la_position)
+        if self.ff_brake_lookahead > 0:
+            la_brk = [self.position_in_map[0, 0] + v[0]*self.ff_brake_lookahead,
+                      self.position_in_map[0, 1] + v[1]*self.ff_brake_lookahead]
+            idx_ff_brake = self.nearest_waypoint(la_brk, self.waypoint_array_in_map[:, :2])
+            idx_ff_brake = np.clip(idx_ff_brake + offset, 0, len(self.waypoint_array_in_map) - 1)
+        else:
+            idx_ff_brake = idx_la_position
+
+        ax_accel = self.waypoint_array_in_map[idx_ff_accel, 8]
+        ax_brake = self.waypoint_array_in_map[idx_ff_brake, 8]
+
+        if ax_accel >= 0 and self.speed_ff_gain_accel > 0:
+            speed_command += self.speed_ff_gain_accel * ax_accel
+        if ax_brake < 0 and self.speed_ff_gain_brake > 0:
+            speed_command += self.speed_ff_gain_brake * ax_brake
+        ### HJ : end
+
+        ### HJ : friction-ellipse based accel limiter
+        # 가속할 때만 적용: 현재 횡가속도를 고려하여 남은 종가속 여유분 이내로 클리핑
+        # 마찰 타원: (ay/ay_max)^2 + (ax/ax_max)^2 <= 1
+        # 감속/정속은 건드리지 않음
+        if self.accel_limiter_enabled and speed_command > cur_speed:
+            kappa = self.curvature_waypoints
+            ay = cur_speed ** 2 * kappa
+            ay_ratio = min(abs(ay) / self.accel_lim_ay_max, 1.0)
+            ax_available = self.accel_lim_ax_max * np.sqrt(max(0.0, 1.0 - ay_ratio ** 2))
+            dt = 1.0 / self.loop_rate
+            v_max_next = cur_speed + ax_available * dt
+            speed_command = min(speed_command, v_max_next)
         ### HJ : end
 
         return speed_command
@@ -600,16 +674,36 @@ class Controller:
     def apply_lateral_correction(self, steering_angle, signed_d, yaw):
         """Apply lateral error correction based on selected mode."""
         if self.lat_correction_mode == 'stanley':
-            return self._stanley_correction(steering_angle, signed_d)
+            return self._stanley_correction(steering_angle, signed_d, yaw)
         elif self.lat_correction_mode == 'predictive':
             return self._predictive_correction(steering_angle, signed_d, yaw)
         else:
             return steering_angle  # 'none' — no correction
 
-    def _stanley_correction(self, steering_angle, signed_d):
-        """Stanley crosstrack correction: arctan(K * d / v)"""
+    def _stanley_correction(self, steering_angle, signed_d, yaw):
+        """Stanley crosstrack correction at front axle (current position).
+        ### HJ : front-axle = current pos + wheelbase along yaw
+        """
         v = max(self.speed_now, 0.5)
-        correction = np.arctan(self.lat_K_stanley * signed_d / v)
+
+        ### HJ : front-axle d from current position (Stanley original)
+        fx = self.position_in_map[0, 0] + self.wheelbase * np.cos(yaw)
+        fy = self.position_in_map[0, 1] + self.wheelbase * np.sin(yaw)
+        try:
+            _, d_front = self.converter.get_frenet_3d(
+                np.array([fx]), np.array([fy]),
+                np.array([self.future_position_z]))
+            idx = self.nearest_waypoint(np.array([fx, fy]), self.waypoint_array_in_map[:, :2])
+            wpnt_d = self.waypoint_array_in_map[idx, 9] if self.waypoint_array_in_map.shape[1] > 9 else 0.0
+            d_front = float(d_front[0] - wpnt_d)
+        except Exception:
+            d_front = signed_d
+        d_use = d_front
+
+        # ### HJ : future_position 기반 d 사용 시 아래 주석 해제
+        # d_use = signed_d
+
+        correction = np.arctan(self.lat_K_stanley * (-d_use) / v)
         return steering_angle + correction
 
     def _predictive_correction(self, steering_angle, signed_d, yaw):
@@ -649,6 +743,61 @@ class Controller:
         return steering_angle + alpha * (delta_optimal - steering_angle)
 
     ### HJ : end lateral error correction ====================================
+
+    ### HJ : GP steering correction ==========================================
+
+    ### HJ : fixed GP model path + hot-reload
+    GP_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                 'gp_residual', 'models', 'gp_model.pkl')
+
+    def _load_gp_model(self):
+        """Init GP model tracking. Actual load happens via _try_reload_gp()."""
+        self._gp_model_mtime = 0.0
+        self.gp_max_correction = rospy.get_param('L1_controller/gp_max_correction', 0.05)
+        self.gp_uncertainty_thres = rospy.get_param('L1_controller/gp_uncertainty_thres', 0.1)
+        self._try_reload_gp()
+
+    def _try_reload_gp(self):
+        """Reload GP model if file changed. Called periodically."""
+        try:
+            if not os.path.exists(self.GP_MODEL_PATH):
+                return
+            mtime = os.path.getmtime(self.GP_MODEL_PATH)
+            if mtime <= self._gp_model_mtime:
+                return
+            import pickle
+            with open(self.GP_MODEL_PATH, 'rb') as f:
+                self.gp_steer_model = pickle.load(f)
+            self._gp_model_mtime = mtime
+            rospy.loginfo(f"[Controller] GP model hot-reloaded: {self.GP_MODEL_PATH}")
+        except Exception as e:
+            rospy.logwarn(f"[Controller] GP reload failed: {e}")
+
+    def _apply_gp_correction(self, steering_angle, yaw):
+        """Apply GP steering correction with safety guards."""
+        try:
+            v = max(self.speed_now, 0.5)
+            idx = self.nearest_waypoint(self.position_in_map[0, :2], self.waypoint_array_in_map[:, :2])
+            kappa = self.waypoint_array_in_map[idx, 6]
+            ax = np.mean(self.acc_now) if hasattr(self, 'acc_now') else 0.0
+            state = np.array([[v, steering_angle, kappa, self.yaw_rate, ax]])
+
+            pred, sigma = self.gp_steer_model.predict(state)
+            delta_gp = float(pred[0])
+
+            # uncertainty guard: fade out if uncertain
+            if sigma is not None and float(sigma[0]) > self.gp_uncertainty_thres:
+                delta_gp = 0.0
+
+            # clamp: speed-dependent max correction
+            max_corr = self.gp_max_correction / (1.0 + 0.1 * v)
+            delta_gp = np.clip(delta_gp, -max_corr, max_corr)
+
+            return steering_angle + delta_gp
+        except Exception:
+            return steering_angle
+
+    ### HJ : end GP steering correction ======================================
 
     def steer_scaling_for_lat_err(self, steer, lateral_error):
 

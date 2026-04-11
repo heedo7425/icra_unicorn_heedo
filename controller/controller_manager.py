@@ -16,7 +16,7 @@ from frenet_converter.frenet_converter import FrenetConverter
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float64, String, Float32, Bool
+from std_msgs.msg import String, Float32, Bool
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 from visualization_msgs.msg import Marker, MarkerArray
 from combined.src.Controller import Controller
@@ -234,7 +234,26 @@ class Controller_manager:
         if self.measuring:
             self.measure_pub = rospy.Publisher('/controller/latency', Float32, queue_size=10)
 
-        
+        ### HJ : current_brake control
+        self.enable_brake_ctrl = False
+        self.brake_mode = 0  # 0=jerk512, 1=direct brake topic
+        self.brake_speed_diff_thres = 0.5  # [m/s]
+        self.brake_current = 15.0  # [A] target brake decel strength
+        self.brake_current_min = 3.0  # [A] min brake decel strength
+        # Direct brake mode publishers
+        from std_msgs.msg import Float64 as Float64Msg
+        self.Float64Msg = Float64Msg
+        self.brake_pub = rospy.Publisher('/vesc/commands/motor/brake', Float64Msg, queue_size=10)
+        self.servo_pub = rospy.Publisher('/vesc/commands/servo/position', Float64Msg, queue_size=10)
+        self.steering_to_servo_gain = rospy.get_param('/vesc/steering_angle_to_servo_gain', -1.2135)
+        self.steering_to_servo_offset = rospy.get_param('/vesc/steering_angle_to_servo_offset', 0.5304)
+        ### HJ : end
+
+        ### HJ : friction sector → accel limiter ay_max sync
+        from dynamic_reconfigure.msg import Config as DynConfig
+        rospy.Subscriber('/dyn_sector_friction/parameter_updates', DynConfig, self.friction_sector_cb)
+        ### HJ : end
+
         # Subscribers
         rospy.Subscriber('/behavior_strategy', BehaviorStrategy, self.behavior_cb) # waypoints (x, y, v, norm trackbound, s, kappa)
         rospy.Subscriber('/car_state/odom', Odometry, self.odom_cb) # car speed
@@ -364,7 +383,30 @@ class Controller_manager:
         self.controller.lat_K_stanley = rospy.get_param('dyn_controller/lat_K_stanley', 1.5)
         self.controller.lat_pred_horizon = rospy.get_param('dyn_controller/lat_pred_horizon', 0.3)
         self.controller.lat_pred_alpha = rospy.get_param('dyn_controller/lat_pred_alpha', 0.3)
-        self.controller.speed_ff_gain = rospy.get_param('dyn_controller/speed_ff_gain', 0.0)
+        self.controller.speed_ff_gain_accel = rospy.get_param('dyn_controller/speed_ff_gain_accel', 0.0)
+        self.controller.speed_ff_gain_brake = rospy.get_param('dyn_controller/speed_ff_gain_brake', 0.0)
+        self.controller.ff_accel_lookahead = rospy.get_param('dyn_controller/ff_accel_lookahead', 0.0)
+        self.controller.ff_brake_lookahead = rospy.get_param('dyn_controller/ff_brake_lookahead', 0.0)
+        ### HJ : friction-ellipse accel limiter (scale both axes by sector friction)
+        self.controller.accel_limiter_enabled = rospy.get_param('dyn_controller/accel_limiter_enabled', True)
+        friction = self._get_current_friction()
+        self.controller.accel_lim_ax_max = rospy.get_param('dyn_controller/accel_lim_ax_max', 5.0) * friction
+        self.controller.accel_lim_ay_max = rospy.get_param('dyn_controller/accel_lim_ay_max', 4.5) * friction
+        ### HJ : end
+
+        ### HJ : GP residual + yaw rate feedback from dyn_reconfigure
+        self.controller.gp_steer_enabled = rospy.get_param('dyn_controller/gp_steer_enabled', False)
+        self.controller.gp_max_correction = rospy.get_param('dyn_controller/gp_max_correction', 0.05)
+        self.controller.gp_uncertainty_thres = rospy.get_param('dyn_controller/gp_uncertainty_thres', 0.1)
+        self.controller.K_yr = rospy.get_param('dyn_controller/K_yr', 0.0)
+        ### HJ : end
+
+        ### HJ : brake control params from dyn_reconfigure
+        self.enable_brake_ctrl = rospy.get_param('dyn_controller/enable_brake_ctrl', False)
+        self.brake_mode = rospy.get_param('dyn_controller/brake_mode', 0)
+        self.brake_speed_diff_thres = rospy.get_param('dyn_controller/brake_speed_diff_thres', 0.5)
+        self.brake_current = rospy.get_param('dyn_controller/brake_current', 15.0)
+        self.brake_current_min = rospy.get_param('dyn_controller/brake_current_min', 3.0)
         ### HJ : end
 
         ## Trailing Control Parameters
@@ -518,6 +560,42 @@ class Controller_manager:
         self.waypoint_safety_counter = 0
         self.state = data.state
         
+    ### HJ : friction sector → update accel limiter ay_max per sector
+    def friction_sector_cb(self, msg):
+        """Friction sector params changed — reload from rosparam"""
+        try:
+            n_sec = rospy.get_param('/friction_map_params/n_sectors', 0)
+            if n_sec > 0:
+                self._friction_sectors = []
+                for si in range(n_sec):
+                    self._friction_sectors.append({
+                        's_start': rospy.get_param(f'/friction_map_params/Sector{si}/s_start', -1.0),
+                        's_end': rospy.get_param(f'/friction_map_params/Sector{si}/s_end', -1.0),
+                        'start': rospy.get_param(f'/friction_map_params/Sector{si}/start', 0),
+                        'end': rospy.get_param(f'/friction_map_params/Sector{si}/end', 0),
+                        'friction': rospy.get_param(f'/friction_map_params/Sector{si}/friction', 1.0),
+                    })
+                self._friction_global_limit = rospy.get_param('/friction_map_params/global_friction_limit', 1.0)
+        except Exception:
+            pass
+
+    def _get_current_friction(self):
+        """Get friction scale for current s position"""
+        if not hasattr(self, '_friction_sectors') or not self._friction_sectors:
+            return 1.0
+        if len(self.position_in_map_frenet) == 0:
+            return 1.0
+        s_now = self.position_in_map_frenet[0]
+        for sec in self._friction_sectors:
+            if sec.get('s_start', -1) >= 0:
+                if sec['s_start'] <= s_now <= sec['s_end']:
+                    return min(sec['friction'], self._friction_global_limit)
+            else:
+                # fallback: index-based (cannot use here, return global)
+                return 1.0
+        return 1.0
+    ### HJ : end
+
     def imu_cb(self, data):
         self.acc_now[1:] = self.acc_now[:-1]
         # self.acc_now[0] = -data.linear_acceleration.x # Micro Strain
@@ -577,14 +655,37 @@ class Controller_manager:
                 end = time.perf_counter()
                 self.measure_pub.publish(end-start)
                 
-            ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
-            
-            # #-------------------------------Force Speed--------------------------------
-            # ack_msg = self.create_ack_msg(2.5, acceleration, jerk, steering_angle)
-            # #-------------------------------Force Speed--------------------------------
+            ### HJ : current_brake switching logic
+            # brake_mode 0 = jerk512 (acceleration → current via ackermann pipeline)
+            # brake_mode 1 = direct /vesc/commands/motor/brake (exact current you set)
+            brake_active = False
+            if self.enable_brake_ctrl and self.speed_now > 0.3:
+                speed_diff = self.speed_now - speed  # positive when need to decelerate
+                if speed_diff > self.brake_speed_diff_thres:
+                    alpha = min(speed_diff / max(self.speed_now, 1.0), 1.0)
+                    brake_val = self.brake_current_min + alpha * (self.brake_current - self.brake_current_min)
+                    brake_active = True
 
+                    if self.brake_mode == 0:
+                        # jerk512: send negative accel through ackermann pipeline
+                        ack_msg = self.create_ack_msg(speed, -brake_val, 512, steering_angle)
+                        self.drive_pub.publish(ack_msg)
+                    else:
+                        # direct: exact brake current to VESC, steering via servo
+                        self.brake_pub.publish(self.Float64Msg(data=brake_val))
+                        servo_msg = self.Float64Msg(
+                            data=self.steering_to_servo_gain * steering_angle + self.steering_to_servo_offset)
+                        self.servo_pub.publish(servo_msg)
+            ### HJ : end
 
-            self.drive_pub.publish(ack_msg)
+            if not brake_active:
+                ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
+
+                # #-------------------------------Force Speed--------------------------------
+                # ack_msg = self.create_ack_msg(2.5, acceleration, jerk, steering_angle)
+                # #-------------------------------Force Speed--------------------------------
+
+                self.drive_pub.publish(ack_msg)
             if self.measuring:
                 end = time.perf_counter()
                 self.measure_pub.publish(1/(end-start))
