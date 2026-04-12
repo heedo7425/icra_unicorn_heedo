@@ -766,12 +766,21 @@ class Controller:
             if mtime <= self._gp_model_mtime:
                 return
             import pickle
+            import sys
+            gp_scripts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                          'gp_residual', 'scripts')
+            if gp_scripts_dir not in sys.path:
+                sys.path.insert(0, gp_scripts_dir)
+            from gp_train import SparseGPModel  # noqa: F401 — needed for pickle
             with open(self.GP_MODEL_PATH, 'rb') as f:
                 self.gp_steer_model = pickle.load(f)
             self._gp_model_mtime = mtime
+            self._gp_load_warned = False
             rospy.loginfo(f"[Controller] GP model hot-reloaded: {self.GP_MODEL_PATH}")
         except Exception as e:
-            rospy.logwarn(f"[Controller] GP reload failed: {e}")
+            if not hasattr(self, '_gp_load_warned') or not self._gp_load_warned:
+                rospy.logwarn(f"[Controller] GP reload failed: {e}")
+                self._gp_load_warned = True
 
     def _apply_gp_correction(self, steering_angle, yaw):
         """Apply GP steering correction with safety guards."""
