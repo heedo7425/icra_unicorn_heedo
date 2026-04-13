@@ -1464,10 +1464,19 @@ class StateMachine:
             return mu, None
 
         slope = mu
-        # Avoid zero-length s intervals for gradient
+
+        # Unwrap s across track wraparound (e.g., 84, 85, 0.5, 1.5 → 84, 85, 86.3, 87.3)
+        # max_s from converter (raceline_length)
+        max_s = self.gb_wpnts.wpnts[-1].s_m + (
+            self.gb_wpnts.wpnts[-1].s_m - self.gb_wpnts.wpnts[-2].s_m)
         ds = np.diff(s)
-        ds[ds < 1e-6] = 1e-6
-        dmu_ds = np.gradient(slope, np.concatenate([[0], np.cumsum(ds)]))
+        # If a step is largely negative (>= half track), it's a wraparound: add max_s
+        ds = np.where(ds < -max_s / 2, ds + max_s, ds)
+        ds = np.where(ds > max_s / 2, ds - max_s, ds)
+        ds = np.maximum(ds, 1e-6)  # avoid zero-length intervals
+        s_for_grad = np.concatenate([[0], np.cumsum(ds)])
+
+        dmu_ds = np.gradient(slope, s_for_grad)
 
         phi = np.zeros(n)  # no banking
 
@@ -1475,8 +1484,6 @@ class StateMachine:
         omega_x = -np.sin(mu) * kappa
         omega_y = np.cos(phi) * dmu_ds + np.cos(mu) * np.sin(phi) * kappa
         omega_z = -np.sin(phi) * dmu_ds + np.cos(mu) * np.cos(phi) * kappa
-
-        s_for_grad = np.concatenate([[0], np.cumsum(ds)])
         track_3d_params = {
             'mu': mu,
             'phi': phi,

@@ -211,18 +211,16 @@ class StaticAvoidance3D:
                     obs=copy.deepcopy(self.obs_in_interest),
                     gb_wpnts=gb_scaled_wpnts)
             else:
-                if self.frame_count % 8 == 0:
-                    del_mrk = Marker()
-                    del_mrk.header.stamp = rospy.Time.now()
-                    del_mrk.action = Marker.DELETEALL
-                    mrks.markers.append(del_mrk)
+                del_mrk = Marker()
+                del_mrk.header.stamp = rospy.Time.now()
+                del_mrk.action = Marker.DELETEALL
+                mrks.markers.append(del_mrk)
 
             if self.measuring:
                 end = time.perf_counter()
                 self.latency_pub.publish(end - start)
             self.evasion_pub.publish(wpnts)
-            if self.frame_count % 8 == 0:
-                self.mrks_pub.publish(mrks)
+            self.mrks_pub.publish(mrks)
             self.rate.sleep()
 
     # =========================================================================
@@ -249,8 +247,7 @@ class StaticAvoidance3D:
                 d_apex = 0
 
         # Debug: publish more_space markers
-        if self.frame_count % 8 == 0:
-            self._publish_space_debug(obstacle, gb_wpnts, obs_s_idx, evasion_direction)
+        self._publish_space_debug(obstacle, gb_wpnts, obs_s_idx, evasion_direction)
 
         return evasion_direction, d_apex
 
@@ -424,21 +421,34 @@ class StaticAvoidance3D:
                     gb_wpnts[gb_idx_for_blend].y_m])
                 samples[idx] = samples[idx] * (1 - w) + target_pt * w
 
-        samples = np.vstack([samples, xy_additional])
+        samples_raw = np.vstack([samples, xy_additional])
 
-        # --- Frenet conversion (2D vectorized) ---
+        # --- Uniform arc-length resampling (kappa accuracy + state machine consistency) ---
+        seg = np.linalg.norm(np.diff(samples_raw, axis=0), axis=1)
+        arc = np.concatenate([[0], np.cumsum(seg)])
+        total_len = float(arc[-1])
+        if total_len < 1e-3:
+            return wpnts, mrks
+        n_uni = max(int(total_len / wpnt_dist) + 1, 2)
+        arc_uni = np.linspace(0, total_len, n_uni)
+        samples = np.column_stack([
+            np.interp(arc_uni, arc, samples_raw[:, 0]),
+            np.interp(arc_uni, arc, samples_raw[:, 1]),
+        ])
+
+        # --- Frenet conversion (single source of truth for s, d) ---
         sd = self.converter.get_frenet(samples[:, 0], samples[:, 1])
         s_arr = sd[0]
         d_arr = sd[1]
 
-        # z interpolation from reference path
+        # z from reference path surface (uses s only, consistent with s_arr)
         z_arr = np.array(self.converter.spline_z(s_arr)).flatten()
 
-        # --- Heading & curvature ---
-        el_lens = np.linalg.norm(np.diff(samples, axis=0), axis=1)
-        el_lens = np.maximum(el_lens, 1e-4)
+        # --- Heading & curvature (uniform spacing → accurate kappa) ---
         psi_, kappa_ = tph.calc_head_curv_num.calc_head_curv_num(
-            path=samples, el_lengths=el_lens, is_closed=False)
+            path=samples,
+            el_lengths=(total_len / (n_uni - 1)) * np.ones(n_uni - 1),
+            is_closed=False)
 
         # --- Track3DValidator batch check ---
         danger_flag = False
@@ -462,7 +472,11 @@ class StaticAvoidance3D:
             gb_wpnt_i = int((s_arr[i] / wpnt_dist) % ref_max_idx)
             gb_wpnt_i = min(gb_wpnt_i, len(gb_wpnts) - 1)
             ref = gb_wpnts[gb_wpnt_i]
-            vi = ref.vx_mps
+            # Local curvature speed scaling (Frenet parallel-offset formula):
+            # v_local / v_raceline = sqrt(|1 - d*kappa|)
+            # NOTE: state machine update_velocity() overwrites this with full 2.5D vel profile.
+            radius_ratio = max(1.0 - float(d_arr[i]) * ref.kappa_radpm, 0.1)
+            vi = ref.vx_mps * np.sqrt(radius_ratio)
             is_invalid = danger_flag and i >= first_invalid
 
             if not is_invalid:
@@ -476,32 +490,34 @@ class StaticAvoidance3D:
                 wpnt.psi_rad = psi_[i] + np.pi / 2
                 wpnt.kappa_radpm = kappa_[i]
                 wpnt.vx_mps = vi
-                wpnt.d_right = ref.d_right
-                wpnt.d_left = ref.d_left
+                # d_right/d_left = vehicle-to-wall clearance (d_m compensated)
+                # → controller computes safety_ratio = min(d_left, d_right) / (d_left + d_right)
+                # TODO: decide where to use safety_ratio (speed scaling? recovery trigger? viz?)
+                wpnt.d_right = ref.d_right + wpnt.d_m
+                wpnt.d_left = ref.d_left - wpnt.d_m
                 wpnt.mu_rad = ref.mu_rad
                 wpnts.wpnts.append(wpnt)
 
-            if self.frame_count % 8 == 0:
-                mrk = Marker()
-                mrk.header.frame_id = "map"
-                mrk.header.stamp = rospy.Time.now()
-                mrk.type = Marker.CYLINDER
-                mrk.scale.x = mrk.scale.y = 0.1
-                mrk.scale.z = max(vi / self.gb_vmax, 0.05) if self.gb_vmax else 0.1
-                mrk.color.a = 1.0
-                if is_invalid:
-                    mrk.color.r = 1.0
-                    mrk.color.g = mrk.color.b = 0.0
-                else:
-                    mrk.color.g = 0.8
-                    mrk.color.r = 0.2
-                    mrk.color.b = 0.2
-                mrk.id = i
-                mrk.pose.position.x = samples[i, 0]
-                mrk.pose.position.y = samples[i, 1]
-                mrk.pose.position.z = float(z_arr[i])
-                mrk.pose.orientation.w = 1
-                mrks.markers.append(mrk)
+            mrk = Marker()
+            mrk.header.frame_id = "map"
+            mrk.header.stamp = rospy.Time.now()
+            mrk.type = Marker.CYLINDER
+            mrk.scale.x = mrk.scale.y = 0.1
+            mrk.scale.z = max(vi / self.gb_vmax, 0.05) if self.gb_vmax else 0.1
+            mrk.color.a = 1.0
+            if is_invalid:
+                mrk.color.r = 1.0
+                mrk.color.g = mrk.color.b = 0.0
+            else:
+                mrk.color.g = 0.8
+                mrk.color.r = 0.2
+                mrk.color.b = 0.2
+            mrk.id = i
+            mrk.pose.position.x = samples[i, 0]
+            mrk.pose.position.y = samples[i, 1]
+            mrk.pose.position.z = float(z_arr[i])
+            mrk.pose.orientation.w = 1
+            mrks.markers.append(mrk)
 
         if danger_flag:
             wpnts.wpnts = []

@@ -721,7 +721,7 @@ class Controller:
 
         # Heading error relative to raceline
         idx = self.nearest_waypoint(self.future_position[0, :2], self.waypoint_array_in_map[:, :2])
-        wpnt_psi = self.waypoint_array_in_map[idx, 4]  # psi_rad
+        wpnt_psi = self.waypoint_array_in_map[idx, 7]  # psi_rad (layout: ..., safety_ratio[4], s[5], kappa[6], psi[7])
         heading_err = yaw - wpnt_psi
         heading_err = (heading_err + np.pi) % (2 * np.pi) - np.pi
 

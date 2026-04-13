@@ -76,8 +76,6 @@ class RecoverySpliner3D:
             "/planner/recovery/lookahead_point", Marker, queue_size=10)
         self.validity_pub = rospy.Publisher(
             "/planner/recovery/3d_validity", MarkerArray, queue_size=10)
-        self.vel_markers_pub = rospy.Publisher(
-            "/planner/recovery/vel_markers", MarkerArray, queue_size=10)
 
         if self.measuring:
             self.latency_pub = rospy.Publisher(
@@ -292,7 +290,6 @@ class RecoverySpliner3D:
         # --- Tangent alignment ---
         num_kappas_ = min(self.num_kappas, self.min_candidates_lookahead_n)
         kappas = np.array([gb_wpnts[i].kappa_radpm for i in gb_idxs[:num_kappas_]])
-        outside = np.sum(kappas) * cur_d < 0
 
         xy_m = np.array([(gb_wpnts[i].x_m, gb_wpnts[i].y_m) for i in gb_idxs])
         psi_rads = np.array([gb_wpnts[i].psi_rad for i in gb_idxs])
@@ -340,10 +337,10 @@ class RecoverySpliner3D:
         for i, ref in enumerate(points):
             spline_result[i, :] = list(zip(ref, tangents[i]))
 
-        samples_xy = np.zeros([nSamples, dim])
+        samples_xy_raw = np.zeros([nSamples, dim])
         for i in range(dim):
             poly = BPoly.from_derivatives(d_cum, spline_result[:, i])
-            samples_xy[:, i] = poly(s_param)
+            samples_xy_raw[:, i] = poly(s_param)
 
         # === Append additional waypoints from reference path ===
         n_additional = 80
@@ -352,21 +349,34 @@ class RecoverySpliner3D:
              gb_wpnts[(tangent_idx + cur_s_idx + i + 1) % ref_max_idx].y_m)
             for i in range(n_additional)
         ])
-        samples_xy = np.vstack([samples_xy, xy_additional])
+        samples_xy_raw = np.vstack([samples_xy_raw, xy_additional])
 
-        # === Frenet conversion (2D vectorized, ~1.5ms for 100pts) ===
+        # === Uniform arc-length resampling (kappa accuracy + state machine consistency) ===
+        seg = np.linalg.norm(np.diff(samples_xy_raw, axis=0), axis=1)
+        arc = np.concatenate([[0], np.cumsum(seg)])
+        total_len = float(arc[-1])
+        if total_len < 1e-3:
+            return wpnts, mrks
+        n_uni = max(int(total_len / wpnt_dist) + 1, 2)
+        arc_uni = np.linspace(0, total_len, n_uni)
+        samples_xy = np.column_stack([
+            np.interp(arc_uni, arc, samples_xy_raw[:, 0]),
+            np.interp(arc_uni, arc, samples_xy_raw[:, 1]),
+        ])
+
+        # === Frenet conversion (single source of truth for s, d) ===
         sd = self.converter.get_frenet(samples_xy[:, 0], samples_xy[:, 1])
         s_arr = sd[0]
         d_arr = sd[1]
 
-        #z interpolation from reference path surface
+        # z from reference path surface (uses s only, consistent with s_arr)
         z_arr = np.array(self.converter.spline_z(s_arr)).flatten()
 
-        # === Heading & curvature (2D, controller expects xy-plane values) ===
-        el_lens = np.linalg.norm(np.diff(samples_xy, axis=0), axis=1)
-        el_lens = np.maximum(el_lens, 1e-4)  # avoid division by zero
+        # === Heading & curvature (uniform spacing → accurate kappa) ===
         psi_, kappa_ = tph.calc_head_curv_num.calc_head_curv_num(
-            path=samples_xy, el_lengths=el_lens, is_closed=False)
+            path=samples_xy,
+            el_lengths=(total_len / (n_uni - 1)) * np.ones(n_uni - 1),
+            is_closed=False)
 
         # === Track3DValidator — batch validation ===
         danger_flag = False
@@ -390,7 +400,12 @@ class RecoverySpliner3D:
             gb_wpnt_i = int((s_arr[i] / wpnt_dist) % ref_max_idx)
             gb_wpnt_i = min(gb_wpnt_i, len(gb_wpnts) - 1)
             ref = gb_wpnts[gb_wpnt_i]
-            vi = ref.vx_mps if outside else ref.vx_mps * 0.9
+            # Local curvature speed scaling (Frenet parallel-offset formula):
+            # kappa_local = kappa / (1 - d*kappa)  →  R_local = R_raceline * (1 - d*kappa)
+            # v_local / v_raceline = sqrt(R_local / R_raceline) = sqrt(|1 - d*kappa|)
+            # NOTE: state machine update_velocity() overwrites this with full 2.5D vel profile.
+            radius_ratio = max(1.0 - float(d_arr[i]) * ref.kappa_radpm, 0.1)
+            vi = ref.vx_mps * np.sqrt(radius_ratio)
             is_invalid = danger_flag and i >= first_invalid
 
             # Waypoints: only add valid points
@@ -405,33 +420,35 @@ class RecoverySpliner3D:
                 wpnt.psi_rad = psi_[i] + np.pi / 2
                 wpnt.kappa_radpm = kappa_[i]
                 wpnt.vx_mps = vi
-                wpnt.d_right = ref.d_right
-                wpnt.d_left = ref.d_left
+                # d_right/d_left = vehicle-to-wall clearance (d_m compensated)
+                # → controller computes safety_ratio = min(d_left, d_right) / (d_left + d_right)
+                # TODO: decide where to use safety_ratio (speed scaling? recovery trigger? viz?)
+                wpnt.d_right = ref.d_right + wpnt.d_m
+                wpnt.d_left = ref.d_left - wpnt.d_m
                 wpnt.mu_rad = ref.mu_rad
                 wpnts.wpnts.append(wpnt)
 
             # Markers: ALWAYS show — green=valid, red=invalid
-            if self.frame_count % 8 == 0:
-                mrk = Marker()
-                mrk.header.frame_id = "map"
-                mrk.header.stamp = rospy.Time.now()
-                mrk.type = Marker.CYLINDER
-                mrk.scale.x = mrk.scale.y = 0.1
-                mrk.scale.z = max(vi / self.gb_vmax, 0.05) if self.gb_vmax else 0.1
-                mrk.color.a = 1.0
-                if is_invalid:
-                    mrk.color.r = 1.0  # red
-                    mrk.color.g = mrk.color.b = 0.0
-                else:
-                    mrk.color.g = 0.8  # green
-                    mrk.color.r = 0.2
-                    mrk.color.b = 0.2
-                mrk.id = i
-                mrk.pose.position.x = samples_xy[i, 0]
-                mrk.pose.position.y = samples_xy[i, 1]
-                mrk.pose.position.z = float(z_arr[i])
-                mrk.pose.orientation.w = 1
-                mrks.markers.append(mrk)
+            mrk = Marker()
+            mrk.header.frame_id = "map"
+            mrk.header.stamp = rospy.Time.now()
+            mrk.type = Marker.CYLINDER
+            mrk.scale.x = mrk.scale.y = 0.1
+            mrk.scale.z = max(vi / self.gb_vmax, 0.05) if self.gb_vmax else 0.1
+            mrk.color.a = 1.0
+            if is_invalid:
+                mrk.color.r = 1.0  # red
+                mrk.color.g = mrk.color.b = 0.0
+            else:
+                mrk.color.g = 0.8  # green
+                mrk.color.r = 0.2
+                mrk.color.b = 0.2
+            mrk.id = i
+            mrk.pose.position.x = samples_xy[i, 0]
+            mrk.pose.position.y = samples_xy[i, 1]
+            mrk.pose.position.z = float(z_arr[i])
+            mrk.pose.orientation.w = 1
+            mrks.markers.append(mrk)
 
         # If danger, still clear wpnts (state machine shouldn't use invalid trajectory)
         if danger_flag:
