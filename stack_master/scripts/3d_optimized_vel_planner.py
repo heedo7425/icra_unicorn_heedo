@@ -241,19 +241,35 @@ def build_and_solve(track, gg, vehicle_params,
     ubg_vec = ca.vertcat(*ubg)
 
     if sol_opt is None:
+        # Tolerance strategy — mirrors the tolerance relaxation IY applied to
+        # gen_global_racing_line.py for the V_min=2.0 case:
+        #   At tight corners, V=V_min and ay=ay_max become simultaneously
+        #   binding. This creates dual-multiplier ambiguity: primal converges
+        #   (inf_pr ~ 1e-10) but inf_du oscillates around 0.08 ~ 2.5 and the
+        #   solver never hits the default 1e-8 exit criterion. We therefore:
+        #     - Keep constr_viol_tol TIGHT (1e-4): primal violation means a
+        #       physically invalid trajectory (outside track / GGV envelope).
+        #     - Loosen dual_inf_tol and the acceptable-level duals: the dual
+        #       noise is inherent to the degenerate active set, not a real
+        #       optimality issue. Objective error at these tolerances is
+        #       ~1e-4 × 20 s ≈ 2 ms on lap time — negligible.
         sol_opt = {
-            'ipopt.max_iter': 5000,
+            'ipopt.max_iter': 100,
             'ipopt.hessian_approximation': 'limited-memory',
             'ipopt.line_search_method': 'cg-penalty',
-            'ipopt.tol': 1e-4,
-            'ipopt.acceptable_tol': 1e-3,
-            'ipopt.acceptable_iter': 10,
-            'ipopt.constr_viol_tol': 1e-4,
+            'ipopt.tol':                        1e-4,
+            'ipopt.dual_inf_tol':               1e-1,
+            'ipopt.constr_viol_tol':            1e-4,
+            'ipopt.compl_inf_tol':              1e-4,
+            'ipopt.acceptable_tol':             1e-3,
+            'ipopt.acceptable_dual_inf_tol':    5.0,
+            'ipopt.acceptable_constr_viol_tol': 1e-3,
+            'ipopt.acceptable_iter':            10,
             'ipopt.linear_solver': _LINEAR_SOLVER,  ### HJ : ma27 if HSL available, else mumps
         }
     sol_opt = dict(sol_opt)
     sol_opt.setdefault('print_time', 0)
-    sol_opt.setdefault('ipopt.print_level', 3)  ### HJ : temporarily verbose to debug convergence
+    sol_opt.setdefault('ipopt.print_level', 5)  ### HJ : verbose — shows per-iteration log
 
     nlp = {'f': J_t + J_reg, 'x': w_vec, 'g': g_vec}
     rospy.loginfo(f'[velopt] NLP: {int(w_vec.shape[0])} vars, {int(g_vec.shape[0])} constraints, {N} points')
@@ -437,27 +453,77 @@ class VelOptNode:
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description='3D speed-only optimizer — re-optimizes vx/ax on a fixed racing line '
+                    'and republishes /global_waypoints with the new velocity profile.')
+
+    # --- map is the only truly required arg ---
+    # Track CSV is auto-derived from --map as "<map>_3d_smoothed.csv" inside
+    # stack_master/maps/<map>/. Raceline CSV is auto-derived as
+    # "<map>_3d_<raceline>_timeoptimal.csv" using --raceline below.
     ap.add_argument('--map', required=True,
-                    help='Map folder name under stack_master/maps/. '
+                    help='Map folder name under stack_master/maps/ (e.g. "eng_0410_v5"). '
                          'Track csv is auto-derived as <map>_3d_smoothed.csv')
-    ap.add_argument('--raceline', required=True,
+
+    # --- Shortcut: --racecar <name> sets all three (raceline, gg_dir, vehicle_yml)
+    #     consistently to this name, unless they are individually overridden.
+    #     Expands as:
+    #       --raceline     <name>
+    #       --gg_dir       <name>
+    #       --vehicle_yml  params_<name>.yml
+    #     If --racecar is NOT given, each of the three falls back to the
+    #     "rc_car_10th" defaults below.
+    #     Individual --raceline / --gg_dir / --vehicle_yml flags ALWAYS win
+    #     over --racecar.
+    ap.add_argument('--racecar', default=None,
+                    help='Shortcut: set raceline/gg_dir/vehicle_yml to this '
+                         'variant in one go (e.g. "rc_car_10th_v7"). '
+                         'Individually-specified flags override this.')
+
+    # --- raceline/vehicle/gg: None means "inherit from --racecar, else default" ---
+    # Left as None so we can tell whether the user explicitly set them.
+    ap.add_argument('--raceline', default=None,
                     help='Raceline variant — filename becomes '
-                         '<map>_3d_<raceline>_timeoptimal.csv  '
-                         '(e.g. "rc_car_10th_fast4_out")')
-    ap.add_argument('--vehicle_yml', required=True,
+                         '<map>_3d_<raceline>_timeoptimal.csv '
+                         '(default: --racecar if set, else "rc_car_10th")')
+    ap.add_argument('--vehicle_yml', default=None,
                     help='Vehicle params yml filename inside '
                          '3d_gb_optimizer/.../vehicle_params/ '
-                         '(e.g. "params_rc_car_10th_backup.yml")')
-    ap.add_argument('--gg_dir', required=True,
+                         '(default: "params_<racecar>.yml" if --racecar set, '
+                         'else "params_rc_car_10th.yml")')
+    ap.add_argument('--gg_dir', default=None,
                     help='GG diagrams folder name inside '
                          '3d_gb_optimizer/.../gg_diagrams/ '
-                         '(e.g. "rc_car_10th_fast4_out")')
-    ap.add_argument('--step_size_opt', type=float, default=0.2)
-    ap.add_argument('--V_min', type=float, default=0.0)
-    ap.add_argument('--gg_margin', type=float, default=0.0)
-    # parse_known_args so ROS remapping args don't choke
+                         '(default: --racecar if set, else "rc_car_10th")')
+
+    # --- tuning knobs ---
+    # step_size_opt: NLP grid spacing in meters. The script auto-adjusts this
+    #   slightly so the grid divides the full track length exactly (needed for
+    #   a clean periodic loop closure).
+    # V_min: lower bound on velocity state. Defaults to 1.0 m/s — a middle
+    #   ground between feasibility at tight corners (lower V_min relaxes the
+    #   ay-bound-active set) and numerical safety. Always match the GGV that
+    #   generated the raceline.
+    # gg_margin: shrinks the GGV diamond by this factor (0.0 = full grip).
+    ap.add_argument('--step_size_opt', type=float, default=0.2,
+                    help='Desired NLP grid spacing in meters (default: 0.2)')
+    ap.add_argument('--V_min', type=float, default=1.0,
+                    help='Minimum velocity bound in m/s (default: 1.0)')
+    ap.add_argument('--gg_margin', type=float, default=0.0,
+                    help='GGV shrink margin (default: 0.0)')
+
+    # parse_known_args so ROS remapping args (__name:=, __log:=) don't choke argparse
     args, _ = ap.parse_known_args()
+
+    # --- Resolve racecar shortcut ---
+    # Priority for each of raceline / gg_dir / vehicle_yml:
+    #   (1) explicit --raceline / --gg_dir / --vehicle_yml flag
+    #   (2) --racecar <name> shortcut (builds consistent triplet)
+    #   (3) hardcoded default "rc_car_10th"
+    _racecar = args.racecar or 'rc_car_10th'
+    args.raceline    = args.raceline    or _racecar
+    args.gg_dir      = args.gg_dir      or _racecar
+    args.vehicle_yml = args.vehicle_yml or f'params_{_racecar}.yml'
 
     VelOptNode(
         map_name=args.map,

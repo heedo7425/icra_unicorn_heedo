@@ -72,6 +72,25 @@ GGV diamond 제약은 `Track3D.calc_apparent_accelerations`로 apparent (ax_tild
 `<raceline>.csv`의 `v_opt`, `ax_opt`를 IPOPT 초기 guess로 넣는다. cold start (V=3.0 균일)로도 같은 해에 수렴하지만 warm start가 iter 수를 크게 줄인다.  
 **이 NLP는 거의 convex 구조**라서 초기값에 따른 local optimum 편향 위험 없음.
 
+### Solver tolerance (V_min 디제너러시 대응)
+
+V_min을 양수로 설정하면 타이트한 코너에서 `V=V_min`과 `ay=ay_max`가 동시에 active 되는 지점이 생겨 dual multiplier가 진동한다 (primal은 수렴하지만 inf_du가 0.08~2.5에서 왔다갔다). 그래서 tolerance를 다음과 같이 **완화**했다:
+
+- `tol`, `constr_viol_tol`, `compl_inf_tol`: **tight 1e-4** 유지  
+  → 제약 위반은 물리적으로 불가능한 trajectory 의미
+- `dual_inf_tol`, `acceptable_dual_inf_tol`: **1e-1 / 5.0** 으로 완화  
+  → dual noise는 degenerate active set의 자연스러운 현상
+
+object 오차는 `1e-4 × 20s ≈ 2ms` 수준으로 무시 가능. max_iter는 100으로 제한 (보통 30~80회로 수렴).
+
+### Linear solver (HSL ma27 + fallback)
+
+import 시 `ma27` probe를 돌려서:
+- **HSL 있으면 → ma27 사용** (2~3배 빠름)
+- **없으면 → MUMPS fallback** (그대로 동작)
+
+HSL 설치: `planner/3d_gb_optimizer/fast_ggv_gen/solver/README.md` 참고.
+
 ---
 
 ## ROS 토픽 구조
@@ -92,11 +111,21 @@ publish:   /global_waypoints  (same topic, latched)
 
 NLP는 **노드 시작 시 1회**만 돌고, 토픽 수신은 메시지 템플릿 취득용. 한 번 퍼블리시 후 spin만 한다.
 
+### NLP 길이 vs 토픽 길이 차이
+
+로그에 `msg L=47.51m, NLP L=49.88m` 처럼 **두 길이가 다르게** 찍힌다. 이건 의도된 동작:
+
+- **NLP L = centerline arc length** (`<map>_3d_smoothed.csv`의 s_m)
+- **msg L = racing-line arc length** (`global_waypoints.json`이 재파라미터화한 값)
+
+두 값은 같은 루프의 서로 다른 parameterization. Racing line은 코너를 가로지르며 짧아지므로 센터라인보다 보통 몇 % 짧다. Racing line이 **x, y 공간에서는 동일**하지만, arc-length 좌표계에서는 서로 다른 값을 갖는 것뿐.
+
 ### 출력 보간 (periodic wrap)
 
-NLP가 푸는 그리드 길이와 토픽의 waypoint 수는 다르므로(예: 398 vs 750), 결과를 토픽의 `s_m`에 맞춰 보간해야 한다. periodic closure를 유지하기 위해:
+NLP가 푸는 그리드 길이(centerline)와 토픽의 waypoint s_m(racing-line)이 다르므로 스케일 보정 후 보간:
+
 1. `V_opt` 끝에 `V_opt[0]` 추가 → 순환 배열
-2. 토픽의 `s_m`을 NLP 그리드 범위로 스케일링
+2. 토픽의 `s_m`을 NLP 그리드 범위로 스케일링 (`s_query = s_msg * L_nlp / L_msg`)
 3. `np.interp` 선형 보간
 
 → 시작점과 끝점이 부드럽게 연결된다.
@@ -105,106 +134,125 @@ NLP가 푸는 그리드 길이와 토픽의 waypoint 수는 다르므로(예: 39
 
 ## 사용법
 
-### 기본 명령
+### 인자 구조
+
+| 인자 | 필수 | 기본값 | 설명 |
+|------|:---:|-------|------|
+| `--map` | ✅ | — | 맵 폴더명 (예: `eng_0415_v4`). track csv 자동 `<map>_3d_smoothed.csv` |
+| `--racecar` | ❌ | — | **shortcut**: 지정 시 raceline/gg_dir/vehicle_yml을 이 이름 기반으로 일괄 설정 |
+| `--raceline` | ❌ | `rc_car_10th` (또는 racecar) | racing line variant. 파일명 `<map>_3d_<raceline>_timeoptimal.csv` |
+| `--vehicle_yml` | ❌ | `params_rc_car_10th.yml` (또는 `params_<racecar>.yml`) | 차량 yml 파일명 |
+| `--gg_dir` | ❌ | `rc_car_10th` (또는 racecar) | GG 폴더명 |
+| `--V_min` | ❌ | `1.0` | 최소 속도 하한 (m/s) |
+| `--step_size_opt` | ❌ | `0.2` | NLP 그리드 간격 (m). 트랙 길이에 맞게 자동 조정 |
+| `--gg_margin` | ❌ | `0.0` | GGV 여유 |
+
+### 인자 우선순위
+
+개별 인자 (`--raceline`, `--gg_dir`, `--vehicle_yml`) > `--racecar` shortcut > 기본값 (`rc_car_10th`).
+
+### 사용 예시
 
 ```bash
-rosrun stack_master 3d_optimized_vel_planner.py \
-    --map <MAP> \
-    --raceline <RACELINE_VARIANT> \
-    --vehicle_yml <VEHICLE_YML_FILENAME> \
-    --gg_dir <GG_DIR_NAME>
+# 1. 최소 명령 — 기본 rc_car_10th 설정으로
+rosrun stack_master 3d_optimized_vel_planner.py --map eng_0415_v4
+
+# 2. racecar shortcut — 세 인자 한 번에
+rosrun stack_master 3d_optimized_vel_planner.py --map eng_0415_v4 --racecar rc_car_10th_v7
+# → raceline=rc_car_10th_v7, gg_dir=rc_car_10th_v7, vehicle_yml=params_rc_car_10th_v7.yml
+
+# 3. racecar + 일부 override (비교 실험)
+rosrun stack_master 3d_optimized_vel_planner.py --map eng_0415_v4 --racecar rc_car_10th_v7 --gg_dir rc_car_10th
+# → raceline은 v7, GGV만 기본으로 → "v7 경로를 기본 GGV로 재평가"
+
+# 4. 모든 인자 개별 지정 (명시적)
+rosrun stack_master 3d_optimized_vel_planner.py --map eng_0415_v4 \
+    --raceline rc_car_10th_v7 --gg_dir rc_car_10th_v7 --vehicle_yml params_rc_car_10th_v7.yml
+
+# 5. V_min 조절
+rosrun stack_master 3d_optimized_vel_planner.py --map eng_0415_v4 --racecar rc_car_10th_v7 --V_min 1.5
 ```
 
-### 경로 자동 해결
-
-폴더 구조는 **고정**, 파일명만 인자로 넘긴다.
+### 자동 해결되는 경로
 
 | 인자 | 실제 경로 |
 |------|----------|
-| `--map eng_0410_v5` | `stack_master/maps/eng_0410_v5/` (map folder) |
-| | → track: `<map>/<map>_3d_smoothed.csv` (자동) |
-| `--raceline rc_car_10th` | → raceline: `<map>/<map>_3d_<raceline>_timeoptimal.csv` |
-| `--vehicle_yml params_rc_car_10th.yml` | `planner/3d_gb_optimizer/global_line/data/vehicle_params/params_rc_car_10th.yml` |
-| `--gg_dir rc_car_10th` | `planner/3d_gb_optimizer/global_line/data/gg_diagrams/rc_car_10th/velocity_frame/` |
-
-### 예시
-
-```bash
-# 기본 rc_car_10th
-rosrun stack_master 3d_optimized_vel_planner.py \
-    --map eng_0410_v5 \
-    --raceline rc_car_10th \
-    --vehicle_yml params_rc_car_10th.yml \
-    --gg_dir rc_car_10th
-
-# latest 세팅으로
-rosrun stack_master 3d_optimized_vel_planner.py \
-    --map eng_0410_v5 \
-    --raceline rc_car_10th \
-    --vehicle_yml params_rc_car_10th_latest.yml \
-    --gg_dir rc_car_10th_latest
-
-# v1 세팅으로
-rosrun stack_master 3d_optimized_vel_planner.py \
-    --map eng_0410_v5 \
-    --raceline rc_car_10th \
-    --vehicle_yml params_rc_car_10th_v1.yml \
-    --gg_dir rc_car_10th_v1
-```
-
-`--raceline`은 **고정할 경로 정보 (n, chi) 소스**이고, `--vehicle_yml + --gg_dir`는 **재최적화에 쓸 차량/GGV**다. 이 둘을 다르게 주면 "**X 세팅으로 만든 경로를 Y 세팅의 GGV로 재평가**" 같은 비교가 가능하다.
-
-### 선택 인자
-
-| 인자 | 기본값 | 설명 |
-|------|-------|------|
-| `--step_size_opt` | 0.2 | NLP 그리드 간격 (m). 실제 step은 트랙 길이에 맞게 자동 조정됨. |
-| `--V_min` | 0.0 | 최소 속도 하한 (m/s) |
-| `--gg_margin` | 0.0 | GGV 여유 |
+| `--map eng_0415_v4` | `stack_master/maps/eng_0415_v4/` (map folder) |
+| track (자동) | `<map>/<map>_3d_smoothed.csv` |
+| `--raceline X` | `<map>/<map>_3d_X_timeoptimal.csv` |
+| `--vehicle_yml Y.yml` | `planner/3d_gb_optimizer/global_line/data/vehicle_params/Y.yml` |
+| `--gg_dir Z` | `planner/3d_gb_optimizer/global_line/data/gg_diagrams/Z/velocity_frame/` |
 
 ---
 
 ## 실행 전제 조건
 
+### ROS 환경
 - `roscore`가 이미 떠 있을 것
 - `/global_waypoints` 토픽이 latched로 발행되어 있을 것 (예: `stack_master` base_system.launch)
 - 컨테이너: `icra2026` Docker 안에서 실행 (`rosrun` 가능한 환경)
 - `catkin build` 완료 (package 인식 필요)
+
+### 파일 의존성 (CSV / YAML / GGV)
+
+노드 시작 시 다음 파일들을 **읽는다** (없으면 `FileNotFoundError`로 즉시 중단):
+
+| 경로 | 역할 |
+|------|------|
+| `stack_master/maps/<map>/<map>_3d_smoothed.csv` | centerline geometry (s, x, y, z, theta, mu, phi, omega_x/y/z, w_tr_left/right) → Track3D |
+| `stack_master/maps/<map>/<map>_3d_<raceline>_timeoptimal.csv` | 고정 경로 (s_opt, n_opt, chi_opt, v_opt, ax_opt 등) |
+| `planner/3d_gb_optimizer/global_line/data/vehicle_params/<vehicle_yml>` | 차량 파라미터 (m, h, T, delta_max 등) |
+| `planner/3d_gb_optimizer/global_line/data/gg_diagrams/<gg_dir>/velocity_frame/*.npy` | GGV diamond (v_list, g_list, alpha_list, rho, gg_exponent, ax_min, ax_max, ay_max) |
+
+→ 위 파일들이 실제 디스크에 존재해야 한다. 일반적으로:
+- smoothed.csv, timeoptimal.csv → `3d_mapping.launch` 또는 `3d_global_line.launch`로 미리 생성
+- vehicle yml → 손으로 편집/저장
+- GG .npy → `fast_ggv_gen/run_on_container.sh` 또는 원본 `gg_diagram_generation/`으로 미리 생성
+
+### 선택 의존성
+- HSL ma27 — 있으면 속도 2~3배. 없으면 MUMPS 자동 fallback (정상 동작). 설치 가이드: `fast_ggv_gen/solver/README.md`
 
 ---
 
 ## 동작 예시 로그
 
 ```
-[velopt] map=eng_0410_v5
-[velopt] track    : .../eng_0410_v5_3d_smoothed.csv
-[velopt] raceline : .../eng_0410_v5_3d_rc_car_10th_timeoptimal.csv
-[velopt] vehicle  : .../params_rc_car_10th.yml
-[velopt] gg       : .../gg_diagrams/rc_car_10th/velocity_frame
-[velopt] L_track=79.5320m, desired_step=0.2000, actual_step=0.199829 (N=398)
-Resampled track: 398 points
-[velopt] Track3D + GGManager + raceline ready, grid=398 pts
-[velopt] fixed n  : [-0.396, 0.698] m
-[velopt] fixed chi: [-0.543, 0.481] rad
+[velopt] linear_solver: ma27 (HSL)
+[velopt] map=eng_0415_v4
+[velopt] track    : .../eng_0415_v4_3d_smoothed.csv
+[velopt] raceline : .../eng_0415_v4_3d_rc_car_10th_v7_timeoptimal.csv
+[velopt] vehicle  : .../params_rc_car_10th_v7.yml
+[velopt] gg       : .../gg_diagrams/rc_car_10th_v7/velocity_frame
+[velopt] L_track=49.8800m, desired_step=0.2000, actual_step=0.199829 (N=250)
+[velopt] fixed n  : [-0.573, 1.301] m
+[velopt] fixed chi: [-0.441, 0.287] rad
 [velopt] solving NLP ...
-[velopt] NLP: 1193 vars, 1990 constraints, 398 points
-[velopt] solver built in 0.58s, solving...
-[velopt] IPOPT: 2.52s, success=True, laptime=18.8604s
-[velopt] V range [1.89, 6.96] m/s  success=True
+[velopt] NLP: 749 vars, 1250 constraints, 250 points
+[velopt] solver built in 0.17s, solving...
+[velopt] IPOPT: 2.52s, success=True, laptime=13.25s
+[velopt] V range [2.74, 7.51] m/s  success=True
 [velopt] waiting for /global_waypoints template message ...
-[velopt] published new /global_waypoints (velocity overwritten)
+[velopt] published /global_waypoints (msg L=47.51m, NLP L=49.88m, V[0]=2.74, V[-1]=2.74)
 ```
 
-총 소요: **~3~4초** (build 0.6s + NLP 2.5s + message I/O)
+총 소요: **~3~4초** (build 0.2s + NLP ~2.5s + message I/O).  
+HSL 미설치 시 MUMPS로 2~3배 느림 (~7~10초).
 
 ---
 
 ## 제약 & 주의사항
 
-1. **경로는 절대 안 바뀐다** — n, chi는 입력 csv 고정. 경로 자체를 바꾸고 싶으면 원본 `gen_global_racing_line.py` 사용.
-2. **GGV와 raceline이 너무 달라지면** IPOPT가 수렴 못 할 수 있음. 예를 들어 매우 낮은 grip GGV로 고그립 raceline을 풀면 feasibility 문제 생김.
-3. **파일 생성 없음**. 토픽에만 퍼블리시. 저장하려면 따로 작업 필요.
-4. **한 번만 풀고 spin**. rqt 기반 실시간 튜닝은 추후 확장 (노드 재실행 또는 topic-triggered re-solve로).
+### 1. 경로와 GGV는 반드시 **매칭**해야 한다
+Racing line은 특정 GGV의 그립 한계에 맞춰 설계된다. 다른 GGV로 풀면 infeasible해서 IPOPT가 수렴 못하고 max_iter(100)에서 종료된다. `--racecar` shortcut으로 통일하는 것을 권장.
+
+### 2. 경로는 절대 안 바뀐다
+n, chi는 입력 csv에서 고정. 경로 자체를 바꾸고 싶으면 원본 `gen_global_racing_line.py` 사용.
+
+### 3. 파일 생성 없음
+토픽에만 퍼블리시. 저장하려면 따로 작업 필요.
+
+### 4. 한 번만 풀고 spin
+노드 시작 시 1회. 파라미터 변경하려면 재실행. rqt 기반 실시간 튜닝은 추후 확장.
 
 ---
 
@@ -216,16 +264,16 @@ Resampled track: 398 points
 [rqt 슬라이더]
   타이어 파라미터 (lambda_mu, P_max, ...) 조절
        │
-       ├── fast_ggv_gen으로 GGV 재생성 (~2초)
+       ├── fast_ggv_gen으로 GGV 재생성 (~0.5초, HSL)
        │
-       ├── 3d_optimized_vel_planner로 속도 재계산 (~3초)
+       ├── 3d_optimized_vel_planner로 속도 재계산 (~2.5초)
        │    (노드 재실행 or topic-triggered re-solve)
        │
        └── /global_waypoints에 새 속도 덮어쓰기
            → 실차/시뮬에서 즉시 반영
 ```
 
-파라미터 변경 → 시뮬 반영까지 **< 10초** 루프 가능.
+파라미터 변경 → 시뮬 반영까지 **< 5초** 루프 가능 (HSL 활성 시).
 
 ---
 
@@ -236,4 +284,5 @@ Resampled track: 398 points
 - `planner/3d_gb_optimizer/global_line/src/track3D.py` (Track3D, library로 import)
 - `planner/3d_gb_optimizer/global_line/src/ggManager.py` (GGManager, library로 import)
 - `planner/3d_gb_optimizer/fast_ggv_gen/` (GGV 고속 생성기, 같이 쓰면 튜닝 루프 완성)
+- `planner/3d_gb_optimizer/fast_ggv_gen/solver/README.md` (HSL ma27 설치 가이드)
 - `HJ_docs/fast_ggv_gen.md` (fast GGV 문서)
