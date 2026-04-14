@@ -571,19 +571,22 @@ class Controller:
         ### HJ : end
 
         ### HJ : friction-ellipse based accel limiter
-        # 가속할 때만 적용: 전방 곡률에서 grip 여유 내의 최대 속도로 제한
-        # 마찰 타원: (ay/ay_max)^2 + (ax/ax_max)^2 <= 1
-        # 직선(kappa < 0.01)에서는 제한 없음
+        # Only active when accelerating (speed_command > cur_speed).
+        # Uses MEASURED current speed (odom) to compute current lateral load,
+        # then limits the next-step target to what the remaining grip allows.
+        # Friction ellipse: (ay/ay_max)^2 + (ax/ax_max)^2 <= 1
         if self.accel_limiter_enabled and speed_command > cur_speed:
             kappa = abs(self.curvature_waypoints)
-            if kappa > 0.01:
-                # 현재 가속이 쓰는 grip 비율
-                ax_now = abs(speed_command - cur_speed) * self.loop_rate  # 요구 가속도 추정
-                ax_ratio = min(ax_now / self.accel_lim_ax_max, 1.0)
-                # 남은 횡가속 여유로 가능한 최대 속도
-                ay_available = self.accel_lim_ay_max * np.sqrt(max(0.0, 1.0 - ax_ratio ** 2))
-                v_grip_max = np.sqrt(max(ay_available / kappa, 0.0))
-                speed_command = min(speed_command, v_grip_max)
+            ay = cur_speed ** 2 * kappa  # lateral accel at current speed
+            ay_ratio = min(ay / self.accel_lim_ay_max, 1.0)
+            ax_available = self.accel_lim_ax_max * np.sqrt(max(0.0, 1.0 - ay_ratio ** 2))
+            dt = 1.0 / self.loop_rate
+            v_max_next = cur_speed + ax_available * dt
+            speed_before = speed_command
+            speed_command = min(speed_command, v_max_next)
+            rospy.loginfo_throttle(0.5,
+                f"[AccelLim] v={cur_speed:.2f} cmd={speed_before:.2f}->{speed_command:.2f} "
+                f"kappa={kappa:.3f} ay={ay:.2f} ax_av={ax_available:.2f}")
         ### HJ : end
 
         return speed_command

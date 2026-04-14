@@ -57,8 +57,28 @@ class DynamicControllerConfigServer:
             self.yaml_data["trailing_d_gain"] = config.trailing_d_gain
             self.yaml_data["blind_trailing_speed"] = config.blind_trailing_speed
 
+            ### HJ : new params
+            self.yaml_data["lat_correction_mode"] = config.lat_correction_mode
+            self.yaml_data["lat_K_stanley"] = config.lat_K_stanley
+            self.yaml_data["lat_pred_horizon"] = config.lat_pred_horizon
+            self.yaml_data["lat_pred_alpha"] = config.lat_pred_alpha
+            self.yaml_data["speed_ff_gain_accel"] = config.speed_ff_gain_accel
+            self.yaml_data["speed_ff_gain_brake"] = config.speed_ff_gain_brake
+            self.yaml_data["ff_accel_lookahead"] = config.ff_accel_lookahead
+            self.yaml_data["ff_brake_lookahead"] = config.ff_brake_lookahead
+            self.yaml_data["accel_limiter_enabled"] = config.accel_limiter_enabled
+            self.yaml_data["accel_lim_ax_max"] = config.accel_lim_ax_max
+            self.yaml_data["accel_lim_ay_max"] = config.accel_lim_ay_max
+            self.yaml_data["K_yr"] = config.K_yr
+            self.yaml_data["gp_max_correction"] = config.gp_max_correction
+            self.yaml_data["gp_uncertainty_thres"] = config.gp_uncertainty_thres
+            self.yaml_data["enable_brake_ctrl"] = config.enable_brake_ctrl
+            self.yaml_data["brake_mode"] = config.brake_mode
+            self.yaml_data["brake_speed_diff_thres"] = config.brake_speed_diff_thres
+            self.yaml_data["brake_current"] = config.brake_current
+            self.yaml_data["brake_current_min"] = config.brake_current_min
+            ### HJ : end
 
-                
             with open(self.yaml_file_path, "w") as yaml_file:
                 yaml.dump(self.yaml_data, yaml_file, default_flow_style=False)
             rospy.loginfo("Configuration saved to YAML file: %s", self.yaml_file_path)
@@ -111,8 +131,29 @@ class DynamicControllerConfigServer:
             "trailing_p_gain": float(yaml_data["trailing_p_gain"]),
             "trailing_i_gain": float(yaml_data["trailing_i_gain"]),
             "trailing_d_gain": float(yaml_data["trailing_d_gain"]),
-            "blind_trailing_speed": float(yaml_data["blind_trailing_speed"])
+            "blind_trailing_speed": float(yaml_data["blind_trailing_speed"]),
 
+            ### HJ : new params (safe defaults for old yaml files)
+            "lat_correction_mode": int(yaml_data.get("lat_correction_mode", 0)),
+            "lat_K_stanley": float(yaml_data.get("lat_K_stanley", 1.5)),
+            "lat_pred_horizon": float(yaml_data.get("lat_pred_horizon", 0.3)),
+            "lat_pred_alpha": float(yaml_data.get("lat_pred_alpha", 0.3)),
+            "speed_ff_gain_accel": float(yaml_data.get("speed_ff_gain_accel", 0.0)),
+            "speed_ff_gain_brake": float(yaml_data.get("speed_ff_gain_brake", 0.0)),
+            "ff_accel_lookahead": float(yaml_data.get("ff_accel_lookahead", 0.0)),
+            "ff_brake_lookahead": float(yaml_data.get("ff_brake_lookahead", 0.0)),
+            "accel_limiter_enabled": bool(yaml_data.get("accel_limiter_enabled", True)),
+            "accel_lim_ax_max": float(yaml_data.get("accel_lim_ax_max", 5.0)),
+            "accel_lim_ay_max": float(yaml_data.get("accel_lim_ay_max", 4.5)),
+            "K_yr": float(yaml_data.get("K_yr", 0.0)),
+            "gp_max_correction": float(yaml_data.get("gp_max_correction", 0.05)),
+            "gp_uncertainty_thres": float(yaml_data.get("gp_uncertainty_thres", 0.1)),
+            "enable_brake_ctrl": bool(yaml_data.get("enable_brake_ctrl", False)),
+            "brake_mode": int(yaml_data.get("brake_mode", 0)),
+            "brake_speed_diff_thres": float(yaml_data.get("brake_speed_diff_thres", 0.5)),
+            "brake_current": float(yaml_data.get("brake_current", 15.0)),
+            "brake_current_min": float(yaml_data.get("brake_current_min", 3.0)),
+            ### HJ : end
         }          
         return default_config
 
@@ -122,7 +163,16 @@ class DynamicControllerConfigServer:
         if config.save_params:
             self.save_yaml(config)
             config.save_params = False
-            
+        if config.load_params:
+            config.load_params = False
+            try:
+                self.yaml_data = self.get_yaml_values(self.yaml_file_path)
+                loaded = self.decode_yaml(self.yaml_data)
+                config.update(loaded)
+                rospy.loginfo(f"[Controller] Params loaded from {self.yaml_file_path}")
+            except Exception as e:
+                rospy.logerr(f"[Controller] Failed to load params: {e}")
+
         rospy.loginfo("L1 Parameter Updated")
         # Ensuring nice rounding by 0.05
         config.t_clip_min = round(config.t_clip_min * 200) / 200 # round to 0.005
