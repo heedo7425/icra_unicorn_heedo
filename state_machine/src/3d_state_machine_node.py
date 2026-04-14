@@ -821,6 +821,25 @@ class StateMachine:
         else:
             return np.abs(self.cur_d) < threshold_m  # [m]
 
+    def _get_adaptive_close_threshold(self) -> float:
+        """Speed-adaptive close-to-raceline threshold.
+        - At launch / struggling (v_cur << v_target): tight → recovery triggers easily
+        - Normal driving (v_cur ≈ v_target): loose → recovery rarely triggers
+        """
+        tight = rospy.get_param("state_machine/close_threshold_tight", 0.2)
+        loose = rospy.get_param("state_machine/close_threshold_loose", 0.5)
+        speed_ratio_thres = rospy.get_param("state_machine/close_speed_ratio_thres", 0.5)
+        try:
+            cur_s_idx = int(self.cur_s / self.waypoints_dist) % self.num_glb_wpnts
+            v_target = self.cur_gb_wpnts.list[cur_s_idx].vx_mps
+            if v_target < 0.05:
+                return loose
+            if self.cur_vs < v_target * speed_ratio_thres:
+                return tight
+            return loose
+        except Exception:
+            return loose
+
     def _check_close_to_raceline_heading(self, threshold_deg=None) -> bool:
 
         cloest_wpnt_idx = int(self.cur_s / self.waypoints_dist)%self.num_glb_wpnts
