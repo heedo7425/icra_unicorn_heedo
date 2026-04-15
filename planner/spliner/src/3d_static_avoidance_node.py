@@ -254,8 +254,11 @@ class StaticAvoidance3D:
     def _decide_obstacle_strategy_gb_aware(
             self, obs_s, obs_d, obs_radius, gb_wpnts) -> Tuple[str, str]:
         """
-        GB-aware direction decision (from smart_static_avoidance_node.py:3355-3427).
-        Prefer left shift unless left side has no space.
+        GB-aware direction decision.
+        BUGFIX: 원본은 gb_wp.d_left 만 보고 threshold 비교 — 장애물 위치 무시.
+        장애물이 left 에 붙어있고 raceline~left wall 이 커도 실제 통과 gap 은
+        0 가까울 수 있음. 결과: 좁은 쪽으로 갔다가 Track3DValidator 필터 막힘.
+        양쪽 실제 gap (장애물 edge ↔ wall) 을 계산해서 공간 큰 쪽 선택.
         """
         if gb_wpnts is None or len(gb_wpnts) == 0:
             return ('right', 'left') if obs_d > 0 else ('left', 'right')
@@ -264,11 +267,30 @@ class StaticAvoidance3D:
         obs_s_idx = int(obs_s / wpnt_dist) % len(gb_wpnts)
         gb_wp = gb_wpnts[obs_s_idx]
 
-        left_space = gb_wp.d_left
-        if left_space > OPPOSITE_SPACE_THRESHOLD:
+        # 장애물 left/right edge in d (sign convention: +d = left)
+        obs_d_left = obs_d + obs_radius
+        obs_d_right = obs_d - obs_radius
+
+        # Gap = obstacle edge to wall
+        left_gap = gb_wp.d_left - obs_d_left          # positive if room on left
+        right_gap = gb_wp.d_right + obs_d_right       # positive if room on right
+        # (right wall at d = -gb_wp.d_right; gap = obs_d_right - (-gb_wp.d_right))
+
+        min_space = self.width_car + self.evasion_dist
+
+        left_ok = left_gap >= min_space
+        right_ok = right_gap >= min_space
+
+        if left_ok and not right_ok:
             return ('right', 'left')
-        else:
+        elif right_ok and not left_ok:
             return ('left', 'right')
+        else:
+            # 둘 다 OK 거나 둘 다 애매: 더 넓은 쪽 선택
+            if left_gap >= right_gap:
+                return ('right', 'left')
+            else:
+                return ('left', 'right')
 
     def _publish_space_debug(self, obstacle, gb_wpnts, obs_s_idx, direction):
         """Publish left/right gap debug markers."""
