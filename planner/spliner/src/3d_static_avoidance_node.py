@@ -442,10 +442,24 @@ class StaticAvoidance3D:
         # Index in resampled array where spline ends (GB additions begin)
         n_spline_uni = int(np.searchsorted(arc_uni, spline_arc_len))
 
-        # --- Frenet conversion (single source of truth for s, d) ---
-        sd = self.converter.get_frenet(samples[:, 0], samples[:, 1])
-        s_arr = sd[0]
-        d_arr = sd[1]
+        # --- 3D-safe s, d (no 2D nearest projection) ---
+        # BUGFIX: 원본 get_frenet(x,y) 는 2D 최근접 투영이라 3D 트랙 XY 오버랩
+        # (다리/교차로 두 층이 XY 겹침) 에서 한 샘플 (s, d) 쌍이 다른 층으로
+        # flip → spline_z / gb_wpnt_i / ref.vx_mps 동시에 튐. recovery 에서
+        # 실측 & 수정 검증 완료 (e7d5157). BPoly 가 (cur_x, cur_y) 에서
+        # 시작하므로:
+        #   s: cur_s + arc-length 누적 (cur_s 는 3D-aware C++ frenet_conversion)
+        #   d: 확정된 s 의 raceline 접선→법선 방향 signed 투영
+        s_arr = (float(self.cur_s) + arc_uni) % float(self.gb_max_s)
+
+        ref_x = np.asarray(self.converter.spline_x(s_arr)).flatten()
+        ref_y = np.asarray(self.converter.spline_y(s_arr)).flatten()
+        dx_ds = np.asarray(self.converter.spline_x(s_arr, 1)).flatten()
+        dy_ds = np.asarray(self.converter.spline_y(s_arr, 1)).flatten()
+        t_norm = np.sqrt(dx_ds * dx_ds + dy_ds * dy_ds) + 1e-9
+        nx = -dy_ds / t_norm
+        ny = dx_ds / t_norm
+        d_arr = (samples[:, 0] - ref_x) * nx + (samples[:, 1] - ref_y) * ny
 
         # z from reference path surface (uses s only, consistent with s_arr)
         z_arr = np.array(self.converter.spline_z(s_arr)).flatten()
