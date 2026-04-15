@@ -396,12 +396,24 @@ class SQPAvoidance3DNode:
             # Cartesian + CCMA smoothing
             resp = self.converter.get_cartesian(evasion_s, evasion_d).transpose()
             smoothed_xy_points = self.ccma.filter(resp)
-            smoothed_sd_points = self.converter.get_frenet(smoothed_xy_points[:, 0], smoothed_xy_points[:, 1])
 
-            evasion_s = smoothed_sd_points[0]
-            evasion_d = smoothed_sd_points[1]
+            # BUGFIX: 기존엔 smoothed XY 에 대해 get_frenet 재투영 — 2D 최근접이라
+            # 3D 트랙 XY 오버랩에서 샘플 s 가 다른 층으로 flip 가능.
+            # s_array 는 이미 확정 (linspace) 이고 CCMA 는 XY 만 살짝 스무딩할 뿐
+            # s 축 샘플 위치를 바꾸지 않음 → s 는 그대로 재사용, d 만 geometric
+            # normal projection 으로 재계산 (recovery/static 수정과 동일 방식).
             evasion_x = smoothed_xy_points[:, 0]
             evasion_y = smoothed_xy_points[:, 1]
+            # evasion_s is already set above: np.mod(s_array, scaled_max_s)
+
+            ref_x = np.asarray(self.converter.spline_x(evasion_s)).flatten()
+            ref_y = np.asarray(self.converter.spline_y(evasion_s)).flatten()
+            dx_ds = np.asarray(self.converter.spline_x(evasion_s, 1)).flatten()
+            dy_ds = np.asarray(self.converter.spline_y(evasion_s, 1)).flatten()
+            t_norm = np.sqrt(dx_ds * dx_ds + dy_ds * dy_ds) + 1e-9
+            nx = -dy_ds / t_norm
+            ny = dx_ds / t_norm
+            evasion_d = (evasion_x - ref_x) * nx + (evasion_y - ref_y) * ny
 
             # Track3DValidator: reject if spline crosses track boundary
             if self.track_validator is not None:
