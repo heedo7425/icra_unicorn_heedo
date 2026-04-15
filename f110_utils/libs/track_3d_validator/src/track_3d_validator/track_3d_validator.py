@@ -36,6 +36,8 @@ class Track3DValidator:
         self.wpnt_dist = gb_wpnts[1].s_m - gb_wpnts[0].s_m
         self.max_idx = len(gb_wpnts)
         self.max_s = converter.raceline_length
+        # Keep wpnt ref for index-based bound s-mapping
+        self._gb_wpnts_ref = gb_wpnts
 
         # s-based boundary mapping (init 1-time)
         self.has_boundary = False
@@ -45,18 +47,35 @@ class Track3DValidator:
     def _precompute_boundary_s(self):
         """
         Map each boundary segment to its s-coordinate on the reference path.
-        Uses get_approx_s for robust mapping even when boundary count != waypoint count.
-        This runs once at init — performance is not critical.
+
+        Preferred path: bound 개수 == wpnt 개수 일 때 wpnt.s_m 을 인덱스로 직접 할당.
+        global_waypoints.json 의 bound 가 각 wpnt 에서 d 방향 proj 로 생성되므로
+        인덱스 매칭이 정확 (검증 완료: 오차 0m).
+        Fallback: 개수 불일치 시 get_approx_s 투영. 헤어핀/apex/overlap 에서 깨질 수
+        있으므로 경고 출력.
         """
         conv = self.converter
         if not conv.has_track_bounds:
             rospy.logwarn("[Track3DValidator] No track bounds loaded, Stage 2 disabled")
             return
 
-        # Map boundary points to reference path s using 2D nearest search
-        # This is init-only, so get_approx_s (vectorized) is fine
-        left_s = conv.get_approx_s(conv.left_bounds[:, 0], conv.left_bounds[:, 1])
-        right_s = conv.get_approx_s(conv.right_bounds[:, 0], conv.right_bounds[:, 1])
+        wpnt_s = np.array([w.s_m for w in self._gb_wpnts_ref], dtype=float)
+        n_wpnt = len(wpnt_s)
+        n_left = len(conv.left_bounds)
+        n_right = len(conv.right_bounds)
+
+        if n_left == n_wpnt and n_right == n_wpnt:
+            left_s = wpnt_s
+            right_s = wpnt_s
+            mapping_mode = "index (1:1)"
+        else:
+            rospy.logwarn(
+                f"[Track3DValidator] bound/wpnt count mismatch "
+                f"(wpnt={n_wpnt}, left={n_left}, right={n_right}) → projection fallback"
+            )
+            left_s = conv.get_approx_s(conv.left_bounds[:, 0], conv.left_bounds[:, 1])
+            right_s = conv.get_approx_s(conv.right_bounds[:, 0], conv.right_bounds[:, 1])
+            mapping_mode = "projection (get_approx_s)"
 
         # Segment s = midpoint of two consecutive boundary points' s values
         # Handle circular wrap-around
@@ -65,7 +84,7 @@ class Track3DValidator:
 
         self.has_boundary = True
         rospy.loginfo(
-            f"[Track3DValidator] Boundary s-mapping done: "
+            f"[Track3DValidator] Boundary s-mapping done ({mapping_mode}): "
             f"{len(self.left_seg_s_mid)} left segs, {len(self.right_seg_s_mid)} right segs, "
             f"max_s={self.max_s:.2f}m"
         )
