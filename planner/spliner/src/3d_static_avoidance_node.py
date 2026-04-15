@@ -417,8 +417,18 @@ class StaticAvoidance3D:
             end_pt = samples[-1].copy()
             samples[:, 0] = savgol_filter(samples[:, 0], SMOOTH_OTWPNTS_WINDOW, SMOOTH_OTWPNTS_POLYORDER)
             samples[:, 1] = savgol_filter(samples[:, 1], SMOOTH_OTWPNTS_WINDOW, SMOOTH_OTWPNTS_POLYORDER)
-            samples[0] = start_pt
+            # BUGFIX: original only blended the end. The start just had
+            # samples[0] = start_pt with no taper, so the first few samples
+            # (savgol-shifted) created a visible kink at the very start.
+            # Mirror the end-side blending at the start.
             blend_len = min(5, len(samples) - 1)
+            # Start-side taper: samples[0] pinned, blend toward savgol output
+            for bi in range(blend_len):
+                idx = bi
+                w = bi / blend_len  # 0 at idx=0 (pure start_pt), ->1 (savgol)
+                samples[idx] = start_pt * (1 - w) + samples[idx] * w
+            samples[0] = start_pt
+            # End-side taper: savgol -> end_pt
             for bi in range(blend_len):
                 idx = len(samples) - blend_len + bi
                 w = bi / blend_len
