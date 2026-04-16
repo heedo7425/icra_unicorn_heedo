@@ -20,10 +20,19 @@
     doc="Enable smart waypoints velocity scaling" />
   <arg name="use_local_racing_line" default="false"
     doc="Enable event-triggered local racing line replanning" />
+  <!-- ### HJ : servo calibration mode (sweeps raw servo positions, records bags, fits poly into vesc.yaml). -->
+  <arg name="calibration" default="false"
+    doc="Enable servo calibration sweep: forces linear map, runs recorder+fitter, updates vesc.yaml." />
 
   <param name="map"             value="$(arg map)" />
   <param name="racecar_version" value="$(arg racecar_version)" />
   <param name="sim"             value="$(arg sim)" />
+
+  <!-- ### HJ : during calibration, force nonlinear mapping OFF so the algebraic trick
+       delta_cmd = (target_servo - offset)/gain produces deterministic raw servo values.
+       Must be set BEFORE middle_level.launch starts the vesc/ackermann_to_vesc node. -->
+  <param if="$(arg calibration)"
+         name="/vesc/enable_nonlinear_servo_gain" value="false" />
 
   <!-- ══════════════════ REAL CAR ══════════════════ -->
   <group unless="$(arg sim)">
@@ -123,6 +132,14 @@
   <node name="lap_analyser" pkg="lap_analyser" type="lap_analyser.py" output="screen">
     <param name="loc_algo" value="$(arg algo)" />
   </node>
+
+  <!-- ### HJ : Servo calibration (recorder + fitter). Runs only when calibration:=true.
+       No effect on normal pipeline when false (default). -->
+  <group if="$(arg calibration)">
+    <include file="$(find stack_master)/launch/servo_calibration.launch">
+      <arg name="racecar_version" value="$(arg racecar_version)" />
+    </include>
+  </group>
 
   <!-- Dynamic planner parameter servers -->
   <group ns="dyn_planners">

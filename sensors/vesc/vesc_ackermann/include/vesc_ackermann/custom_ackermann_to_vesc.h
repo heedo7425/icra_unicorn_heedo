@@ -31,6 +31,7 @@
 #include <ros/ros.h>
 #include <ackermann_msgs/AckermannDriveStamped.h>
 #include <nav_msgs/Odometry.h>
+#include <vector>
 
 namespace vesc_ackermann
 {
@@ -48,6 +49,11 @@ private:
   // custom:
   double acceleration_to_current_gain_, deceleration_to_current_gain_;
   double velocity_to_current_gain_;
+  // ### HJ : nonlinear servo mapping (Ackermann linkage is physically nonlinear).
+  // servo = a0 + a1*d + a2*d^2 + ... for d = steering_angle [rad].
+  // Disabled by default; falls back to linear if flag is false or coeffs empty.
+  bool enable_nonlinear_servo_gain_;
+  std::vector<double> steering_servo_poly_coeffs_;
 
   // variables
   double linear_velocity_x_;

@@ -48,10 +48,19 @@ current_timeout: 0.1 # s for correct interpolation the controller must publish a
 # steering_angle_to_servo_offset: 0.555 # obtained 03.02.2023
 
 # steering_angle_to_servo_gain: 0.885 # obtained 03.02.2023
-steering_angle_to_servo_gain: 0.5153 # obtained 03.02.2023
-steering_angle_to_servo_offset: 0.405 # 0.525 # 
-# steering_angle_to_servo_gain: -0.945 # obtained 03.02.202for car2 0.56
 
+
+# steering_angle_to_servo_gain: 0.5153 # Long Servo Horn
+# steering_angle_to_servo_offset: 0.405 # Long Servo Horn
+
+steering_angle_to_servo_gain: 0.644 # Short Servo Horn
+steering_angle_to_servo_offset: 0.41 # Short Servo Horn
+# ### HJ : activate the nonlinear servo mapping below
+enable_nonlinear_servo_gain: false
+# ### HJ : servo = a0 + a1*d + a2*d^2 + ... (auto-written by fit_steering_poly.py)
+steering_servo_poly_coeffs: [0.417841, 0.749097, -0.212692, 0.034477]
+
+# steering_angle_to_servo_gain: -0.945 # obtained 03.02.202for car2 0.56
 # steering_angle_to_servo_offset: 0.445 # obtained 19.02.2023
 
 #offset johnny 0.417

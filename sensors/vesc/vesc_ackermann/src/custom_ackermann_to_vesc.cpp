@@ -57,6 +57,24 @@ AckermannToVesc::AckermannToVesc(ros::NodeHandle nh, ros::NodeHandle private_nh)
   if (!getRequiredParam(nh, "velocity_to_current_gain", &velocity_to_current_gain_))
     return;
 
+  // ### HJ : optional nonlinear servo mapping (calibrated poly in rad -> servo[0,1]).
+  // Keys are OPTIONAL: if missing, defaults keep the legacy linear behaviour untouched.
+  nh.param<bool>("enable_nonlinear_servo_gain", enable_nonlinear_servo_gain_, false);
+  nh.param<std::vector<double>>("steering_servo_poly_coeffs",
+                                steering_servo_poly_coeffs_, std::vector<double>{});
+  if (enable_nonlinear_servo_gain_ && steering_servo_poly_coeffs_.size() < 2) {
+    ROS_WARN("AckermannToVesc: enable_nonlinear_servo_gain=true but "
+             "steering_servo_poly_coeffs has <2 entries. Falling back to linear mapping.");
+    enable_nonlinear_servo_gain_ = false;
+  }
+  if (enable_nonlinear_servo_gain_) {
+    std::stringstream ss;
+    for (size_t i = 0; i < steering_servo_poly_coeffs_.size(); ++i) {
+      ss << (i ? ", " : "") << steering_servo_poly_coeffs_[i];
+    }
+    ROS_INFO("AckermannToVesc: nonlinear servo mapping ENABLED. coeffs=[%s]", ss.str().c_str());
+  }
+
   // create publishers to vesc electric-RPM (speed) and servo commands
   erpm_pub_ = nh.advertise<std_msgs::Float64>("commands/motor/speed", 10);
   current_pub_ = nh.advertise<std_msgs::Float64>("commands/motor/current", 10);
@@ -87,7 +105,19 @@ void AckermannToVesc::ackermannCmdCallback(const AckermannMsgPtr& cmd)
 {
   // calc steering angle (servo)
   std_msgs::Float64::Ptr servo_msg(new std_msgs::Float64);
-  servo_msg->data = steering_to_servo_gain_ * cmd->drive.steering_angle + steering_to_servo_offset_;
+  if (enable_nonlinear_servo_gain_) {
+    // ### HJ : servo = a0 + a1*d + a2*d^2 + ... (Horner's method)
+    const double d = cmd->drive.steering_angle;
+    double s = 0.0;
+    for (int i = static_cast<int>(steering_servo_poly_coeffs_.size()) - 1; i >= 0; --i) {
+      s = s * d + steering_servo_poly_coeffs_[i];
+    }
+    if (s < 0.0) s = 0.0;
+    if (s > 1.0) s = 1.0;
+    servo_msg->data = s;
+  } else {
+    servo_msg->data = steering_to_servo_gain_ * cmd->drive.steering_angle + steering_to_servo_offset_;
+  }
 
   // abuse jerk to indicate whether we should follow acceleration commands or not 
   // (hacky but avoids needing new message type - TODO replace this by bitmask in custom ackermann message)
