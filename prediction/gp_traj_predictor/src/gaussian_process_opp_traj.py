@@ -383,13 +383,14 @@ class GaussianProcessOppTraj(object):
                         oppwpnts_list[i].x_m = resampled_wpnts_xy[0][j]
                         oppwpnts_list[i].y_m = resampled_wpnts_xy[1][j]
                         oppwpnts_list[i].d_m = resampled_opponent_d[j]
-                        oppwpnts_list[i].proj_vs_mps = resampled_opponent_vs[j] 
-                        oppwpnts_list[i].vd_mps = resampled_opponent_vd[j] 
+                        oppwpnts_list[i].proj_vs_mps = resampled_opponent_vs[j]
+                        oppwpnts_list[i].vd_mps = resampled_opponent_vd[j]
                         if not whole_lap:
                             oppwpnts_list[i].d_var = sigma_d[j]
                         else:
                             oppwpnts_list[i].d_var = 0
                         oppwpnts_list[i].vs_var = sigma_vs[j]
+                        oppwpnts_list[i].is_observed = True
         opp_traj_marker_array = self._visualize_opponent_wpnts(oppwpnts_list=oppwpnts_list)
 
         return oppwpnts_list , opp_traj_marker_array
@@ -398,19 +399,26 @@ class GaussianProcessOppTraj(object):
 
     def make_initial_opponent_trajectory_msg(self, ego_s_original:list):
 
-         #make trajectory with velocity 100 for the first half lap
+        # Initialize unobserved regions with a physically-reasonable estimate
+        # (raceline vx_mps * 0.9 — assumes opponent is slightly slower than
+        # the optimal raceline) instead of the old sentinel 100. Downstream
+        # consumers can now use proj_vs_mps directly without knowing about
+        # any magic number. Observation status is carried on the explicit
+        # OppWpnt.is_observed flag, which get_opponnent_wpnts() flips to
+        # True once GP posterior values land in a segment.
         resampled_wpnts_xy_original = self.converter.get_cartesian(ego_s_original , np.zeros(len(ego_s_original)).tolist())
         oppwpnts_list = []
         i=0
-        
+
         for i in range(len(ego_s_original)):
             oppwpnts = OppWpnt()
             oppwpnts.x_m = resampled_wpnts_xy_original[0][i]
             oppwpnts.y_m = resampled_wpnts_xy_original[1][i]
             oppwpnts.s_m = ego_s_original[i]
             oppwpnts.d_m = 0
-            oppwpnts.proj_vs_mps = 100
+            oppwpnts.proj_vs_mps = self.global_wpnts.wpnts[i].vx_mps * 0.9
             oppwpnts.vd_mps = 0
+            oppwpnts.is_observed = False
             oppwpnts_list.append(oppwpnts)
         return oppwpnts_list
 
@@ -438,6 +446,10 @@ class GaussianProcessOppTraj(object):
     
         i=0
         for i in range(len(oppwpnts_list)):
+            # Orange marks unobserved regions (proj_vs_mps is the
+            # raceline-vx * 0.9 fallback, not a GP posterior).
+            # is_observed flips to True once GP updates that segment.
+            is_sentinel = not oppwpnts_list[i].is_observed
             marker_height = oppwpnts_list[i].proj_vs_mps/self.max_velocity
 
             marker = Marker(header=rospy.Header(frame_id="map"), id = i, type = Marker.CYLINDER)
@@ -449,10 +461,15 @@ class GaussianProcessOppTraj(object):
             marker.scale.y = min(max(5 * oppwpnts_list[i].d_var, 0.07),0.7)
             marker.scale.z = marker_height
             marker.color.a = 1.0
-            marker.color.r = 1.0
-            marker.color.g = 1.0
-            marker.color.b = 0.0
-            opp_traj_marker_array.markers.append(marker)#frenpy 
+            if is_sentinel:
+                marker.color.r = 1.0
+                marker.color.g = 0.5
+                marker.color.b = 0.0
+            else:
+                marker.color.r = 1.0
+                marker.color.g = 1.0
+                marker.color.b = 0.0
+            opp_traj_marker_array.markers.append(marker)#frenpy
     
 
         return opp_traj_marker_array

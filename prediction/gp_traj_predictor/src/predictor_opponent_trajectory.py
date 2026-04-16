@@ -128,6 +128,9 @@ class GaussianProcessOppTraj(object):
             new_oppwpnts.d_m = oppwpnts_list[i].d_m
             new_oppwpnts.proj_vs_mps = oppwpnts_list[i].proj_vs_mps
             new_oppwpnts.vd_mps = oppwpnts_list[i].vd_mps
+            new_oppwpnts.d_var = oppwpnts_list[i].d_var
+            new_oppwpnts.vs_var = oppwpnts_list[i].vs_var
+            new_oppwpnts.is_observed = oppwpnts_list[i].is_observed
             oppwpnts_list_doublelap.append(new_oppwpnts)
         around_origin = False
         for i in range(len(proj_opp_detections)-1):
@@ -235,6 +238,9 @@ class GaussianProcessOppTraj(object):
     
         i=0
         for i in range(len(oppwpnts_list)):
+            # Orange marks unobserved regions (proj_vs_mps is the
+            # raceline-vx * 0.9 fallback, not a GP posterior).
+            is_sentinel = not oppwpnts_list[i].is_observed
             marker_height = oppwpnts_list[i].proj_vs_mps/self.max_velocity
 
             marker = Marker(header=rospy.Header(frame_id="map"), id = i, type = Marker.CYLINDER)
@@ -245,7 +251,12 @@ class GaussianProcessOppTraj(object):
             marker.scale.x = min(max(5 * oppwpnts_list[i].d_var, 0.07),0.7)
             marker.scale.y = min(max(5 * oppwpnts_list[i].d_var, 0.07),0.7)
             marker.scale.z = marker_height
-            if oppwpnts_list[i].vs_var == 69:
+            if is_sentinel:
+                marker.color.a = 1.0
+                marker.color.r = 1.0
+                marker.color.g = 0.5
+                marker.color.b = 0.0
+            elif oppwpnts_list[i].vs_var == 69:
                 marker.color.a = 0.8
                 marker.color.r = 1.0
                 marker.color.g = 0.0
@@ -255,7 +266,7 @@ class GaussianProcessOppTraj(object):
                 marker.color.r = 1.0
                 marker.color.g = 1.0
                 marker.color.b = 0.0
-            opp_traj_marker_array.markers.append(marker)#frenpy 
+            opp_traj_marker_array.markers.append(marker)#frenpy
     
 
         return opp_traj_marker_array

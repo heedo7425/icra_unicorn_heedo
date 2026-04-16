@@ -31,8 +31,16 @@ class OppTrajPredictor:
 
         # ROS Parameters
         self.opponent_traj_topic = '/opponent_trajectory'
-        self.glob2frenet = rospy.ServiceProxy("convert_glob2frenetarr_service", Glob2FrenetArr)
-        self.frenet2glob = rospy.ServiceProxy("convert_frenet2globarr_service", Frenet2GlobArr)
+        # BUGFIX: persistent=True reuses one TCP connection across calls.
+        # Without it rospy opens/closes a socket per call -> with a non-loopback
+        # ROS_MASTER_URI the kernel can't recycle the (local_ip, port) tuple
+        # (TIME_WAIT ~60s) and ephemeral ports exhaust after sustained
+        # high-rate calls, killing the node with OSError 99 /
+        # ServiceException("unable to contact master").
+        self.glob2frenet = rospy.ServiceProxy(
+            "convert_glob2frenetarr_service", Glob2FrenetArr, persistent=True)
+        self.frenet2glob = rospy.ServiceProxy(
+            "convert_frenet2globarr_service", Frenet2GlobArr, persistent=True)
         self.loop_rate = 10  # Hz
 
         self.USE_V_D = rospy.get_param('~use_vd_prediction', True)
@@ -131,6 +139,9 @@ class OppTrajPredictor:
     def visualize_opponent_wpnts(self, oppwpnts_list: list):
         opp_traj_marker_array = MarkerArray()
         for i in range(len(oppwpnts_list)):
+            # Orange marks unobserved regions (proj_vs_mps is the
+            # raceline-vx * 0.9 fallback, not a GP posterior).
+            is_sentinel = not oppwpnts_list[i].is_observed
             marker_height = oppwpnts_list[i].proj_vs_mps / 10.0
             marker = Marker(header=rospy.Header(frame_id="map"), id=i, type=Marker.CYLINDER)
             marker.pose.position.x = oppwpnts_list[i].x_m
@@ -140,7 +151,12 @@ class OppTrajPredictor:
             marker.scale.x = min(max(5 * oppwpnts_list[i].d_var, 0.07), 0.7)
             marker.scale.y = min(max(5 * oppwpnts_list[i].d_var, 0.07), 0.7)
             marker.scale.z = marker_height
-            if oppwpnts_list[i].vs_var == 69:
+            if is_sentinel:
+                marker.color.a = 1.0
+                marker.color.r = 1.0
+                marker.color.g = 0.5
+                marker.color.b = 0.0
+            elif oppwpnts_list[i].vs_var == 69:
                 marker.color.a = 0.8
                 marker.color.r = 1.0
                 marker.color.g = 0.0
@@ -555,4 +571,13 @@ class OppTrajPredictor:
 
 if __name__ == '__main__':
     node = OppTrajPredictor()
-    node.loop()
+    try:
+        node.loop()
+    except rospy.ServiceException as e:
+        # roscore shutting down mid-loop -> service calls fail; exit quietly.
+        if rospy.is_shutdown():
+            rospy.loginfo(f"[Opp. Pred.] shutdown during service call: {e}")
+        else:
+            raise
+    except rospy.ROSInterruptException:
+        pass
