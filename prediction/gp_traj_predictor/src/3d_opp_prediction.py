@@ -22,6 +22,8 @@ from dynamic_reconfigure.msg import Config
 from std_srvs.srv import SetBool, SetBoolResponse
 from tf.transformations import euler_from_quaternion
 
+from track_3d_validator import circular_s_dist, signed_s_dist
+
 OPP_TRAJ_USE_THRESHOLD = 0.35
 
 
@@ -138,15 +140,28 @@ class OppTrajPredictor:
 
     def visualize_opponent_wpnts(self, oppwpnts_list: list):
         opp_traj_marker_array = MarkerArray()
+        # Match the normalization used by gaussian_process_opp_traj /
+        # predictor_opponent_trajectory so all three viz nodes produce
+        # consistent cylinder heights on /opponent_traj_markerarray.
+        max_vel = max((wp.vx_mps for wp in self.wpnts_updated), default=10.0)
+        if max_vel <= 1e-3:
+            max_vel = 10.0
+        # OppWpnt has no z_m field; pull track-surface z from spline_z(s) so
+        # cylinders sit on the actual 3D surface instead of z=0.
+        s_arr = np.array([wp.s_m for wp in oppwpnts_list])
+        try:
+            z_surface_arr = np.asarray(self.converter.spline_z(s_arr)).flatten()
+        except Exception:
+            z_surface_arr = np.zeros(len(s_arr))
         for i in range(len(oppwpnts_list)):
             # Orange marks unobserved regions (proj_vs_mps is the
             # raceline-vx * 0.9 fallback, not a GP posterior).
             is_sentinel = not oppwpnts_list[i].is_observed
-            marker_height = oppwpnts_list[i].proj_vs_mps / 10.0
+            marker_height = oppwpnts_list[i].proj_vs_mps / max_vel
             marker = Marker(header=rospy.Header(frame_id="map"), id=i, type=Marker.CYLINDER)
             marker.pose.position.x = oppwpnts_list[i].x_m
             marker.pose.position.y = oppwpnts_list[i].y_m
-            marker.pose.position.z = marker_height / 2
+            marker.pose.position.z = float(z_surface_arr[i]) + marker_height / 2
             marker.pose.orientation.w = 1.0
             marker.scale.x = min(max(5 * oppwpnts_list[i].d_var, 0.07), 0.7)
             marker.scale.y = min(max(5 * oppwpnts_list[i].d_var, 0.07), 0.7)
@@ -277,9 +292,10 @@ class OppTrajPredictor:
 
                 current_opponent_d = opponent_pos_copy.obstacles[0].d_center
 
-                # Centerline (GB) convergence target
+                # Centerline (GB) convergence target — wrap-safe argmin
                 s_points_center_array = np.array([wpnt.s_m for wpnt in self.center_wpnts_msg.wpnts])
-                approx_opponent_center_indx = np.abs(s_points_center_array - current_opponent_s).argmin()
+                approx_opponent_center_indx = int(np.argmin(
+                    circular_s_dist(s_points_center_array, current_opponent_s, self.center_wpnts_max_s)))
                 opponent_approx_center_d = self.center_wpnts_msg.wpnts[approx_opponent_center_indx].d_m
 
                 current_opponent_v = opponent_pos_copy.obstacles[0].vs
@@ -288,7 +304,8 @@ class OppTrajPredictor:
 
                 if has_opponent_raceline:
                     approx_s_points_global_array = np.array([wpnt.s_m for wpnt in self.wpnts_opponent])
-                    opponent_approx_indx = np.abs(approx_s_points_global_array - current_opponent_s).argmin()
+                    opponent_approx_indx = int(np.argmin(
+                        circular_s_dist(approx_s_points_global_array, current_opponent_s, self.max_s_opponent)))
                     opponent_approx_raceline_d = self.wpnts_opponent[opponent_approx_indx].d_m
                 else:
                     approx_s_points_global_array = np.array([])
@@ -320,7 +337,10 @@ class OppTrajPredictor:
 
                         raceline_vd = 0.0
                         if has_opponent_trajectory:
-                            future_opponent_idx = np.abs(approx_s_points_global_array - future_s % self.max_s_opponent).argmin()
+                            future_opponent_idx = int(np.argmin(
+                                circular_s_dist(approx_s_points_global_array,
+                                                future_s % self.max_s_opponent,
+                                                self.max_s_opponent)))
                             next_opponent_idx = (future_opponent_idx + 1) % len(self.wpnts_opponent)
 
                             raceline_d_current = self.wpnts_opponent[future_opponent_idx].d_m
@@ -375,7 +395,10 @@ class OppTrajPredictor:
                         pos = self.frenet2glob([obs.s_center % self.max_s_updated], [obs.d_center])
                         marker.pose.position.x = pos.x[0]
                         marker.pose.position.y = pos.y[0]
-                        marker.pose.position.z = 0.1
+                        # Frenet2GlobArr returns track-surface z; lift by half the
+                        # cylinder height (scale.z = 0.15 below) so the cylinder base
+                        # sits exactly on the surface instead of half-buried.
+                        marker.pose.position.z = (pos.z[0] if hasattr(pos, 'z') and len(pos.z) > 0 else 0.0) + 0.075
 
                         marker.scale.x = 0.15
                         marker.scale.y = 0.15
@@ -442,7 +465,10 @@ class OppTrajPredictor:
                         pos = self.frenet2glob([obs.s_center % self.max_s_updated], [obs.d_center])
                         marker.pose.position.x = pos.x[0]
                         marker.pose.position.y = pos.y[0]
-                        marker.pose.position.z = 0.1
+                        # Frenet2GlobArr returns track-surface z; lift by half the
+                        # cylinder height (scale.z = 0.15 below) so the cylinder base
+                        # sits exactly on the surface instead of half-buried.
+                        marker.pose.position.z = (pos.z[0] if hasattr(pos, 'z') and len(pos.z) > 0 else 0.0) + 0.075
 
                         marker.scale.x = 0.15
                         marker.scale.y = 0.15
@@ -477,7 +503,11 @@ class OppTrajPredictor:
                     obstacle_list = []
                     prediction_list = []
 
-                    if (beginn == False and ((current_opponent_s - current_ego_s) % self.max_s_updated < self.save_distance_front or abs(current_opponent_s - current_ego_s) < self.save_distance_front)):
+                    # Wrap-safe forward distance from ego to opponent on closed loop.
+                    # Previously used (diff % max_s) OR abs(diff), which double-covered
+                    # the wrap case but relied on raw abs for the unwrapped side.
+                    fwd_dist = signed_s_dist(current_ego_s, current_opponent_s, self.max_s_updated)
+                    if not beginn and abs(fwd_dist) < self.save_distance_front:
                         beginn_s = current_opponent_s
                         beginn_d = current_opponent_d
                         beginn = True
@@ -485,7 +515,10 @@ class OppTrajPredictor:
                     opp_marker_array = MarkerArray()
 
                     for i in range(self.time_steps):
-                        opponent_approx_indx = np.abs(approx_s_points_global_array - current_opponent_s % self.max_s_opponent).argmin()
+                        opponent_approx_indx = int(np.argmin(
+                            circular_s_dist(approx_s_points_global_array,
+                                            current_opponent_s % self.max_s_opponent,
+                                            self.max_s_opponent)))
                         opponent_speed = self.wpnts_opponent[opponent_approx_indx].proj_vs_mps
                         current_opponent_s = (current_opponent_s + opponent_speed * self.dt)
                         opponent_d = self.wpnts_opponent[opponent_approx_indx].d_m
@@ -522,7 +555,10 @@ class OppTrajPredictor:
                         pos = self.frenet2glob([obs.s_center % self.max_s_updated], [obs.d_center])
                         marker.pose.position.x = pos.x[0]
                         marker.pose.position.y = pos.y[0]
-                        marker.pose.position.z = 0.1
+                        # Frenet2GlobArr returns track-surface z; lift by half the
+                        # cylinder height (scale.z = 0.15 below) so the cylinder base
+                        # sits exactly on the surface instead of half-buried.
+                        marker.pose.position.z = (pos.z[0] if hasattr(pos, 'z') and len(pos.z) > 0 else 0.0) + 0.075
 
                         marker.scale.x = 0.15
                         marker.scale.y = 0.15
@@ -552,11 +588,17 @@ class OppTrajPredictor:
                         position_beginn = self.frenet2glob([beginn_s % self.max_s_updated], [beginn_d])
                         self.marker_beginn.pose.position.x = position_beginn.x[0]
                         self.marker_beginn.pose.position.y = position_beginn.y[0]
+                        # Sit on track surface: frenet2glob returns surface z; lift by
+                        # half the sphere diameter (scale.z = 0.4) so it doesn't clip.
+                        surface_z = position_beginn.z[0] if hasattr(position_beginn, 'z') and len(position_beginn.z) > 0 else 0.0
+                        self.marker_beginn.pose.position.z = surface_z + self.marker_beginn.scale.z / 2
                         self.marker_pub_beginn.publish(self.marker_beginn)
 
                         position_end = self.frenet2glob([end_s % self.max_s_updated], [end_d])
                         self.marker_end.pose.position.x = position_end.x[0]
                         self.marker_end.pose.position.y = position_end.y[0]
+                        surface_z_end = position_end.z[0] if hasattr(position_end, 'z') and len(position_end.z) > 0 else 0.0
+                        self.marker_end.pose.position.z = surface_z_end + self.marker_end.scale.z / 2
                         self.marker_pub_end.publish(self.marker_end)
 
             self.prediction_obs_pred_pub.publish(prediction_obs_pred_arr)
