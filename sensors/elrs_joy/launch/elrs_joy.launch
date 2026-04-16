@@ -1,0 +1,39 @@
+<launch>
+    <node name="elrs_joy_node" pkg="elrs_joy" type="elrs_joy_node.py" output="screen">
+        <!-- Serial port settings -->
+        <param name="port" value="/dev/ELRS"/>
+        <param name="baud_rate" value="115200"/>
+        <!-- <param name="baud_rate" value="416666"/> -->
+
+
+        <!-- Publish rate (Hz) -->
+        <param name="publish_rate" value="100"/>
+
+        <!-- Xbox-compatible Joy message: 8 axes, 11 buttons -->
+        <param name="num_axes" value="8"/>
+        <param name="num_buttons" value="11"/>
+
+        <!-- Axis mapping: joy_index -> CRSF channel -->
+        <!-- axes[1]=Throttle(CH1), axes[3]=Steering(CH3) -->
+        <rosparam param="axes_joy_indices">[1, 3]</rosparam>
+        <rosparam param="axes_crsf_channels">[2, 0]</rosparam>
+        <!-- Axis sign: [throttle, steering], -1.0 to invert -->
+        <rosparam param="axes_invert">[1.0, -1.0]</rosparam>
+
+        <!-- Button mapping: joy_index -> CRSF channel -->
+        <!-- buttons[4]=LB(CH6), buttons[5]=RB(CH7) -->
+        <rosparam param="button_joy_indices">[4, 5]</rosparam>
+        <rosparam param="button_crsf_channels">[5, 6]</rosparam>
+
+        <!-- Button threshold (CRSF value, below=pressed) -->
+        <param name="button_threshold" value="992"/>
+
+        <!-- Deadzone for axes (0.0 ~ 1.0) -->
+        <param name="deadzone" value="0.05"/>
+
+        <!-- Failsafe timeout (seconds) -->
+        <param name="failsafe_timeout" value="0.5"/>
+
+        <param name="frame_id" value="elrs_joy"/>
+    </node>
+</launch>

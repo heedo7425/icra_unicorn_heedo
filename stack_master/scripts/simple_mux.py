@@ -38,7 +38,8 @@ class SimpleMuxNode:
         self.servo_max_abs = min(abs(servo_max_rad), abs(servo_min_rad))
 
         self.current_host = None
-        
+        self.release_time = None  ### HJ : timestamp when buttons released
+
         self.human_drive = None
         self.autodrive = None
         self.zero_msg = AckermannDriveStamped()
@@ -87,12 +88,18 @@ class SimpleMuxNode:
     def timer_callback(self, event):
         # human_drive_ = self.human_drive
         
+        ### HJ : when no button is held, publish zero for 1s then stop
         if self.current_host is None:
+            if self.release_time is not None and (rospy.Time.now() - self.release_time).to_sec() < 1.0:
+                self.zero_msg.header.stamp = rospy.Time.now()
+                self.drive_pub.publish(self.zero_msg)
             return
         if self.current_host == "autodrive" and self.check_uptodate(self.autodrive):
             drive_msg = self.clip_servo(self.autodrive)
-            drive_msg.drive.steering_angle *= 1.1
-            self.drive_pub.publish(drive_msg)                    
+            ### HJ : was *= 1.1 (hidden understeer band-aid); set to 1.0 to expose true linkage,
+            ### HJ : nonlinear servo cal (steering_servo_poly_coeffs) will absorb the linkage shape.
+            drive_msg.drive.steering_angle *= 1.0
+            self.drive_pub.publish(drive_msg)
         elif self.current_host == "humandrive" and self.check_uptodate(self.human_drive):
             drive_msg = self.clip_servo(self.human_drive)
             # if drive_msg.drive.speed > 0 and self.cur_v < 3.0:
@@ -121,7 +128,7 @@ class SimpleMuxNode:
         
         if use_human_drive:
             drive_msg = AckermannDriveStamped()
-            drive_msg.header.stamp = rospy.Time.now() 
+            drive_msg.header.stamp = rospy.Time.now()
             drive_msg.drive.steering_angle = msg.axes[3] * self.max_steer
             drive_msg.drive.speed = msg.axes[1] * self.max_speed
 
@@ -134,6 +141,12 @@ class SimpleMuxNode:
             self.current_host = "humandrive"
         elif use_controller:
             self.current_host = "autodrive"
+        else:
+            ### HJ : when neither button is held, zero out human drive so car stops
+            if self.current_host is not None:
+                self.release_time = rospy.Time.now()
+            self.human_drive = self.zero_msg
+            self.current_host = None
 
     # def drive_callback(self, msg):
     #     self.autodrive = msg
