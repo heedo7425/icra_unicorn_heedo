@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!--
+  Observation-mode launch for sampling_based_planner_3d.
+  Publishes /sampling_planner_node/* topics; does NOT inject into control pipeline.
+  ### HJ : observation-mode launch
+-->
+<launch>
+  <arg name="map_name"        default="gazebo_wall_2_iy"
+       doc="Map directory under stack_master/maps/" />
+  <arg name="vehicle_name"    default="rc_car_10th_latest"
+       doc="Vehicle params dir/key (matches 3d_gb_optimizer data layout)" />
+  <arg name="config_file"     default="$(find sampling_based_planner_3d)/config/default.yaml" />
+
+  <arg name="track_csv"       default="$(find stack_master)/maps/$(arg map_name)/$(arg map_name)_3d_smoothed.csv" />
+  <arg name="raceline_csv"    default="$(find stack_master)/maps/$(arg map_name)/$(arg map_name)_3d_$(arg vehicle_name)_timeoptimal.csv" />
+  <!-- NOTE: ROS package name for 3d_gb_optimizer/global_line/ is `global_line_3d` (see its package.xml). -->
+  <arg name="gg_dir"          default="$(find global_line_3d)/data/gg_diagrams/$(arg vehicle_name)/velocity_frame" />
+  <arg name="vehicle_params"  default="$(find global_line_3d)/data/vehicle_params/params_$(arg vehicle_name).yml" />
+
+  <node pkg="sampling_based_planner_3d"
+        type="sampling_planner_node.py"
+        name="sampling_planner_node"
+        output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="track_csv_path"      value="$(arg track_csv)" />
+    <param name="raceline_csv_path"   value="$(arg raceline_csv)" />
+    <param name="gg_dir_path"         value="$(arg gg_dir)" />
+    <param name="vehicle_params_path" value="$(arg vehicle_params)" />
+  </node>
+</launch>
