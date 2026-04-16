@@ -313,6 +313,13 @@ class OppTrajPredictor:
 
                 start = time.process_time()
 
+                # Common: beginn/end detection (used by all branches for
+                # consistent /opponent_predict/beginn + /end markers)
+                opp_size = opponent_pos_copy.obstacles[0].size
+                fwd_dist = signed_s_dist(current_ego_s, current_opponent_s, self.max_s_updated)
+                do_beginn = abs(fwd_dist) < self.save_distance_front
+                initial_opponent_s = current_opponent_s  # save before any branch modifies it
+
                 # Choose prediction method
                 use_vd_method = self.USE_V_D and self.opponent_lap_count >= 1 and abs(current_opponent_d - opponent_approx_raceline_d) > OPP_TRAJ_USE_THRESHOLD
                 use_original_method = (not self.USE_V_D or self.opponent_lap_count < 1) and (abs(current_opponent_d - opponent_approx_raceline_d) > OPP_TRAJ_USE_THRESHOLD or self.opponent_lap_count < 1)
@@ -365,13 +372,13 @@ class OppTrajPredictor:
 
                         obs = Obstacle()
                         obs.id = i
-                        obs.s_start = current_opponent_s
-                        obs.s_end = current_opponent_s
-                        obs.s_center = future_s
+                        obs.s_center = future_s % self.max_s_updated
+                        obs.s_start = (future_s - opp_size / 2) % self.max_s_updated
+                        obs.s_end = (future_s + opp_size / 2) % self.max_s_updated
                         obs.d_center = predicted_d
                         obs.d_left = obs.d_center + self.obstacle_half_width
                         obs.d_right = obs.d_center - self.obstacle_half_width
-                        obs.size = opponent_pos_copy.obstacles[0].size
+                        obs.size = opp_size
                         obs.vs = current_opponent_v
                         obs.vd = blended_vd
                         obs.is_actually_a_gap = False
@@ -433,15 +440,16 @@ class OppTrajPredictor:
 
                         interpolated_d = (1 - w) * current_opponent_d + w * opponent_approx_center_d
 
+                        future_s_linear = current_opponent_s + i * current_opponent_v * self.dt
                         obs = Obstacle()
                         obs.id = i
-                        obs.s_start = current_opponent_s
-                        obs.s_end = current_opponent_s
-                        obs.s_center = current_opponent_s + i * current_opponent_v * self.dt
+                        obs.s_center = future_s_linear % self.max_s_updated
+                        obs.s_start = (future_s_linear - opp_size / 2) % self.max_s_updated
+                        obs.s_end = (future_s_linear + opp_size / 2) % self.max_s_updated
                         obs.d_center = interpolated_d
                         obs.d_left = obs.d_center + self.obstacle_half_width
                         obs.d_right = obs.d_center - self.obstacle_half_width
-                        obs.size = opponent_pos_copy.obstacles[0].size
+                        obs.size = opp_size
                         obs.vs = current_opponent_v
                         obs.vd = 0
                         obs.is_actually_a_gap = False
@@ -494,44 +502,34 @@ class OppTrajPredictor:
                 else:
                     self.force_trailing_pub.publish(False)
 
-                    beginn = False
-                    end = False
-                    beginn_s = 0
-                    end_s = 0
-                    beginn_d = 0
-                    end_d = 0
                     obstacle_list = []
                     prediction_list = []
-
-                    # Wrap-safe forward distance from ego to opponent on closed loop.
-                    # Previously used (diff % max_s) OR abs(diff), which double-covered
-                    # the wrap case but relied on raw abs for the unwrapped side.
-                    fwd_dist = signed_s_dist(current_ego_s, current_opponent_s, self.max_s_updated)
-                    if not beginn and abs(fwd_dist) < self.save_distance_front:
-                        beginn_s = current_opponent_s
-                        beginn_d = current_opponent_d
-                        beginn = True
-
                     opp_marker_array = MarkerArray()
 
                     for i in range(self.time_steps):
+                        # Lookup at current prediction position BEFORE advance.
+                        # This aligns prediction[0] with beginn_s (VD/linear do
+                        # the same: obs.s_center = current + i*v*dt, i=0 → exact).
+                        # The old code advanced THEN set obs.s_start to the
+                        # already-shifted value, causing prediction markers to
+                        # drift ahead of the begin sphere by 1-2 steps.
                         opponent_approx_indx = int(np.argmin(
                             circular_s_dist(approx_s_points_global_array,
                                             current_opponent_s % self.max_s_opponent,
                                             self.max_s_opponent)))
                         opponent_speed = self.wpnts_opponent[opponent_approx_indx].proj_vs_mps
-                        current_opponent_s = (current_opponent_s + opponent_speed * self.dt)
                         opponent_d = self.wpnts_opponent[opponent_approx_indx].d_m
 
+                        size = opponent_pos_copy.obstacles[0].size
                         obs = Obstacle()
                         obs.id = i
-                        obs.s_start = current_opponent_s
-                        obs.s_end = current_opponent_s + opponent_speed * self.dt
-                        obs.s_center = (obs.s_start + obs.s_end) / 2
+                        obs.s_center = current_opponent_s % self.max_s_updated
+                        obs.s_start = (current_opponent_s - size / 2) % self.max_s_updated
+                        obs.s_end = (current_opponent_s + size / 2) % self.max_s_updated
                         obs.d_center = opponent_d
                         obs.d_left = opponent_d + self.obstacle_half_width
                         obs.d_right = opponent_d - self.obstacle_half_width
-                        obs.size = opponent_pos_copy.obstacles[0].size
+                        obs.size = size
                         obs.vs = opponent_speed
                         obs.vd = 0
                         obs.is_actually_a_gap = False
@@ -540,9 +538,12 @@ class OppTrajPredictor:
 
                         pds = Prediction()
                         pds.id = i
-                        pds.pred_s = (obs.s_start + obs.s_end) / 2
+                        pds.pred_s = current_opponent_s
                         pds.pred_d = opponent_d
                         prediction_list.append(pds)
+
+                        # Advance AFTER obs creation for next iteration.
+                        current_opponent_s += opponent_speed * self.dt
 
                         marker = Marker()
                         marker.header.stamp = rospy.Time.now()
@@ -570,36 +571,39 @@ class OppTrajPredictor:
 
                         opp_marker_array.markers.append(marker)
 
-                    if (beginn == True and end == False):
-                        end_s = current_opponent_s
-                        end_d = opponent_d
-                        end = True
+                    prediction_obs_arr = ObstacleArray(header=rospy.Header(stamp=rospy.Time.now(), frame_id="map"), obstacles=obstacle_list)
+                    self.prediction_obs_pub.publish(prediction_obs_arr)
 
-                        prediction_obs_arr = ObstacleArray(header=rospy.Header(stamp=rospy.Time.now(), frame_id="map"), obstacles=obstacle_list)
-                        self.prediction_obs_pub.publish(prediction_obs_arr)
+                    prediction_obs_pred_arr = PredictionArray(header=rospy.Header(stamp=rospy.Time.now(), frame_id="map"), id=opponent_pos_copy.obstacles[0].id, predictions=prediction_list)
+                    self.prediction_obs_pred_pub.publish(prediction_obs_pred_arr)
 
-                        prediction_obs_pred_arr = PredictionArray(header=rospy.Header(stamp=rospy.Time.now(), frame_id="map"), id=opponent_pos_copy.obstacles[0].id, predictions=prediction_list)
-                        self.prediction_obs_pred_pub.publish(prediction_obs_pred_arr)
+                    self.opp_marker_pub.publish(opp_marker_array)
 
-                        self.opp_marker_pub.publish(opp_marker_array)
+                    self.expire_counter = 0
 
-                        self.expire_counter = 0
+                # ===== Common: beginn/end markers (all branches) =====
+                # Previously only trajectory-follow updated these, so they
+                # froze when VD/linear was active → visible lag between
+                # prediction markers and begin/end spheres.
+                if do_beginn and len(obstacle_list) > 0:
+                    beginn_s = initial_opponent_s % self.max_s_updated
+                    beginn_d = current_opponent_d
+                    end_s = obstacle_list[-1].s_center % self.max_s_updated
+                    end_d = obstacle_list[-1].d_center
 
-                        position_beginn = self.frenet2glob([beginn_s % self.max_s_updated], [beginn_d])
-                        self.marker_beginn.pose.position.x = position_beginn.x[0]
-                        self.marker_beginn.pose.position.y = position_beginn.y[0]
-                        # Sit on track surface: frenet2glob returns surface z; lift by
-                        # half the sphere diameter (scale.z = 0.4) so it doesn't clip.
-                        surface_z = position_beginn.z[0] if hasattr(position_beginn, 'z') and len(position_beginn.z) > 0 else 0.0
-                        self.marker_beginn.pose.position.z = surface_z + self.marker_beginn.scale.z / 2
-                        self.marker_pub_beginn.publish(self.marker_beginn)
+                    position_beginn = self.frenet2glob([beginn_s], [beginn_d])
+                    self.marker_beginn.pose.position.x = position_beginn.x[0]
+                    self.marker_beginn.pose.position.y = position_beginn.y[0]
+                    surface_z_b = position_beginn.z[0] if hasattr(position_beginn, 'z') and len(position_beginn.z) > 0 else 0.0
+                    self.marker_beginn.pose.position.z = surface_z_b + self.marker_beginn.scale.z / 2
+                    self.marker_pub_beginn.publish(self.marker_beginn)
 
-                        position_end = self.frenet2glob([end_s % self.max_s_updated], [end_d])
-                        self.marker_end.pose.position.x = position_end.x[0]
-                        self.marker_end.pose.position.y = position_end.y[0]
-                        surface_z_end = position_end.z[0] if hasattr(position_end, 'z') and len(position_end.z) > 0 else 0.0
-                        self.marker_end.pose.position.z = surface_z_end + self.marker_end.scale.z / 2
-                        self.marker_pub_end.publish(self.marker_end)
+                    position_end = self.frenet2glob([end_s], [end_d])
+                    self.marker_end.pose.position.x = position_end.x[0]
+                    self.marker_end.pose.position.y = position_end.y[0]
+                    surface_z_e = position_end.z[0] if hasattr(position_end, 'z') and len(position_end.z) > 0 else 0.0
+                    self.marker_end.pose.position.z = surface_z_e + self.marker_end.scale.z / 2
+                    self.marker_pub_end.publish(self.marker_end)
 
             self.prediction_obs_pred_pub.publish(prediction_obs_pred_arr)
 
