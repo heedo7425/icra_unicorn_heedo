@@ -10,6 +10,8 @@ ADD ./.devcontainer/.install_utils /.install_utils
 
 # install ros packages
 ARG DEBIAN_FRONTEND=noninteractive
+# ### HJ : use HTTPS mirrors (port 80 blocked on this network)
+RUN sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
 RUN apt-get update && xargs apt-get install -y < /.install_utils/linux_req_car.txt 
 
 # install python packages
