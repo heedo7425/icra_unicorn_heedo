@@ -79,9 +79,11 @@ def velocity_color(vx, vmin, vmax):
 
 SPHERE_SCALE = {"x": 0.05, "y": 0.05, "z": 0.05}
 COLOR_PURPLE = {"r": 0.5, "g": 0.0, "b": 0.5, "a": 1.0}
-COLOR_YELLOW_GREEN = {"r": 0.6, "g": 0.8, "b": 0.2, "a": 1.0}
+COLOR_YELLOW_GREEN = {"r": 0.5, "g": 1.0, "b": 0.0, "a": 1.0}
 COLOR_BLUE = {"r": 0.0, "g": 0.0, "b": 1.0, "a": 1.0}
-VEL_SCALE_XY = 0.1  # cylinder diameter for vel markers
+COLOR_RED = {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0}
+VEL_SCALE_XY = 0.1          # cylinder diameter for vel markers
+VEL_SCALE_FACTOR = 0.1317   # match export_global_waypoints.py
 
 iqp_wpnts = data["global_traj_wpnts_iqp"]["wpnts"]
 sp_wpnts  = data["global_traj_wpnts_sp"]["wpnts"]
@@ -132,13 +134,14 @@ for i, w in enumerate(sp_wpnts):
 data["global_traj_markers_sp"] = {"markers": new_sp}
 print(f"  SP markers: {len(new_sp)}")
 
-# ── SP velocity markers (cylinders, height = vx_mps, z = half height) ──
+# ── SP velocity markers (cylinders, height = vx_mps * 0.1317, fixed red) ──
+# matches planner/3d_gb_optimizer/global_line/global_racing_line/export_global_waypoints.py
 new_vel = []
 for i, w in enumerate(sp_wpnts):
     vx = w["vx_mps"]
-    scale = {"x": VEL_SCALE_XY, "y": VEL_SCALE_XY, "z": round(vx, 6)}
-    c = velocity_color(vx, vmin_sp, vmax_sp)
-    new_vel.append(make_marker(i, w["x_m"], w["y_m"], round(vx / 2.0, 6), scale, c, mtype=3))
+    height = vx * VEL_SCALE_FACTOR
+    scale = {"x": VEL_SCALE_XY, "y": VEL_SCALE_XY, "z": round(height, 6)}
+    new_vel.append(make_marker(i, w["x_m"], w["y_m"], round(height / 2.0, 6), scale, COLOR_RED, mtype=3))
 data["global_traj_vel_markers_sp"] = {"markers": new_vel}
 print(f"  SP vel markers: {len(new_vel)}")
 
