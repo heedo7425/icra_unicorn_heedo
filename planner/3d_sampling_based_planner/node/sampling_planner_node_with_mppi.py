@@ -788,11 +788,12 @@ class SamplingPlannerNode:
             is_best  = (i == optimal_idx)
             is_valid = bool(valid_all[i])
 
-            # ### HJ : render invalid candidates faintly too (exploration context).
-            # Lightning bug was root-caused in upstream (seam + lateral interp), so
-            # invalid candidates no longer produce visual artefacts. Showing them
-            # back as very faint lines makes it visible which samples were rejected
-            # by friction / boundary / curvature checks.
+            # ### HJ : skip invalid candidates entirely (diagnostic).
+            # Invalid ones include polynomial overshoots + constraint violations
+            # which can produce visually rough/zigzag lines. If these are the
+            # source of the "lightning" the user sees, we'll know.
+            if not is_valid and not is_best:
+                continue
 
             s_row = s_all[i]
             n_row = n_all[i]
@@ -836,51 +837,6 @@ class SamplingPlannerNode:
             xs_ = xc - np.sin(th) * n_row
             ys_ = yc + np.cos(th) * n_row
             zs_ = zc
-
-            # ### HJ : diagnose — dump raw s/n for candidates that WILL render with
-            # a 180° kink. Root-cause investigation, no truncation applied here.
-            if is_valid and len(xs_) >= 3:
-                v1x = np.diff(xs_); v1y = np.diff(ys_)
-                seg_len = np.sqrt(v1x * v1x + v1y * v1y)
-                with np.errstate(invalid='ignore', divide='ignore'):
-                    cosang = (v1x[:-1] * v1x[1:] + v1y[:-1] * v1y[1:]) / (seg_len[:-1] * seg_len[1:] + 1e-12)
-                cosang = np.clip(cosang, -1.0, 1.0)
-                kink = np.where(cosang < -0.5)[0]
-                if len(kink) > 0 and i % 7 == 0:   # sparse log
-                    k = int(kink[0])
-                    rospy.logwarn_throttle(
-                        2.0,
-                        '[sampling][kink] cand i=%d  idx=%d angle=%.1f°  '
-                        's_row[k-1..k+2]=[%.4f, %.4f, %.4f, %.4f]  '
-                        'n_row[k-1..k+2]=[%.4f, %.4f, %.4f, %.4f]  '
-                        'seg_len[k-1..k+1]=[%.4f, %.4f, %.4f]',
-                        i, k, np.rad2deg(np.arccos(cosang[k])),
-                        float(s_row[max(0, k-1)]), float(s_row[k]),
-                        float(s_row[k+1]), float(s_row[min(len(s_row)-1, k+2)]),
-                        float(n_row[max(0, k-1)]), float(n_row[k]),
-                        float(n_row[k+1]), float(n_row[min(len(n_row)-1, k+2)]),
-                        float(seg_len[max(0,k-1)]), float(seg_len[k]),
-                        float(seg_len[min(len(seg_len)-1, k+1)]),
-                    )
-
-            # ### HJ : per-candidate cartesian gap diagnostic.
-            # If consecutive points exceed a threshold, this is literal zigzag.
-            # Expected max step at 10 m/s × 0.033 s ≈ 0.33 m. Anything > 1 m is
-            # a bug.
-            if is_valid:
-                gaps = np.sqrt(np.diff(xs_)**2 + np.diff(ys_)**2 + np.diff(zs_)**2)
-                if gaps.max() > 1.0:
-                    k = int(np.argmax(gaps))
-                    rospy.logwarn_throttle(
-                        1.0,
-                        '[sampling][zigzag] cand i=%d idx=%d→%d  gap=%.2fm  '
-                        'n_row[k]=%.3f n_row[k+1]=%.3f  '
-                        's_mod[k]=%.3f s_mod[k+1]=%.3f  th[k]=%.3f th[k+1]=%.3f',
-                        i, k, k+1, float(gaps[k]),
-                        float(n_row[k]), float(n_row[k+1]),
-                        float(s_mod[k]), float(s_mod[k+1]),
-                        float(th[k]), float(th[k+1]),
-                    )
 
             mk = Marker()
             mk.header = header

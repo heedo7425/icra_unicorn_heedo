@@ -1,0 +1,39 @@
+# ============================================================
+# MPCC Planner Parameters
+# Ported from icra_unicorn_heedo (EVO-MPCC BO_params_icra.json).
+# Kinematic bicycle model; used here as a planner, not controller.
+# ============================================================
+
+planner_freq: 30
+
+# Horizon
+N: 20
+dT: 0.05
+
+# Vehicle
+vehicle_L: 0.33
+
+# Limits
+max_speed: 12.0
+min_speed: 0.5
+max_steering: 0.6
+max_progress: 10.0
+
+# Cost weights
+w_contour: 3.9
+w_lag: 2.0            # 1.0 -> 2.0 (tighter centerline tracking to damp wiggle)
+w_progress: 3.0       # 6.0 -> 3.0 (relieve progress-vs-smoothness conflict)
+w_velocity: 3.0
+v_bias_max: 1.0
+
+# Smoothness (halved to compensate dT 0.1 -> 0.05)
+w_dv: 9.5             # 19.0 -> 9.5
+w_dsteering: 14.0     # 28.0 -> 14.0
+w_dprogress: 7.85     # 15.7 -> 7.85
+
+# Boundary
+boundary_inflation: 0.34
+
+# IPOPT
+ipopt_max_iter: 200
+ipopt_print_level: 0

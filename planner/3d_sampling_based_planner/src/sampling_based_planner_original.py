@@ -5,57 +5,14 @@ import sys
 
 g_earth = 9.81
 
-# ### HJ : debug/trace helper — stderr when SPLANNER_DEBUG=1, and a persistent
-# file log whenever the SPLANNER_LOG env flag is truthy (default off).
-# Log destination defaults to <pkg>/debug_log/ so it stays inside the package tree.
+# ### HJ : lightweight stderr logger so the upstream library does not need rospy.
+# Set HJ_DEBUG=1 in the env to enable verbose tracing across lap boundaries.
 import os as _os
-import time as _time
-_DEBUG = bool(int(_os.environ.get('SPLANNER_DEBUG', '0') or '0'))
-_LOG_ENABLED = bool(int(_os.environ.get('SPLANNER_LOG', '0') or '0'))
-# Override log dir via SPLANNER_LOG_DIR; otherwise resolve to <pkg>/debug_log.
-_PKG_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..'))
-_LOG_DIR  = _os.environ.get('SPLANNER_LOG_DIR', _os.path.join(_PKG_ROOT, 'debug_log'))
-_LOG_FP   = None
-def _log_open():
-    global _LOG_FP
-    if _LOG_FP is not None: return
-    if not _LOG_ENABLED: return
-    try:
-        _os.makedirs(_LOG_DIR, exist_ok=True)
-        ts = _time.strftime('%Y%m%d_%H%M%S')
-        path = _os.path.join(_LOG_DIR, 'sampling_planner_internal_%s.log' % ts)
-        _LOG_FP = open(path, 'w')
-        _LOG_FP.write('# sampling planner internal log — opened %s\n' % ts)
-        _LOG_FP.flush()
-        sys.stderr.write('[splanner-log] writing internals to %s\n' % path)
-    except Exception as _e:
-        sys.stderr.write('[splanner-log] open failed: %s\n' % _e)
-
-def _flog(msg):
-    global _LOG_FP
-    if _LOG_FP is None:
-        _log_open()
-    if _LOG_FP is not None:
-        try:
-            _LOG_FP.write(msg + '\n')
-        except Exception:
-            pass
-
+_HJ_DEBUG = bool(int(_os.environ.get('HJ_DEBUG', '0') or '0'))
 def _hj_dbg(msg):
-    # Append to the persistent file log (when enabled) and also emit to stderr
-    # when SPLANNER_DEBUG=1. Function kept as `_hj_dbg` so existing call-sites
-    # don't need mass-renaming; it's just a short name, not a hardcoded path.
-    if _LOG_ENABLED:
-        _flog(msg)
-    if _DEBUG:
-        sys.stderr.write('[splanner-dbg] ' + msg + '\n')
+    if _HJ_DEBUG:
+        sys.stderr.write('[HJ-DEBUG] ' + msg + '\n')
         sys.stderr.flush()
-
-def _log_flush():
-    global _LOG_FP
-    if _LOG_FP is not None:
-        try: _LOG_FP.flush()
-        except Exception: pass
 
 
 class LocalSamplingPlanner():
@@ -105,10 +62,10 @@ class LocalSamplingPlanner():
         n_dot_start = state['n_dot']
         n_ddot_start = state['n_ddot']
 
-        # ### HJ : entry log — full lap capture (no longer gated).
+        # ### HJ : entry log — focus on lap-boundary region (s_start near 0 or near L).
         L_dbg = float(self.track_handler.s[-1])
-        near_boundary = True   # log every tick
-        if near_boundary:
+        near_boundary = (s_start < 5.0) or (s_start > L_dbg - 5.0)
+        if _HJ_DEBUG and near_boundary:
             _hj_dbg('==== calc_trajectory cnt=%d ====' % self.traj_cnt)
             _hj_dbg('  state: s=%.4f n=%.4f s_dot=%.4f s_ddot=%.4f n_dot=%.4f n_ddot=%.4f'
                     % (s_start, n_start, s_dot_start, s_ddot_start, n_dot_start, n_ddot_start))
@@ -129,7 +86,7 @@ class LocalSamplingPlanner():
         )
 
         # ### HJ : log postprocessed raceline state right after postprocess
-        if near_boundary:
+        if _HJ_DEBUG and near_boundary:
             _ps  = postprocessed_raceline['s_post']
             _pt  = postprocessed_raceline['t_post']
             _pv  = postprocessed_raceline['s_dot_post']
@@ -152,7 +109,7 @@ class LocalSamplingPlanner():
         raceline_tendency_s = False
         if abs(rl_v0 - s_dot_start) / max(rl_v0, 1e-3) < 0.3 and relative_generation:
             raceline_tendency_s = True
-        if near_boundary:
+        if _HJ_DEBUG and near_boundary:
             _hj_dbg('  raceline_tendency_s=%s  (raceline.s_dot[0]=%.3f vs s_dot_start=%.3f)'
                     % (raceline_tendency_s, rl_v0, s_dot_start))
 
@@ -278,24 +235,9 @@ class LocalSamplingPlanner():
             's':        s_array,
             'n':        n_array,
             'V':        V_array,
-            'chi':      chi_array,
-            'ax':       ax_vf_array,
-            'ay':       ay_vf_array,
-            'kappa':    kappa_array,
             'valid':    valid_array,
             't':        t_array,
         }
-        # ### HJ : lightning diagnosis — dump one mid-lap-boundary candidate's full
-        # s, n arrays whenever we're near the lap boundary. We want to see if s
-        # actually "stops" near L while n diverges.
-        if near_boundary:
-            valid_idx = np.where(valid_array)[0]
-            if len(valid_idx) > 0:
-                j = int(valid_idx[0])
-                _hj_dbg('  CAND#%d s_start=%.3f' % (j, s_start))
-                _hj_dbg('    s_array[j]   = %s' % np.array2string(s_array[j], precision=3, max_line_width=200))
-                _hj_dbg('    n_array[j]   = %s' % np.array2string(n_array[j], precision=3, max_line_width=200))
-                _hj_dbg('    diff(s_array[j]) = %s' % np.array2string(np.diff(s_array[j]), precision=3, max_line_width=200))
 
         # choose best trajectory
         optimal_idx = self.get_optimal_trajectory_idx(
@@ -386,13 +328,6 @@ class LocalSamplingPlanner():
 
         # overall costs
         cost_array = velocity_cost_array + raceline_cost_array + prediction_cost_array
-
-        # ### HJ : expose cost breakdown for downstream MPPI-style weighted blending.
-        # Node can skip this by ignoring self.cost_* attributes.
-        self.cost_array            = cost_array
-        self.cost_velocity         = velocity_cost_array
-        self.cost_raceline         = raceline_cost_array
-        self.cost_prediction       = prediction_cost_array
 
         # return index of trajectory with the lowest cost
         opt_subset_idx = np.argmin(cost_array[valid_array])
@@ -638,12 +573,11 @@ class LocalSamplingPlanner():
         L     = float(track_handler.s[-1])
         T_lap = float(t_rl_raw[-1] - t_rl_raw[0])
         # ### HJ : log attach decision in lap-boundary region.
-        _near_b_pp = True   # ### HJ : full-lap capture (ungated)
-        if _near_b_pp:
+        _near_b_pp = (s_start < 5.0) or (s_start > L - 5.0)
+        if _HJ_DEBUG and _near_b_pp:
             _hj_dbg('  PP-ATTACH check: t_rl[-1]=%.4f horizon*1.5=%.4f T_lap=%.4f → %s'
                     % (float(t_rl[-1]), horizon * 1.5, T_lap,
                        'WILL ATTACH' if (t_rl[-1] < horizon * 1.5 and T_lap > 1e-6) else 'no attach'))
-        # ### HJ : DIAGNOSTIC — disable wrap-attach to test if it's the lightning cause.
         if len(t_rl) > 0 and t_rl[-1] < horizon * 1.5 and T_lap > 1e-6:
             # Only cover the missing time window; +1e-3 s margin for boundary rounding.
             remainder_t = horizon * 1.5 - t_rl[-1] + 1e-3
@@ -651,7 +585,7 @@ class LocalSamplingPlanner():
             # underestimation when raw sample spacing is irregular.
             K = int(np.searchsorted(t_rl_raw - t_rl_raw[0], remainder_t)) + 2
             K = min(K, len(t_rl_raw))
-            if _near_b_pp:
+            if _HJ_DEBUG and _near_b_pp:
                 _hj_dbg('  PP-ATTACH: remainder_t=%.4f K=%d  raw head s=[%.3f..%.3f]  raw head t=[%.3f..%.3f]'
                         % (remainder_t, K,
                            float(s_rl_raw[0]), float(s_rl_raw[K-1] if K>0 else s_rl_raw[0]),
@@ -694,7 +628,7 @@ class LocalSamplingPlanner():
                 chi_rl     = np.concatenate([chi_rl,     chi_attach])
                 ax_rl      = np.concatenate([ax_rl,      ax_attach])
                 ay_rl      = np.concatenate([ay_rl,      ay_attach])
-                if _near_b_pp:
+                if _HJ_DEBUG and _near_b_pp:
                     _ds_chk = np.diff(s_rl)
                     _dt_chk = np.diff(t_rl)
                     _hj_dbg('  PP-ATTACH done: now N=%d  s_rl=[%.3f..%.3f] (mono=%s)  t_rl=[%.3f..%.3f] (mono=%s)'
@@ -762,32 +696,13 @@ class LocalSamplingPlanner():
         # end values of s and s_dot (needed for lateral curves)
         s_end_values = np.zeros_like(s_dot_end_values)
 
-        # ### HJ : full-lap capture (no longer gated).
+        # ### HJ : detect lap-boundary region for verbose per-candidate dump
         L_dbg2 = float(track_handler.s[-1])
-        near_boundary2 = True
-        if near_boundary2:
-            # Dump raceline data context — is s_post smooth or does it have
-            # weird values around the horizon?
-            _ps = postprocessed_raceline['s_post']
-            _sd = postprocessed_raceline['s_dot_post']
-            _sdd = postprocessed_raceline['s_ddot_post']
-            _tp = postprocessed_raceline['t_post']
-            _hj_dbg('  GLC-CTX: s_start=%.3f s_dot_start=%.3f s_ddot_start=%.3f'
-                    % (s_start, s_dot_start, s_ddot_start))
-            _hj_dbg('           s_dot_end_rl=%.3f s_ddot_end_rl=%.3f s_dot_max=%.3f'
-                    % (s_dot_end_rl, s_ddot_end_rl, s_dot_max))
-            _hj_dbg('           s_dot_end_values=%s'
-                    % np.array2string(s_dot_end_values, precision=3, separator=','))
-            _hj_dbg('  RL:  t_post=[%.3f..%.3f] (N=%d)'
-                    % (_tp[0], _tp[-1], len(_tp)))
-            _hj_dbg('       s_post[0..5]=%s'
-                    % np.array2string(_ps[:6], precision=3))
-            _hj_dbg('       s_post[-5:]=%s'
-                    % np.array2string(_ps[-5:], precision=3))
-            _hj_dbg('       s_dot_post[-5:]=%s'
-                    % np.array2string(_sd[-5:], precision=3))
-            _hj_dbg('       s_ddot_post[-5:]=%s'
-                    % np.array2string(_sdd[-5:], precision=3))
+        near_boundary2 = (s_start < 5.0) or (s_start > L_dbg2 - 5.0)
+        if _HJ_DEBUG and near_boundary2:
+            _hj_dbg('  GLC: s_dot_end_rl=%.3f  s_ddot_end_rl=%.3f  s_dot_max=%.3f  s_dot_end_values=%s'
+                    % (float(s_dot_end_rl), float(s_ddot_end_rl), float(s_dot_max),
+                       np.array2string(s_dot_end_values, precision=3, separator=',')))
 
         for i, (s_dot_end, t_end) in enumerate(zip(s_dot_end_values, t_array[:, -1])):
 
@@ -832,22 +747,18 @@ class LocalSamplingPlanner():
                 s_ddot = s_ddot_sample
 
             # ### HJ : log per-candidate polynomial BEFORE the mod-L wrap.
-            if near_boundary2:
+            #         If `s` here has wild jumps or non-finite values we will see it.
+            if _HJ_DEBUG and near_boundary2:
                 ds_pre = np.diff(s)
                 _max_step = float(np.max(np.abs(ds_pre))) if len(ds_pre) else 0.0
-                # Check for tail oscillation: does s go backward in last 5 samples?
-                tail_min_ds = float(np.min(ds_pre[-5:])) if len(ds_pre) >= 5 else 0.0
-                _hj_dbg(('    cand i=%d s_end=%.2f s_ddot_end=%.3f  '
-                         + 'b=[%.3f, %.3f, %.3f, %.3f, %.3f]  '
-                         + 's_sample_tail5=%s  '
-                         + 's_rl_eval_tail5=%s  '
-                         + 's_tail_ds5=%s  tail_min_ds=%.4f')
-                        % (i, float(s_dot_end), float(s_ddot_end),
+                _hj_dbg(('    cand i=%d  s_dot_end=%.3f s_ddot_end=%.3f t_end=%.3f  '
+                         + 'b=[%.3f, %.3f, %.3f, %.3f, %.3f]  c=[%.3e, %.3e, %.3e, %.3e, %.3e]  '
+                         + 's_pre[0]=%.3f s_pre[-1]=%.3f span=%.3f max|ds|=%.3f finite=%s')
+                        % (i, float(s_dot_end), float(s_ddot_end), float(t_end),
                            float(b[0]), float(b[1]), float(b[2]), float(b[3]), float(b[4]),
-                           np.array2string(s_sample[-5:], precision=4) if raceline_tendency else 'N/A',
-                           np.array2string(s_rl_eval[-5:], precision=4) if raceline_tendency else 'N/A',
-                           np.array2string(ds_pre[-5:], precision=5),
-                           tail_min_ds))
+                           float(c[0]), float(c[1]), float(c[2]), float(c[3]), float(c[4]),
+                           float(s[0]), float(s[-1]), float(s[-1] - s[0]), _max_step,
+                           bool(np.all(np.isfinite(s)))))
 
             # consider track length
             s = np.mod(s, track_handler.s[-1])
@@ -883,7 +794,7 @@ class LocalSamplingPlanner():
         n_dot_array = np.zeros_like(t_array)
         n_ddot_array = np.zeros_like(t_array)
 
-        # ### HJ : our wrap-attach in postprocess_raceline now makes s_post extend past L
+        # ### HJ : wrap-attach in postprocess_raceline now makes s_post extend past L
         # (e.g. [..., 89.87, 89.93, 90.13, ...]). The original `period=L` interp requires
         # xp strictly within one period — otherwise numpy's `xp % period` wraps the
         # attached samples back to ~0, sorts xp, reorders fp, and produces garbage

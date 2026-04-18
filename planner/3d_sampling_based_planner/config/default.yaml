@@ -1,7 +1,7 @@
 # Default params for 3d_sampling_based_planner (observation mode).
 # Tuned conservatively for 1/10 RC car, ~15 m/s peak.
 
-rate_hz: 10.0
+rate_hz: 30.0
 frame_id: map
 
 # Horizon & sampling grid
@@ -15,7 +15,7 @@ safety_distance: 0.20    # 20 cm — track bound clearance for 1/10 RC car (~0.3
 gg_abs_margin:   0.0
 gg_margin_rel:   0.0
 friction_check_2d: false
-s_dot_min:       1.0
+s_dot_min:       2.5    # option A test: raise floor to kill extreme-decel candidates that oscillate
 kappa_thr:       1.5    # track max curvature = 0.9 rad/m; 1.5 gives margin for lateral offset curvature
 
 relative_generation: true
@@ -24,3 +24,19 @@ cost:
   raceline_weight:   0.1
   velocity_weight:   100.0
   prediction_weight: 5000.0
+
+# MPPI-style weighted blending (alternative to argmin selection).
+# enable=false → classic argmin (best one picked, unchanged upstream behaviour).
+# enable=true  → weighted average of valid candidates with exp(-cost/T) weights.
+#   - Trajectory becomes smoother across ticks (no sudden jumps when argmin
+#     swaps between similarly-scored candidates).
+#   - temperature_rel: T = temperature_rel * (max_cost - min_cost) among valid.
+#     Low (0.05): very peaked on best, close to argmin.
+#     Moderate (0.2~0.3): smooth blending (recommended start).
+#     High (1.0+): nearly uniform average, loses selectivity.
+#   - temporal_weight: penalize candidates that deviate from previous tick's
+#     chosen trajectory → further inter-tick smoothing. 0.0 = disabled.
+mppi:
+  enable:          false
+  temperature_rel: 0.25
+  temporal_weight: 0.0

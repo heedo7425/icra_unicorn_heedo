@@ -1,0 +1,37 @@
+# ============================================================
+# Kinematic MPC Planner Parameters
+# Simplified from EVO-MPCC port — s/p/LUT removed, pure kinematic MPC.
+# ============================================================
+
+planner_freq: 30
+
+# Horizon
+N: 20
+dT: 0.05
+
+# Vehicle
+vehicle_L: 0.33
+
+# Limits
+max_speed: 12.0
+min_speed: 0.5
+max_steering: 0.6
+
+# Cost weights
+w_contour: 3.9
+w_lag: 2.0
+w_velocity: 3.0
+v_bias_max: 1.0
+
+# Smoothness
+w_dv: 9.5
+w_dsteering: 14.0
+
+# Boundary
+boundary_inflation: 0.1
+# Soft-boundary slack penalty (quadratic) — large value keeps it near-hard
+w_slack: 1000.0
+
+# IPOPT
+ipopt_max_iter: 500
+ipopt_print_level: 0

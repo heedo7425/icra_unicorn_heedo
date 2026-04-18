@@ -39,6 +39,8 @@ class SimpleMuxNode:
 
         self.current_host = None
         self.release_time = None  ### HJ : timestamp when buttons released
+        self.autodrive_latched = False  ### HJ : RB edge-triggered latch for autodrive
+        self.rb_prev = 0  ### HJ : previous RB state for edge detection
 
         self.human_drive = None
         self.autodrive = None
@@ -124,8 +126,12 @@ class SimpleMuxNode:
     def joy_callback(self, msg):
         # prev_host = deepcopy(self.current_host)
         use_human_drive = msg.buttons[4]
-        use_controller = msg.buttons[5]
-        
+        rb_pressed = msg.buttons[5]
+
+        ### HJ : RB rising edge → latch autodrive
+        rb_edge_rising = rb_pressed and not self.rb_prev
+        self.rb_prev = rb_pressed
+
         if use_human_drive:
             drive_msg = AckermannDriveStamped()
             drive_msg.header.stamp = rospy.Time.now()
@@ -139,10 +145,17 @@ class SimpleMuxNode:
 
             self.human_drive = drive_msg
             self.current_host = "humandrive"
-        elif use_controller:
+            ### HJ : LB takeover clears autodrive latch; need RB re-press to resume
+            self.autodrive_latched = False
+        elif rb_edge_rising:
+            ### HJ : RB pressed → latch autodrive ON
+            self.autodrive_latched = True
+            self.current_host = "autodrive"
+        elif self.autodrive_latched:
+            ### HJ : latch held → stay in autodrive even when RB released
             self.current_host = "autodrive"
         else:
-            ### HJ : when neither button is held, zero out human drive so car stops
+            ### HJ : no active control → zero out for 1s then idle
             if self.current_host is not None:
                 self.release_time = rospy.Time.now()
             self.human_drive = self.zero_msg

@@ -79,13 +79,6 @@ class SamplingPlannerNode:
         self.w_velocity   = rospy.get_param('~cost/velocity_weight', 100.0)
         self.w_prediction = rospy.get_param('~cost/prediction_weight', 5000.0)
 
-        # MPPI-style weighted blending (optional).
-        self.mppi_enable           = rospy.get_param('~mppi/enable',          False)
-        self.mppi_temperature_rel  = rospy.get_param('~mppi/temperature_rel', 0.25)
-        self.mppi_temporal_weight  = rospy.get_param('~mppi/temporal_weight', 0.0)
-        self._prev_blended_s       = None
-        self._prev_blended_n       = None
-
         # -- Load vehicle params ----------------------------------------------------------------------------------
         with open(self.vehicle_params_path, 'r') as f:
             vehicle_yml = yaml.safe_load(f)
@@ -510,13 +503,6 @@ class SamplingPlannerNode:
                         )
                     except Exception as _e:
                         rospy.logwarn_throttle(2.0, '[sampling][traj] log failed: %s', _e)
-                    # ### HJ : optional MPPI-style weighted blending.
-                    # When enabled, replace the argmin-picked traj with a weighted
-                    # average over valid candidates. Keeps argmin intact by default.
-                    if self.mppi_enable:
-                        blended = self._mppi_blend()
-                        if blended is not None:
-                            traj = blended
                     self._publish_trajectory(traj)
                     self._publish_candidates(traj.get('optimal_idx', -1))
                     self._publish_status('OK')
@@ -550,11 +536,8 @@ class SamplingPlannerNode:
         s_raw    = np.asarray(traj['s'], dtype=np.float64)
         n_arr    = np.asarray(traj['n'], dtype=np.float64)
         ds       = np.diff(s_raw)
-        # ### HJ : bidirectional wrap detection (see _publish_candidates for rationale).
-        wrap_adj = np.cumsum(
-            np.where(ds < -L / 2.0,  L, 0.0) +
-            np.where(ds >  L / 2.0, -L, 0.0)
-        )
+        # detect backward jumps (wrap points going from ~L down to ~0)
+        wrap_adj = np.cumsum(np.where(ds < -L / 2.0, L, 0.0))
         s_unwr   = s_raw.copy()
         s_unwr[1:] += wrap_adj
 
@@ -788,44 +771,13 @@ class SamplingPlannerNode:
             is_best  = (i == optimal_idx)
             is_valid = bool(valid_all[i])
 
-            # ### HJ : render invalid candidates faintly too (exploration context).
-            # Lightning bug was root-caused in upstream (seam + lateral interp), so
-            # invalid candidates no longer produce visual artefacts. Showing them
-            # back as very faint lines makes it visible which samples were rejected
-            # by friction / boundary / curvature checks.
-
             s_row = s_all[i]
             n_row = n_all[i]
             ds = np.diff(s_row)
-            wrap_adj = np.cumsum(
-                np.where(ds < -L / 2.0,  L, 0.0) +
-                np.where(ds >  L / 2.0, -L, 0.0)
-            )
+            wrap_adj = np.cumsum(np.where(ds < -L / 2.0, L, 0.0))
             s_unwr = s_row.copy().astype(np.float64)
             s_unwr[1:] += wrap_adj
             s_mod = np.clip(s_unwr % L, 1e-6, L - 1e-6)
-
-            # ### HJ : lightning-bolt diagnostic — if consecutive cartesian points
-            # end up far apart AFTER unwrap (shouldn't happen on closed loop),
-            # dump the s/n values so we can see exactly what upstream emitted.
-            # Only logged for first candidate near lap boundary, once a second.
-            if (i == optimal_idx) and (s_row.min() < 5.0 or s_row.max() > L - 5.0):
-                # find where wrap happens (either direction)
-                big_neg = np.where(ds < -L / 2.0)[0]
-                big_pos = np.where(ds > L / 2.0)[0]
-                rospy.loginfo_throttle(
-                    2.0,
-                    '[sampling][cand-debug] i=%d  s_row min/max=[%.3f, %.3f]  '
-                    'big_neg_ds@=%s (vals=%s)  big_pos_ds@=%s (vals=%s)  '
-                    's_unwr min/max=[%.3f, %.3f]  s_mod min/max=[%.3f, %.3f]',
-                    i, float(s_row.min()), float(s_row.max()),
-                    big_neg.tolist(),
-                    np.array2string(ds[big_neg], precision=2) if len(big_neg) else '[]',
-                    big_pos.tolist(),
-                    np.array2string(ds[big_pos], precision=2) if len(big_pos) else '[]',
-                    float(s_unwr.min()), float(s_unwr.max()),
-                    float(s_mod.min()), float(s_mod.max()),
-                )
 
             # Fast numpy-only cartesian: centerline pos + 2D normal × n
             xc = np.interp(s_mod, _s_arr, _x_arr)
@@ -836,51 +788,6 @@ class SamplingPlannerNode:
             xs_ = xc - np.sin(th) * n_row
             ys_ = yc + np.cos(th) * n_row
             zs_ = zc
-
-            # ### HJ : diagnose — dump raw s/n for candidates that WILL render with
-            # a 180° kink. Root-cause investigation, no truncation applied here.
-            if is_valid and len(xs_) >= 3:
-                v1x = np.diff(xs_); v1y = np.diff(ys_)
-                seg_len = np.sqrt(v1x * v1x + v1y * v1y)
-                with np.errstate(invalid='ignore', divide='ignore'):
-                    cosang = (v1x[:-1] * v1x[1:] + v1y[:-1] * v1y[1:]) / (seg_len[:-1] * seg_len[1:] + 1e-12)
-                cosang = np.clip(cosang, -1.0, 1.0)
-                kink = np.where(cosang < -0.5)[0]
-                if len(kink) > 0 and i % 7 == 0:   # sparse log
-                    k = int(kink[0])
-                    rospy.logwarn_throttle(
-                        2.0,
-                        '[sampling][kink] cand i=%d  idx=%d angle=%.1f°  '
-                        's_row[k-1..k+2]=[%.4f, %.4f, %.4f, %.4f]  '
-                        'n_row[k-1..k+2]=[%.4f, %.4f, %.4f, %.4f]  '
-                        'seg_len[k-1..k+1]=[%.4f, %.4f, %.4f]',
-                        i, k, np.rad2deg(np.arccos(cosang[k])),
-                        float(s_row[max(0, k-1)]), float(s_row[k]),
-                        float(s_row[k+1]), float(s_row[min(len(s_row)-1, k+2)]),
-                        float(n_row[max(0, k-1)]), float(n_row[k]),
-                        float(n_row[k+1]), float(n_row[min(len(n_row)-1, k+2)]),
-                        float(seg_len[max(0,k-1)]), float(seg_len[k]),
-                        float(seg_len[min(len(seg_len)-1, k+1)]),
-                    )
-
-            # ### HJ : per-candidate cartesian gap diagnostic.
-            # If consecutive points exceed a threshold, this is literal zigzag.
-            # Expected max step at 10 m/s × 0.033 s ≈ 0.33 m. Anything > 1 m is
-            # a bug.
-            if is_valid:
-                gaps = np.sqrt(np.diff(xs_)**2 + np.diff(ys_)**2 + np.diff(zs_)**2)
-                if gaps.max() > 1.0:
-                    k = int(np.argmax(gaps))
-                    rospy.logwarn_throttle(
-                        1.0,
-                        '[sampling][zigzag] cand i=%d idx=%d→%d  gap=%.2fm  '
-                        'n_row[k]=%.3f n_row[k+1]=%.3f  '
-                        's_mod[k]=%.3f s_mod[k+1]=%.3f  th[k]=%.3f th[k+1]=%.3f',
-                        i, k, k+1, float(gaps[k]),
-                        float(n_row[k]), float(n_row[k+1]),
-                        float(s_mod[k]), float(s_mod[k+1]),
-                        float(th[k]), float(th[k+1]),
-                    )
 
             mk = Marker()
             mk.header = header
@@ -919,114 +826,6 @@ class SamplingPlannerNode:
             ma.markers.append(best_marker)
 
         self.pub_candidates.publish(ma)
-
-    # =============================================================================================================
-    # MPPI-style weighted blending
-    # =============================================================================================================
-    def _mppi_blend(self):
-        """Replace the argmin-picked trajectory with a cost-weighted average of
-        all VALID candidates. Returns a dict with the same fields as
-        self.planner.trajectory, or None if blending is not applicable.
-
-        Weights: w_i = exp(-(cost_i - cost_min) / T), T = temperature_rel × cost_range.
-        Invalid candidates get 0 weight (never contribute).
-        Optional temporal term penalizes candidates that deviate from the
-        previous tick's blended trajectory — smooths across ticks further.
-
-        Averaging quintic polynomials preserves the quintic property
-        (C² continuous), so the blended trajectory stays smooth physically.
-        """
-        cands = getattr(self.planner, 'candidates', None)
-        cost_arr = getattr(self.planner, 'cost_array', None)
-        if cands is None or cost_arr is None:
-            return None
-
-        valid = np.asarray(cands['valid'], dtype=bool)
-        if valid.sum() == 0:
-            return None
-
-        # Base cost + optional temporal regularization
-        cost = np.asarray(cost_arr, dtype=np.float64).copy()
-        if self.mppi_temporal_weight > 0.0 and self._prev_blended_s is not None:
-            s_arr = np.asarray(cands['s'])
-            n_arr = np.asarray(cands['n'])
-            # Align length (prev and current may differ by 0 when horizon fixed)
-            m = min(self._prev_blended_s.shape[0], s_arr.shape[1])
-            ds = s_arr[:, :m] - self._prev_blended_s[:m]
-            dn = n_arr[:, :m] - self._prev_blended_n[:m]
-            tempo = np.sum(ds * ds + dn * dn, axis=1)
-            cost = cost + self.mppi_temporal_weight * tempo
-
-        valid_costs = cost[valid]
-        c_min = float(valid_costs.min())
-        c_max = float(valid_costs.max())
-        c_range = max(c_max - c_min, 1e-6)
-        T = max(self.mppi_temperature_rel * c_range, 1e-6)
-
-        # Softmax-style weights (shifted for numerical stability)
-        w = np.exp(-(valid_costs - c_min) / T)
-        w /= w.sum()
-
-        # ### HJ : unwrap each candidate's s BEFORE averaging.
-        # Near the lap boundary, candidates wrap at different indices (some at
-        # idx k, some at idx k+1). Averaging raw (mod-L) s values would mix
-        # lap-end and lap-start numbers → nonsensical intermediate s values
-        # (the "번개 모양" zigzag). Unwrap each candidate to a monotonic
-        # arc-length, THEN weighted-average, THEN mod back for cartesian lookup.
-        L = float(self.track.s[-1])
-        s_valid = np.asarray(cands['s'])[valid].astype(np.float64).copy()
-        # Per-candidate bidirectional wrap correction
-        ds_valid = np.diff(s_valid, axis=1)
-        wrap_adj = np.cumsum(
-            np.where(ds_valid < -L / 2.0,  L, 0.0) +
-            np.where(ds_valid >  L / 2.0, -L, 0.0),
-            axis=1,
-        )
-        s_valid[:, 1:] += wrap_adj
-        # Anchor each unwrapped trajectory to [0, 2L) so the weighted average
-        # stays bounded. Use the candidate-average start s as reference.
-        anchor = float(np.mean(s_valid[:, 0]))
-        # If a candidate's first sample is far from anchor (wrap side flip),
-        # shift it by ±L to align.
-        for k in range(s_valid.shape[0]):
-            while s_valid[k, 0] - anchor > L / 2.0:
-                s_valid[k] -= L
-            while s_valid[k, 0] - anchor < -L / 2.0:
-                s_valid[k] += L
-
-        # Weighted average of each field (only over valid candidates)
-        blended = {'traj_cnt': self.planner.traj_cnt,
-                   'optimal_idx': int(np.arange(valid.size)[valid][int(np.argmax(w))])}
-        blended['s'] = np.sum(w[:, None] * s_valid, axis=0)
-        for key in ('n', 'V', 'chi', 'ax', 'ay', 'kappa', 't'):
-            arr = np.asarray(cands[key])
-            if arr.ndim == 1:
-                continue
-            blended[key] = np.sum(w[:, None] * arr[valid], axis=0)
-
-        # sn2cartesian for blended (s, n)
-        try:
-            s_for_cart = np.clip(np.mod(blended['s'], L), 1e-6, L - 1e-6)
-            xyz = self.track.sn2cartesian(s=s_for_cart, n=blended['n'])
-            blended['x'] = np.asarray(xyz[:, 0], dtype=np.float64)
-            blended['y'] = np.asarray(xyz[:, 1], dtype=np.float64)
-            blended['z'] = np.asarray(xyz[:, 2], dtype=np.float64)
-        except Exception as _e:
-            rospy.logwarn_throttle(2.0, '[sampling][mppi] cartesian failed: %s', _e)
-            return None
-
-        # Cache for next-tick temporal smoothing
-        self._prev_blended_s = np.asarray(blended['s'], dtype=np.float64).copy()
-        self._prev_blended_n = np.asarray(blended['n'], dtype=np.float64).copy()
-
-        rospy.loginfo_throttle(
-            1.0,
-            '[sampling][mppi] valid=%d/%d  T=%.3f  cost=[%.3f..%.3f]  '
-            'top-3 weights=%s',
-            int(valid.sum()), int(valid.size), T, c_min, c_max,
-            np.array2string(np.sort(w)[-3:][::-1], precision=3),
-        )
-        return blended
 
 
 def main():

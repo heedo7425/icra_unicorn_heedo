@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<!--
+  MPCC-based local planner (standalone).
+  Subscribes: /global_waypoints, /car_state/pose, /car_state/odom
+  Publishes:  /planner/mpc/trajectory (Path), /planner/mpc/markers (MarkerArray)
+  No control output.
+-->
+<launch>
+  <node pkg="mpc_planner" type="mpc_planner_node.py" name="mpc_planner" output="screen">
+    <rosparam file="$(find mpc_planner)/config/mpcc_params.yaml" command="load"/>
+  </node>
+</launch>

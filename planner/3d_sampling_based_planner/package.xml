@@ -4,8 +4,9 @@
   <version>0.0.1</version>
   <description>
     ROS1 wrapper around TUMRT/sampling_based_3D_local_planning for the UNICORN
-    ICRA 2026 3D racing stack. Observation mode: publishes candidate and best
-    trajectories as topics without injecting into the control pipeline.
+    ICRA 2026 3D racing stack. Provides an observation-mode node (unchanged
+    upstream) and a state-aware variant that plugs into 3d_headtohead as
+    overtake/recovery planner with dynamic_reconfigure cost weights.
     Upstream license: GPLv3 (see LICENSE).
   </description>
 
@@ -20,4 +21,6 @@
   <depend>geometry_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>f110_msgs</depend>
+  <!-- ### HJ : dynamic_reconfigure for state-aware sampling planner cost tuning -->
+  <depend>dynamic_reconfigure</depend>
 </package>

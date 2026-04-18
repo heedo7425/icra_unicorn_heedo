@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>mpc_planner</name>
+  <version>0.1.0</version>
+  <description>
+    MPCC-based local planner (kinematic bicycle) for 3D race stack.
+    Ported from EVO-MPCC controller in icra_unicorn_heedo. Used as a
+    trajectory planner only — no control command output.
+  </description>
+  <maintainer email="y38621746@gmail.com">UNICORN-HJ</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>f110_msgs</exec_depend>
+</package>
