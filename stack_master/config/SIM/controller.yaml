@@ -37,3 +37,12 @@ trailing_i_gain: 0.0
 trailing_p_gain: 1.5
 v_max: 8.0
 velocity_step: 0.5
+
+# Added 2026-04-19 for PP sim parity with SRX1 (l1_params_server needs these).
+AEB_thres: 0.4
+trailing_vel_gain: 0.25
+lat_correction_mode: 0
+lat_K_stanley: 1.5
+lat_pred_horizon: 0.3
+lat_pred_alpha: 0.3
+speed_ff_gain: 0.0

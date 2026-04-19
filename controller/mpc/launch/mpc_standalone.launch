@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<!-- MPC standalone launch — replaces controller_manager for MPC experiments.
+
+     Usage (MPC only, assumes sim/pipeline already up):
+       roslaunch controller mpc_standalone.launch
+
+     Usage (test_mode, publishes zeros, for topic smoke test):
+       roslaunch controller mpc_standalone.launch test_mode:=true
+
+     Requires the rest of the pipeline (behavior_strategy, car_state/*,
+     global_waypoints, etc.) to already be up from 3d_base_system.launch or
+     base_system.launch (sim:=true).
+
+     Env: ACADOS_SOURCE_DIR=/opt/acados LD_LIBRARY_PATH includes /opt/acados/lib
+     (sourced via /etc/profile.d/acados.sh).
+
+     RViz: use an existing repo config (e.g. stack_master/rviz/base.rviz) and
+     add MarkerArray displays for /mpc/prediction and /mpc/reference.
+-->
+<launch>
+    <arg name="racecar_version" default="SRX1"/>
+    <arg name="test_mode"       default="false"/>
+    <arg name="drive_topic"     default="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
+
+    <!-- Load MPC tuning params. -->
+    <rosparam command="load"
+              file="$(find controller)/mpc/config/mpc_srx1.yaml"
+              ns=""/>
+    <param name="mpc/test_mode" value="$(arg test_mode)"/>
+
+    <!-- MPC node. -->
+    <node pkg="controller" type="mpc_node.py" name="mpc_controller" output="screen">
+        <param name="~drive_topic" value="$(arg drive_topic)"/>
+    </node>
+</launch>

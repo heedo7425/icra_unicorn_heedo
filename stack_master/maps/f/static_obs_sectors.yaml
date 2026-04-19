@@ -1,0 +1,8 @@
+n_sectors: 1
+Static_Obs_sector0:
+  start: 0
+  end: 766
+  s_start: 0.0
+  s_end: 100.0
+  name: sector_1
+  static_obs_section: true
