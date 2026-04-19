@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!-- MPC-only sim: 글로벌 raceline 직접 추종.
+     state_machine / planner_spline / behavior_strategy 전부 제외.
+
+     Usage:
+       CAR_NAME=SIM roslaunch controller mpc_only_sim.launch map:=f rviz:=true
+-->
+<launch>
+  <arg name="racecar_version" default="SIM"/>
+  <arg name="map"             default="f"/>
+  <arg name="rviz"            default="true"/>
+
+  <!-- BASE: f1tenth_simulator + frenet_odom_republisher + global_republisher
+       + velocity_scaler (publishes /global_waypoints_scaled).
+       base_system.launch sim:=true 는 state_machine 을 따로 띄우지 않으므로
+       별도로 제외할 필요 없음. dyn_planners namespace 는 tuner param servers
+       만 올라오고 실제 planner 노드는 없음. -->
+  <include file="$(find stack_master)/launch/base_system.launch">
+    <arg name="racecar_version" value="$(arg racecar_version)"/>
+    <arg name="map"             value="$(arg map)"/>
+    <arg name="sim"             value="true"/>
+  </include>
+
+  <!-- Spawn car onto wpnt[0] + stuck-supervisor respawn. -->
+  <node pkg="controller" type="spawn_on_waypoint.py" name="spawn_on_waypoint"
+        output="screen" required="false">
+    <param name="~supervise" value="true"/>
+    <param name="~stuck_sec" value="1.5"/>
+  </node>
+
+  <!-- MPC-only tuning params under /mpc_only/* -->
+  <rosparam command="load"
+            file="$(find controller)/mpc_only/config/mpc_only_srx1.yaml"
+            ns=""/>
+
+  <!-- MPC-only node -->
+  <node pkg="controller" type="mpc_only_node.py" name="mpc_only_controller"
+        output="screen">
+    <param name="~drive_topic" value="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
+  </node>
+
+  <!-- RViz — reuse existing mpc sim config (loads /mpc/prediction reference;
+       /mpc_only/prediction must be added manually in RViz displays, or use a
+       dedicated rviz config later). -->
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_mpc_only"
+        args="-d $(find controller)/mpc/rviz/mpc_sim.rviz"/>
+</launch>

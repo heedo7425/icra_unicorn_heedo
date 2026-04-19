@@ -1,0 +1,68 @@
+# ============================================================
+# MPC-only (global raceline direct tracking) — SRX1 tuning.
+# Parallel to controller/mpc/config/mpc_srx1.yaml but under /mpc_only/*
+# namespace to avoid rosparam collisions when both nodes coexist.
+# Vehicle physics params come from /vehicle/* + /tire_*/* (shared).
+# ============================================================
+
+mpc_only:
+  # --- Horizon ---
+  N_horizon:        20       # [-] prediction steps
+  dt:               0.05     # [s] step duration (50 Hz)
+
+  # --- Raceline window sliced from /global_waypoints_scaled ---
+  # Must be large enough that build_preview's index stride (≈ vx_ref·dt / ds_med)
+  # stays within the window across N stages. At vx_ref=11 m/s, dt=0.05, ds=0.1:
+  # stride ≈ 5.5 wpnts/stage → N=20 needs 110. Take 200 for safety.
+  window_size:      200
+
+  # --- State / input weights (Q, R) ---
+  w_d:              8.0
+  w_dpsi:           6.0
+  w_vx:             3.0
+  w_vy:             1.0
+  w_omega:          3.0
+  w_steer:          0.5
+  w_u_steer_rate:   3.0
+  w_u_accel:        0.1
+
+  # --- Terminal ---
+  w_terminal_scale: 1.0
+
+  # --- Limits ---
+  max_steer:        0.4
+  max_steer_rate:   2.0
+  max_accel:        3.0
+  max_decel:       -3.0
+  v_min:            0.0
+  v_max:           12.0      # high ceiling; actual bounded by raceline vx_ref
+
+  # --- Friction circle ---
+  mu_default:       0.85
+  mu_margin_k:      2.0
+  friction_circle:  true
+  friction_margin:  0.95
+  friction_slack_penalty: 1000.0
+
+  # --- Online μ̂ (RLS) — Stage 2 placeholder ---
+  mu_estimator:
+    enabled:        false
+    forgetting:     0.97
+    init_value:     0.7
+    init_sigma:     0.3
+
+  # --- Node behavior ---
+  loop_rate_hz:     50
+  test_mode:        false
+  startup_delay_s:  7.0
+
+  # --- Warm-up push ---
+  warmup_vx_min:    0.2
+  warmup_speed_cmd: 2.0
+
+  # --- Teleport / solver rescue ---
+  reset_jump_thres_m:   1.0   # > this = respawn teleport → cold-start
+  stuck_status_thres:   5     # consecutive bad QP status → warm-start rescue
+
+  # --- Codegen dir (separate from mpc to avoid collision) ---
+  codegen_dir:      /tmp/mpc_only_c_generated
