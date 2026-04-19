@@ -153,6 +153,28 @@ def build_tracking_ocp(
     # Initial state placeholder
     ocp.constraints.x0 = np.zeros(NX)
 
+    # ---- Friction circle (soft nonlinear) ----
+    # For each axle:  F_x² + F_y² ≤ (μ·margin·N)²
+    #  Front: no drive → F_x_f ≈ 0, so constraint is |F_yf| ≤ μ·N_f
+    #  Rear (RWD): F_x_r = m·u_ax (all longitudinal from rear).
+    # Using squared form to keep expressions smooth (no sqrt Jacobian at 0).
+    # Soft via slack ensures OCP stays feasible when transient exceeds limit.
+    m_val = float(vp["m"])
+    margin = float(mpc_cfg.get("friction_margin", 0.95))  # 95% of limit as safety
+    h_front = model.fyf_expr ** 2 - (mu * margin * model.nf_expr) ** 2
+    h_rear  = (m_val * u_ax) ** 2 + model.fyr_expr ** 2 - (mu * margin * model.nr_expr) ** 2
+    ocp.model.con_h_expr = ca.vertcat(h_front, h_rear)
+    ocp.constraints.lh = np.array([-1e12, -1e12], dtype=np.float64)
+    ocp.constraints.uh = np.array([0.0, 0.0], dtype=np.float64)
+    # Soft via slack — very high penalty so constraint is respected but never
+    # makes OCP infeasible at numerical transients.
+    ocp.constraints.idxsh = np.arange(2)
+    slack_penalty = float(mpc_cfg.get("friction_slack_penalty", 1e3))
+    ocp.cost.zl = slack_penalty * np.ones(2)
+    ocp.cost.zu = slack_penalty * np.ones(2)
+    ocp.cost.Zl = slack_penalty * np.ones(2)
+    ocp.cost.Zu = slack_penalty * np.ones(2)
+
     # ---- Solver options ----
     # HPIPM with strong Levenberg-Marquardt regularization: keeps Hessian
     # well-conditioned even near the Pacejka low-speed singularity.

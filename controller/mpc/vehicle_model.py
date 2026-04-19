@@ -163,6 +163,12 @@ def build_dynamic_bicycle_model(vp: dict) -> "AcadosModel":
 
     # Expose slip/forces as expressions for cost/constraint hooks.
     model.con_expr_slack = ca.vertcat(alpha_f, alpha_r, Fyf, Fyr)
+    # Expose individual tire forces + normal loads for friction-circle constraint
+    # built in mpcc_ocp.py (see build_tracking_ocp).
+    model.fyf_expr = Fyf
+    model.fyr_expr = Fyr
+    model.nf_expr = Nf
+    model.nr_expr = Nr
 
     return model
 

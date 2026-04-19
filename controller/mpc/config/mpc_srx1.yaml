@@ -6,22 +6,22 @@
 
 mpc:
   # --- Horizon ---
-  N_horizon:        14       # [-] prediction steps (1.0s → 0.7s, preview overshoot 완화)
+  N_horizon:        20       # [-] prediction steps
   dt:               0.05     # [s] step duration (50 Hz)
 
   # --- State / input weights (Q, R) ---
   # 보수적 튜닝 (Day 3): 공격적 weight 는 QP non-convergence + 과회전 유발.
   # State order: [s, d, delta_psi, v_x, v_y, omega, steer]
-  w_d:             15.0      # strong lateral — 코너 inside drift 방지
-  w_dpsi:          12.0      # strong heading — raceline tangent 추종
-  w_vx:             3.0      # raised — 프로파일 추종 위해
+  w_d:              8.0      # moderate lateral
+  w_dpsi:           6.0      # heading error (raised: n 수렴 위해 heading 선회 우선)
+  w_vx:             3.0      # raised — 속도 프로파일 추종 우선
   w_vy:             1.0      # penalize side slip
   w_omega:          3.0      # strong yaw-rate damping → anti-spin
   w_steer:          0.5
 
   # Input order: [u_steer_rate, u_accel]
-  w_u_steer_rate:   1.0      # 낮춤 — 코너 진입 시 빠른 steer 변경 허용
-  w_u_accel:        0.5
+  w_u_steer_rate:   3.0      # smooth steer (anti-chatter)
+  w_u_accel:        0.1      # lowered — accel 명령 덜 억제
 
   # --- Terminal ---
   w_terminal_scale: 1.0
@@ -29,13 +29,13 @@ mpc:
   # --- Limits — slow to avoid spin, raise after lap stability ---
   max_steer:        0.4
   max_steer_rate:   2.0
-  max_accel:        3.0      # raised — 코너 탈출 가속
-  max_decel:       -4.0      # raised magnitude — 코너 진입 감속
+  max_accel:        3.0      # SRX1 vehicle spec (SRX1_pacejka.yaml a_max=3)
+  max_decel:       -3.0      # 대칭 (실차 브레이크 능력 유사)
   v_min:            0.0
-  v_max:           12.0      # raceline vx_ref (max 11.3) 를 clip 없이 passthrough
+  v_max:            2.0      # raceline vx_ref 가 2.0 이하 — ceiling 만 제공
 
   # --- Friction circle ---
-  mu_default:       1.0      # sim tire μ=1.0 matching (실차 전환 시 낮출 것)
+  mu_default:       0.85     # supersoft rubber + 에폭시 warm-up 조건 중앙값
   mu_margin_k:      2.0      # μ_mpc = μ̂ − k·σ_μ̂
   friction_circle:  true
 
@@ -60,5 +60,5 @@ mpc:
 
   # Warm-up override (vx < threshold → force forward push, bypass MPC solution).
   # Needed because Pacejka bicycle Hessian is near-singular at vx≈0.
-  warmup_vx_min:    0.4      # [m/s] — lower since v_max is low
-  warmup_speed_cmd: 0.8      # [m/s]
+  warmup_vx_min:    0.2      # [m/s] — MPC 조기 인수 (start corner drift 방지)
+  warmup_speed_cmd: 2.0      # [m/s] — 빠른 탈출 위해 상향
