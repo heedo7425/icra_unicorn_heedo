@@ -1,9 +1,9 @@
 # ============================================================
-# multisurface_mpc — SRX1 tuning. Independent of controller/mpc & mpc_only.
-# All params under /mpc_ms/* namespace.
+# ekf_mpc — SRX1 tuning. Independent of controller/mpc & mpc_only.
+# All params under /ekf_mpc/* namespace.
 # ============================================================
 
-mpc_ms:
+ekf_mpc:
   # --- Horizon ---
   N_horizon:        20
   dt:               0.05
@@ -37,29 +37,38 @@ mpc_ms:
 
   # --- μ source abstraction (runtime selected via launch arg) ---
   # values: static | ground_truth | rls | gp
-  # When != static, the MPC subscribes to /mpc_ms/mu_estimate (Float32) and
+  # When != static, the MPC subscribes to /ekf_mpc/mu_estimate (Float32) and
   # uses that per-tick value (broadcast to all N+1 stages). Estimator node
   # (rls/gp) or patch publisher (ground_truth) owns this topic.
   mu_source:        static
-  mu_estimate_topic: /mpc_ms/mu_estimate
+  mu_estimate_topic: /ekf_mpc/mu_estimate
 
-  # --- RLS estimator ---
-  # Physically-realistic tuning:
-  #   meas_sigma: IMU ay noise σ (차량 진동, body roll 등 포함 추정값).
-  #   forgetting: 높을수록 과거 데이터 유지 (0.99 ≈ 수 초 window).
-  #   init_sigma: 초기 불확실성. 작으면 보수적 업데이트.
-  #   ay_threshold: saturation 근접 판정. 너무 낮으면 선형 영역에서
-  #                 ay/g 를 잘못된 μ 측정으로 사용 → 과소추정.
-  #   mu_min/max: μ̂ clipping.
-  rls:
-    forgetting:     0.95
+  # --- EKF estimator (Pacejka-based) ---
+  # Observation model: a_y = μ · K(v_x, v_y, ω, δ) + noise
+  #   K 는 Pacejka μ-free 공식 (D·sin(C·atan(B·α − E·(...)))) 에 정상하중 ·
+  #   코사인 보정·질량 역수 포함.
+  # 업데이트 조건: v_x > min_speed AND |K| > min_K. 직선(α≈0)에서 K≈0 → skip.
+  ekf:
     init_mu:        0.85
-    init_sigma:     0.18
-    meas_sigma:     0.22
-    ay_threshold:   2.0
+    init_sigma:     0.30
+    proc_sigma:     0.03      # L2.3: variance 축소
+    meas_sigma:     0.50      # L2.3: 약간 조인 measurement noise
+    min_speed:      1.0
+    min_K:          0.7       # L2.3: 중간값 — K 너무 좁으면 업데이트 부족
     mu_min:         0.2
     mu_max:         1.3
-    peak_window_sec: 1.0
+    vy_smooth_alpha: 0.35     # Level1: dvy/dt 반응 개선
+    prior_pull_rate: 0.005    # Level1: softer prior pull
+    # --- Level 2: Longitudinal channel ---
+    long_enable:        true
+    long_ax_thresh:     1.5
+    long_slip_thresh:   0.5   # L2.2: 완화 (too-aggressive false positive 방지)
+    long_meas_sigma:    0.45
+    # --- Level 2: s-memory prior (lap-to-lap) ---
+    mem_enable:         true
+    mem_bin_width:      2.0   # [m], s 축 bin 크기
+    mem_ema_alpha:      0.15  # L2.2
+    mem_pull_rate:      0.015 # L2.2: 인접 bin 오염 완화
 
   # --- GP ensemble ---
   gp:
@@ -83,4 +92,4 @@ mpc_ms:
   reset_jump_thres_m: 1.0
   stuck_status_thres: 5
 
-  codegen_dir:      /tmp/mpc_ms_c_generated
+  codegen_dir:      /tmp/ekf_mpc_c_generated

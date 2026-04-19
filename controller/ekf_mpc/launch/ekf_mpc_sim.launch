@@ -1,20 +1,20 @@
 <?xml version="1.0"?>
-<!-- multisurface_mpc 2D sim.
+<!-- ekf_mpc 2D sim.
 
      글로벌 raceline 추종 + μ estimator (switchable) + μ patches (rviz viz).
      state_machine, planner_spline 완전 제외 (mpc_only 와 동일 구조).
 
      Usage:
-       CAR_NAME=SIM roslaunch controller mpc_ms_sim.launch map:=f mu_source:=rls
-       (mu_source: static | ground_truth | rls | gp)
+       CAR_NAME=SIM roslaunch controller ekf_mpc_sim.launch map:=f mu_source:=ekf
+       (mu_source: static | ground_truth | ekf | gp)
 -->
 <launch>
   <arg name="racecar_version" default="SIM"/>
   <arg name="map"             default="f"/>
   <arg name="rviz"            default="true"/>
   <arg name="mu_source"       default="static"
-       doc="static | ground_truth | rls | gp"/>
-  <arg name="patches_file"    default="$(find controller)/multisurface_mpc/config/mu_patches_$(arg map).yaml"/>
+       doc="static | ground_truth | ekf | gp"/>
+  <arg name="patches_file"    default="$(find controller)/ekf_mpc/config/mu_patches_$(arg map).yaml"/>
 
   <!-- BASE SIM (f1tenth_simulator + frenet + velocity_scaler + global_republisher) -->
   <include file="$(find stack_master)/launch/base_system.launch">
@@ -29,17 +29,17 @@
     <param name="~stuck_sec" value="1.5"/>
   </node>
 
-  <!-- Load MPC params (mpc_ms namespace) and override mu_source -->
+  <!-- Load MPC params (ekf_mpc namespace) and override mu_source -->
   <rosparam command="load"
-            file="$(find controller)/multisurface_mpc/config/mpc_ms_srx1.yaml"
+            file="$(find controller)/ekf_mpc/config/ekf_mpc_srx1.yaml"
             ns=""/>
-  <param name="mpc_ms/mu_source" value="$(arg mu_source)"/>
+  <param name="ekf_mpc/mu_source" value="$(arg mu_source)"/>
 
   <!-- ========== μ PATCH PUBLISHER ==========
        rviz viz + /mu_ground_truth lookup. Also used by rls/gp modes for
        visualization even if MPC doesn't consume /mu_ground_truth directly.
   -->
-  <node pkg="controller" type="mu_patch_publisher.py"
+  <node pkg="controller" type="ekf_mu_patch_publisher.py"
         name="mu_patch_publisher" output="screen">
     <param name="~patches_file" value="$(arg patches_file)"/>
     <param name="~default_mu"   value="0.85"/>
@@ -48,49 +48,49 @@
 
   <!-- ========== μ ESTIMATOR (conditional on mu_source) ========== -->
 
-  <!-- ground_truth: remap /mu_ground_truth → /mpc_ms/mu_estimate.
-       Use a simple relay so MPC sees /mpc_ms/mu_estimate. -->
+  <!-- ground_truth: remap /mu_ground_truth → /ekf_mpc/mu_estimate.
+       Use a simple relay so MPC sees /ekf_mpc/mu_estimate. -->
   <node if="$(eval mu_source == 'ground_truth')"
         pkg="topic_tools" type="relay" name="mu_gt_relay"
-        args="/mu_ground_truth /mpc_ms/mu_estimate"/>
+        args="/mu_ground_truth /ekf_mpc/mu_estimate"/>
 
-  <!-- rls: RLS saturation-gated estimator from IMU -->
-  <node if="$(eval mu_source == 'rls')"
-        pkg="controller" type="mu_estimator_rls.py"
-        name="mu_estimator_rls" output="screen"/>
+  <!-- ekf: Pacejka-based EKF μ estimator -->
+  <node if="$(eval mu_source == 'ekf')"
+        pkg="controller" type="mu_estimator_ekf.py"
+        name="mu_estimator_ekf" output="screen"/>
 
   <!-- gp: GP ensemble estimator (stub falls back to moving average) -->
   <node if="$(eval mu_source == 'gp')"
-        pkg="controller" type="mu_estimator_gp.py"
+        pkg="controller" type="ekf_mu_estimator_gp.py"
         name="mu_estimator_gp" output="screen"/>
 
   <!-- ========== MPC (출력을 raw 토픽으로 → mu_applier 가 scaling) ========== -->
-  <node pkg="controller" type="mpc_ms_node.py" name="mpc_ms_controller" output="screen">
-    <param name="~drive_topic" value="/mpc_ms/cmd_raw"/>
+  <node pkg="controller" type="ekf_mpc_node.py" name="ekf_mpc_controller" output="screen">
+    <param name="~drive_topic" value="/ekf_mpc/cmd_raw"/>
   </node>
 
   <!-- ========== μ APPLIER (cmd scaling → sim 실제 효과) ========== -->
   <arg name="apply_mu_to_sim" default="true"
        doc="true 면 ground_truth μ 에 따라 cmd speed/steer scaling (2D sim 에서 '가상 마찰' 효과)"/>
-  <node pkg="controller" type="mu_applier.py" name="mu_applier" output="screen">
+  <node pkg="controller" type="ekf_mu_applier.py" name="mu_applier" output="screen">
     <param name="~reference_mu" value="0.85"/>
     <param name="~enable"       value="$(arg apply_mu_to_sim)"/>
-    <param name="~in_topic"     value="/mpc_ms/cmd_raw"/>
+    <param name="~in_topic"     value="/ekf_mpc/cmd_raw"/>
     <param name="~out_topic"    value="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
   </node>
 
   <!-- ========== HUD (gt vs est μ 비교 viz) ========== -->
-  <node pkg="controller" type="mu_hud.py" name="mu_hud" output="screen">
+  <node pkg="controller" type="ekf_mu_hud.py" name="mu_hud" output="screen">
     <param name="~frame_id" value="map"/>
   </node>
 
   <!-- ========== μ adaptation 토글 GUI (tkinter 1-button) ========== -->
   <arg name="toggle_gui" default="true"/>
-  <node if="$(arg toggle_gui)" pkg="controller" type="mu_toggle_gui.py"
+  <node if="$(arg toggle_gui)" pkg="controller" type="ekf_mu_toggle_gui.py"
         name="mu_toggle_gui" output="screen"/>
 
-  <!-- RViz — base config from mpc (MarkerArray displays for /mpc_ms/prediction
+  <!-- RViz — base config from mpc (MarkerArray displays for /ekf_mpc/prediction
        and /mu_patches/markers need manual add first time). -->
-  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_mpc_ms"
-        args="-d $(find controller)/multisurface_mpc/rviz/mpc_ms.rviz"/>
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_ekf_mpc"
+        args="-d $(find controller)/ekf_mpc/rviz/ekf_mpc.rviz"/>
 </launch>

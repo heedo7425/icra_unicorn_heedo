@@ -4,14 +4,14 @@
 
 Publishes (10 Hz):
   /mu_hud/markers (MarkerArray):
-    - SPHERE @ car xy, color = estimated μ (mpc_ms/mu_used)
+    - SPHERE @ car xy, color = estimated μ (rls_mpc/mu_used)
     - SPHERE @ car xy + z offset, color = ground truth μ (mu_ground_truth)
     - TEXT "gt=X.XX | est=Y.YY" over car
     - TEXT "Δ=|gt-est|" in red if |diff|>0.1
 
 Subscribes:
   /car_state/pose
-  /mpc_ms/mu_used      (MPC 가 실제 OCP 에 주입한 μ — estimator 출력)
+  /rls_mpc/mu_used      (MPC 가 실제 OCP 에 주입한 μ — estimator 출력)
   /mu_ground_truth     (패치 lookup)
 """
 
@@ -45,7 +45,7 @@ class MuHud:
         self.pub = rospy.Publisher("/mu_hud/markers", MarkerArray, queue_size=1)
 
         rospy.Subscriber("/car_state/pose", PoseStamped, self._pose_cb, queue_size=1)
-        rospy.Subscriber("/mpc_ms/mu_used", Float32, self._est_cb, queue_size=1)
+        rospy.Subscriber("/rls_mpc/mu_used", Float32, self._est_cb, queue_size=1)
         rospy.Subscriber("/mu_ground_truth", Float32, self._gt_cb, queue_size=1)
 
         rospy.Timer(rospy.Duration(0.1), self._tick)

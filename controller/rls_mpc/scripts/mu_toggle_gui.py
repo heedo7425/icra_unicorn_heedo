@@ -6,7 +6,7 @@
   - 속도: /car_state/odom twist.linear.x
   - 명령 속도: /vesc/.../nav_1 drive.speed
   - gt μ / est μ
-  - ENABLE/DISABLE 토글 버튼 → /mpc_ms/mu_adapt_enable (Bool, latched)
+  - ENABLE/DISABLE 토글 버튼 → /rls_mpc/mu_adapt_enable (Bool, latched)
 
 DISPLAY 없으면 console REPL fallback (Enter=toggle, y/n, Ctrl-C).
 """
@@ -29,12 +29,12 @@ class Dashboard:
         self.mu_est = 0.85
         self.enabled = True
 
-        self.pub = rospy.Publisher("/mpc_ms/mu_adapt_enable", Bool, queue_size=1, latch=True)
+        self.pub = rospy.Publisher("/rls_mpc/mu_adapt_enable", Bool, queue_size=1, latch=True)
         rospy.Subscriber("/car_state/odom", Odometry, self._odom_cb, queue_size=1)
         rospy.Subscriber("/vesc/high_level/ackermann_cmd_mux/input/nav_1",
                          AckermannDriveStamped, self._cmd_cb, queue_size=1)
         rospy.Subscriber("/mu_ground_truth", Float32, self._gt_cb, queue_size=1)
-        rospy.Subscriber("/mpc_ms/mu_used", Float32, self._est_cb, queue_size=1)
+        rospy.Subscriber("/rls_mpc/mu_used", Float32, self._est_cb, queue_size=1)
 
     def _odom_cb(self, m): self.vx = float(m.twist.twist.linear.x)
     def _cmd_cb(self, m):  self.cmd_v = float(m.drive.speed)

@@ -1,0 +1,96 @@
+<?xml version="1.0"?>
+<!-- rls_mpc 2D sim.
+
+     글로벌 raceline 추종 + μ estimator (switchable) + μ patches (rviz viz).
+     state_machine, planner_spline 완전 제외 (mpc_only 와 동일 구조).
+
+     Usage:
+       CAR_NAME=SIM roslaunch controller rls_mpc_sim.launch map:=f mu_source:=rls
+       (mu_source: static | ground_truth | rls | gp)
+-->
+<launch>
+  <arg name="racecar_version" default="SIM"/>
+  <arg name="map"             default="f"/>
+  <arg name="rviz"            default="true"/>
+  <arg name="mu_source"       default="static"
+       doc="static | ground_truth | rls | gp"/>
+  <arg name="patches_file"    default="$(find controller)/rls_mpc/config/mu_patches_$(arg map).yaml"/>
+
+  <!-- BASE SIM (f1tenth_simulator + frenet + velocity_scaler + global_republisher) -->
+  <include file="$(find stack_master)/launch/base_system.launch">
+    <arg name="racecar_version" value="$(arg racecar_version)"/>
+    <arg name="map"             value="$(arg map)"/>
+    <arg name="sim"             value="true"/>
+  </include>
+
+  <!-- Spawn on wpnt[0] + stuck supervisor -->
+  <node pkg="controller" type="spawn_on_waypoint.py" name="spawn_on_waypoint" output="screen">
+    <param name="~supervise" value="true"/>
+    <param name="~stuck_sec" value="1.5"/>
+  </node>
+
+  <!-- Load MPC params (rls_mpc namespace) and override mu_source -->
+  <rosparam command="load"
+            file="$(find controller)/rls_mpc/config/rls_mpc_srx1.yaml"
+            ns=""/>
+  <param name="rls_mpc/mu_source" value="$(arg mu_source)"/>
+
+  <!-- ========== μ PATCH PUBLISHER ==========
+       rviz viz + /mu_ground_truth lookup. Also used by rls/gp modes for
+       visualization even if MPC doesn't consume /mu_ground_truth directly.
+  -->
+  <node pkg="controller" type="mu_patch_publisher.py"
+        name="mu_patch_publisher" output="screen">
+    <param name="~patches_file" value="$(arg patches_file)"/>
+    <param name="~default_mu"   value="0.85"/>
+    <param name="~frame_id"     value="map"/>
+  </node>
+
+  <!-- ========== μ ESTIMATOR (conditional on mu_source) ========== -->
+
+  <!-- ground_truth: remap /mu_ground_truth → /rls_mpc/mu_estimate.
+       Use a simple relay so MPC sees /rls_mpc/mu_estimate. -->
+  <node if="$(eval mu_source == 'ground_truth')"
+        pkg="topic_tools" type="relay" name="mu_gt_relay"
+        args="/mu_ground_truth /rls_mpc/mu_estimate"/>
+
+  <!-- rls: RLS saturation-gated estimator from IMU -->
+  <node if="$(eval mu_source == 'rls')"
+        pkg="controller" type="mu_estimator_rls.py"
+        name="mu_estimator_rls" output="screen"/>
+
+  <!-- gp: GP ensemble estimator (stub falls back to moving average) -->
+  <node if="$(eval mu_source == 'gp')"
+        pkg="controller" type="mu_estimator_gp.py"
+        name="mu_estimator_gp" output="screen"/>
+
+  <!-- ========== MPC (출력을 raw 토픽으로 → mu_applier 가 scaling) ========== -->
+  <node pkg="controller" type="rls_mpc_node.py" name="rls_mpc_controller" output="screen">
+    <param name="~drive_topic" value="/rls_mpc/cmd_raw"/>
+  </node>
+
+  <!-- ========== μ APPLIER (cmd scaling → sim 실제 효과) ========== -->
+  <arg name="apply_mu_to_sim" default="true"
+       doc="true 면 ground_truth μ 에 따라 cmd speed/steer scaling (2D sim 에서 '가상 마찰' 효과)"/>
+  <node pkg="controller" type="mu_applier.py" name="mu_applier" output="screen">
+    <param name="~reference_mu" value="0.85"/>
+    <param name="~enable"       value="$(arg apply_mu_to_sim)"/>
+    <param name="~in_topic"     value="/rls_mpc/cmd_raw"/>
+    <param name="~out_topic"    value="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
+  </node>
+
+  <!-- ========== HUD (gt vs est μ 비교 viz) ========== -->
+  <node pkg="controller" type="mu_hud.py" name="mu_hud" output="screen">
+    <param name="~frame_id" value="map"/>
+  </node>
+
+  <!-- ========== μ adaptation 토글 GUI (tkinter 1-button) ========== -->
+  <arg name="toggle_gui" default="true"/>
+  <node if="$(arg toggle_gui)" pkg="controller" type="mu_toggle_gui.py"
+        name="mu_toggle_gui" output="screen"/>
+
+  <!-- RViz — base config from mpc (MarkerArray displays for /rls_mpc/prediction
+       and /mu_patches/markers need manual add first time). -->
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_rls_mpc"
+        args="-d $(find controller)/rls_mpc/rviz/rls_mpc.rviz"/>
+</launch>

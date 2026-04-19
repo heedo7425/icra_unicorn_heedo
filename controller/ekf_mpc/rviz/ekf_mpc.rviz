@@ -109,7 +109,7 @@ Visualization Manager:
       Displays:
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /mpc_ms/prediction
+          Marker Topic: /ekf_mpc/prediction
           Name: Prediction (green)
           Namespaces:
             {}
@@ -117,7 +117,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /mpc_ms/reference
+          Marker Topic: /ekf_mpc/reference
           Name: Reference window (orange)
           Namespaces:
             {}

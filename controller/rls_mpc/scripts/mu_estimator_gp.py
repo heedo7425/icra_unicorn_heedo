@@ -22,7 +22,7 @@ Current behavior when no ensemble file exists (default):
     produce *some* reasonable output so the end-to-end pipeline can be
     exercised before real GPs are trained.
 
-When the ensemble pickle exists at `/mpc_ms/gp/ensemble_path`, it uses real
+When the ensemble pickle exists at `/rls_mpc/gp/ensemble_path`, it uses real
 GP prediction + convex blending.
 """
 
@@ -45,7 +45,7 @@ from std_msgs.msg import Float32
 class MuEstimatorGP:
     def __init__(self) -> None:
         rospy.init_node("mu_estimator_gp", anonymous=False)
-        NS = "mpc_ms/gp"
+        NS = "rls_mpc/gp"
 
         self.ensemble_path = rospy.get_param(f"{NS}/ensemble_path",
                                              "/tmp/gp_ensemble_srx1.pkl")
@@ -69,8 +69,8 @@ class MuEstimatorGP:
         self.mu_proxy = self.init_mu   # fallback when no ensemble
 
         # --- Pub / Sub ---
-        self.mu_pub = rospy.Publisher("/mpc_ms/mu_estimate", Float32, queue_size=1)
-        self.weights_pub = rospy.Publisher("/mpc_ms/gp_weights", Float32, queue_size=1)  # publish first weight as summary
+        self.mu_pub = rospy.Publisher("/rls_mpc/mu_estimate", Float32, queue_size=1)
+        self.weights_pub = rospy.Publisher("/rls_mpc/gp_weights", Float32, queue_size=1)  # publish first weight as summary
 
         rospy.Subscriber("/car_state/odom", Odometry, self._odom_cb, queue_size=1)
         rospy.Subscriber("/imu/data", Imu, self._imu_cb, queue_size=1)

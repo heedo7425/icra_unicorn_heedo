@@ -12,7 +12,7 @@ and builds:
       Else → default_mu.
 
 When launched with source=ground_truth, a topic_tools relay forwards
-/mu_ground_truth → /mpc_ms/mu_estimate (done in mpc_ms_sim.launch).
+/mu_ground_truth → /rls_mpc/mu_estimate (done in rls_mpc_sim.launch).
 """
 
 from __future__ import annotations

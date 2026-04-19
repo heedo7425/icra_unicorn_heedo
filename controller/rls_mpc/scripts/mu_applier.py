@@ -17,14 +17,14 @@ Design:
      mismatch ≤ 0 이면 MPC 가 보수적 → 영향 없음
 
 Subscribes:
-  /mpc_ms/cmd_raw                — MPC 원 명령
+  /rls_mpc/cmd_raw                — MPC 원 명령
   /mu_ground_truth               — 패치 lookup μ
-  /mpc_ms/mu_used                — MPC 가 실제 OCP 에 주입한 μ
+  /rls_mpc/mu_used                — MPC 가 실제 OCP 에 주입한 μ
 
 Publishes:
   /vesc/high_level/ackermann_cmd_mux/input/nav_1
-  /mpc_ms/cmd_scaled_debug      — Float32 ratio
-  /mpc_ms/slip_indicator        — Float32 slip 강도 (0=없음, 1=심각)
+  /rls_mpc/cmd_scaled_debug      — Float32 ratio
+  /rls_mpc/slip_indicator        — Float32 slip 강도 (0=없음, 1=심각)
 """
 
 from __future__ import annotations
@@ -55,15 +55,15 @@ class MuApplier:
             rospy.get_param("~out_topic", "/vesc/high_level/ackermann_cmd_mux/input/nav_1"),
             AckermannDriveStamped, queue_size=10,
         )
-        self.ratio_pub = rospy.Publisher("/mpc_ms/cmd_scaled_debug", Float32, queue_size=1)
-        self.slip_pub = rospy.Publisher("/mpc_ms/slip_indicator", Float32, queue_size=1)
+        self.ratio_pub = rospy.Publisher("/rls_mpc/cmd_scaled_debug", Float32, queue_size=1)
+        self.slip_pub = rospy.Publisher("/rls_mpc/slip_indicator", Float32, queue_size=1)
 
         rospy.Subscriber(
-            rospy.get_param("~in_topic", "/mpc_ms/cmd_raw"),
+            rospy.get_param("~in_topic", "/rls_mpc/cmd_raw"),
             AckermannDriveStamped, self._cmd_cb, queue_size=10,
         )
         rospy.Subscriber("/mu_ground_truth", Float32, self._gt_cb, queue_size=1)
-        rospy.Subscriber("/mpc_ms/mu_used", Float32, self._used_cb, queue_size=1)
+        rospy.Subscriber("/rls_mpc/mu_used", Float32, self._used_cb, queue_size=1)
 
         rospy.loginfo(
             f"[mu_applier] ref_mu={self.reference_mu} ratio=[{self.ratio_min},{self.ratio_max}] "

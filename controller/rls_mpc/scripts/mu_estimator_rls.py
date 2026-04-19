@@ -14,7 +14,7 @@ Pipeline per /car_state/odom callback:
 
 Bounds: μ̂ ∈ [mu_min, mu_max].
 
-Publishes /mpc_ms/mu_estimate, /mpc_ms/mu_sigma, /mpc_ms/rls_ay_peak.
+Publishes /rls_mpc/mu_estimate, /rls_mpc/mu_sigma, /rls_mpc/rls_ay_peak.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from std_msgs.msg import Float32
 class MuEstimatorRLS:
     def __init__(self) -> None:
         rospy.init_node("mu_estimator_rls", anonymous=False)
-        NS = "mpc_ms/rls"
+        NS = "rls_mpc/rls"
 
         self.forgetting = float(rospy.get_param(f"{NS}/forgetting", 0.95))
         self.init_mu = float(rospy.get_param(f"{NS}/init_mu", 0.85))
@@ -50,9 +50,9 @@ class MuEstimatorRLS:
         max_samples = int(max(5, self.peak_window_sec * 100))
         self.ay_history: deque = deque(maxlen=max_samples)
 
-        self.mu_pub = rospy.Publisher("/mpc_ms/mu_estimate", Float32, queue_size=1)
-        self.sigma_pub = rospy.Publisher("/mpc_ms/mu_sigma", Float32, queue_size=1)
-        self.peak_pub = rospy.Publisher("/mpc_ms/rls_ay_peak", Float32, queue_size=1)
+        self.mu_pub = rospy.Publisher("/rls_mpc/mu_estimate", Float32, queue_size=1)
+        self.sigma_pub = rospy.Publisher("/rls_mpc/mu_sigma", Float32, queue_size=1)
+        self.peak_pub = rospy.Publisher("/rls_mpc/rls_ay_peak", Float32, queue_size=1)
 
         rospy.Subscriber("/car_state/odom", Odometry, self._odom_cb, queue_size=1)
 

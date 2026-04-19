@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-multisurface_mpc controller node — global raceline tracking with runtime μ.
+rls_mpc controller node — global raceline tracking with runtime μ.
 
 Fork of controller/mpc_only/mpc_only_node.py. Adds a runtime μ input: instead
-of hard-coding mu_default, the node subscribes to /mpc_ms/mu_estimate (Float32)
+of hard-coding mu_default, the node subscribes to /rls_mpc/mu_estimate (Float32)
 and injects the received value into every stage of the OCP preview.
 
 μ source selection is done OUTSIDE this node via launch arg mu_source:
   static        — no subscriber, use mu_default from yaml
   ground_truth  — mu_patch_publisher publishes /mu_ground_truth (patch lookup)
-                  remapped to /mpc_ms/mu_estimate at launch
-  rls           — mu_estimator_rls publishes /mpc_ms/mu_estimate
-  gp            — mu_estimator_gp  publishes /mpc_ms/mu_estimate
+                  remapped to /rls_mpc/mu_estimate at launch
+  rls           — mu_estimator_rls publishes /rls_mpc/mu_estimate
+  gp            — mu_estimator_gp  publishes /rls_mpc/mu_estimate
 
 RViz topics:
-  /mpc_ms/prediction   MarkerArray   predicted xy over horizon (green)
-  /mpc_ms/reference    MarkerArray   raceline window (orange)
-  /mpc_ms/solve_ms     Float32       solve time per tick
-  /mpc_ms/mu_used      Float32       μ value actually fed into OCP this tick
+  /rls_mpc/prediction   MarkerArray   predicted xy over horizon (green)
+  /rls_mpc/reference    MarkerArray   raceline window (orange)
+  /rls_mpc/solve_ms     Float32       solve time per tick
+  /rls_mpc/mu_used      Float32       μ value actually fed into OCP this tick
 """
 
 from __future__ import annotations
@@ -55,14 +55,14 @@ from mpc.vehicle_model import NU, NX, load_vehicle_params_from_ros  # noqa: E402
 C_X, C_Y, C_Z, C_VX, _, C_S, C_KAPPA, C_PSI, C_AX, C_D = range(10)
 
 
-class MpcMsNode:
+class RlsMpcNode:
     def __init__(self) -> None:
-        rospy.init_node("mpc_ms_controller", anonymous=False)
-        self.name = "mpc_ms_controller"
+        rospy.init_node("rls_mpc_controller", anonymous=False)
+        self.name = "rls_mpc_controller"
         self.lock = threading.Lock()
 
-        # ---- Params (under /mpc_ms/* namespace) ----
-        NS = "mpc_ms"
+        # ---- Params (under /rls_mpc/* namespace) ----
+        NS = "rls_mpc"
         self.loop_rate = float(rospy.get_param(f"{NS}/loop_rate_hz", 50))
         self.test_mode = bool(rospy.get_param(f"{NS}/test_mode", False))
         self.N = int(rospy.get_param(f"{NS}/N_horizon", 20))
@@ -107,7 +107,7 @@ class MpcMsNode:
                 from mpc.mpcc_ocp import build_tracking_ocp  # noqa: E402
                 t0 = time.perf_counter()
                 codegen_dir = rospy.get_param(
-                    f"{NS}/codegen_dir", "/tmp/mpc_ms_c_generated"
+                    f"{NS}/codegen_dir", "/tmp/rls_mpc_c_generated"
                 )
                 self.solver = build_tracking_ocp(
                     self.vp, self.mpc_cfg, codegen_dir=codegen_dir
@@ -144,10 +144,10 @@ class MpcMsNode:
             "~drive_topic", "/vesc/high_level/ackermann_cmd_mux/input/nav_1"
         )
         self.drive_pub = rospy.Publisher(self.drive_topic, AckermannDriveStamped, queue_size=10)
-        self.pred_pub = rospy.Publisher("/mpc_ms/prediction", MarkerArray, queue_size=1)
-        self.ref_pub = rospy.Publisher("/mpc_ms/reference", MarkerArray, queue_size=1)
-        self.solve_time_pub = rospy.Publisher("/mpc_ms/solve_ms", Float32, queue_size=1)
-        self.mu_used_pub = rospy.Publisher("/mpc_ms/mu_used", Float32, queue_size=1)
+        self.pred_pub = rospy.Publisher("/rls_mpc/prediction", MarkerArray, queue_size=1)
+        self.ref_pub = rospy.Publisher("/rls_mpc/reference", MarkerArray, queue_size=1)
+        self.solve_time_pub = rospy.Publisher("/rls_mpc/solve_ms", Float32, queue_size=1)
+        self.mu_used_pub = rospy.Publisher("/rls_mpc/mu_used", Float32, queue_size=1)
 
         rospy.Subscriber("/car_state/odom", Odometry, self._odom_cb)
         rospy.Subscriber("/car_state/pose", PoseStamped, self._pose_cb)
@@ -161,14 +161,14 @@ class MpcMsNode:
         self.mu_runtime: float = self.mu_default
         self.mu_adapt_enable: bool = True   # 토글 가능한 adaptation on/off
         if self.mu_source != "static":
-            mu_topic = str(rospy.get_param(f"{NS}/mu_estimate_topic", "/mpc_ms/mu_estimate"))
+            mu_topic = str(rospy.get_param(f"{NS}/mu_estimate_topic", "/rls_mpc/mu_estimate"))
             rospy.Subscriber(mu_topic, Float32, self._mu_cb, queue_size=1)
             rospy.loginfo(f"[{self.name}] μ source = {self.mu_source} (subscribing {mu_topic})")
         else:
             rospy.loginfo(f"[{self.name}] μ source = static (mu={self.mu_default})")
         # Runtime toggle for μ adaptation (independent of mu_source).
         from std_msgs.msg import Bool
-        rospy.Subscriber("/mpc_ms/mu_adapt_enable", Bool, self._mu_enable_cb, queue_size=1)
+        rospy.Subscriber("/rls_mpc/mu_adapt_enable", Bool, self._mu_enable_cb, queue_size=1)
 
         self.startup_delay_s = float(rospy.get_param(f"{NS}/startup_delay_s", 3.0))
         self._start_time = rospy.Time.now().to_sec()
@@ -497,4 +497,4 @@ class MpcMsNode:
 
 
 if __name__ == "__main__":
-    MpcMsNode().run()
+    RlsMpcNode().run()
