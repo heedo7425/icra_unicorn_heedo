@@ -175,6 +175,10 @@ class EkfMpcNode:
 
         self.warmup_vx_min = float(rospy.get_param(f"{NS}/warmup_vx_min", 0.2))
         self.warmup_speed_cmd = float(rospy.get_param(f"{NS}/warmup_speed_cmd", 2.0))
+        # warmup 은 최초 출발 시에만 활성. vx 가 한 번이라도 이 값 초과하면 영구 비활성.
+        # (저마찰 코너에서 vx 가 떨어져도 steer=0 으로 하이재킹되어 벽에 박히는 것 방지)
+        self.warmup_exit_vx = float(rospy.get_param(f"{NS}/warmup_exit_vx", 0.8))
+        self._warmup_armed = True
 
         rospy.loginfo(f"[{self.name}] subscribed. publishing {self.drive_topic}")
 
@@ -475,7 +479,9 @@ class EkfMpcNode:
                 speed, accel, jerk, steer, traj = self._solve(x0, wpnts)
 
                 vx_now = float(x0[3])
-                if vx_now < self.warmup_vx_min:
+                if self._warmup_armed and vx_now >= self.warmup_exit_vx:
+                    self._warmup_armed = False
+                if self._warmup_armed and vx_now < self.warmup_vx_min:
                     speed = self.warmup_speed_cmd
                     accel = 1.0
                     steer = 0.0

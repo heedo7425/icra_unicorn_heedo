@@ -74,6 +74,7 @@
        doc="true 면 ground_truth μ 에 따라 cmd speed/steer scaling (2D sim 에서 '가상 마찰' 효과)"/>
   <node pkg="controller" type="ekf_mu_applier.py" name="mu_applier" output="screen">
     <param name="~reference_mu" value="0.85"/>
+    <param name="~ratio_min"    value="0.6"/>
     <param name="~enable"       value="$(arg apply_mu_to_sim)"/>
     <param name="~in_topic"     value="/ekf_mpc/cmd_raw"/>
     <param name="~out_topic"    value="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
