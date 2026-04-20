@@ -1,0 +1,84 @@
+# ============================================================
+# gp_mpc — SRX1 tuning. Independent of controller/mpc & mpc_only.
+# All params under /gp_mpc/* namespace.
+# ============================================================
+
+gp_mpc:
+  # --- Horizon ---
+  N_horizon:        20
+  dt:               0.05
+  window_size:      200
+
+  # --- State / input weights ---
+  w_d:              8.0
+  w_dpsi:           6.0
+  w_vx:             3.0
+  w_vy:             1.0
+  w_omega:          3.0
+  w_steer:          0.5
+  w_u_steer_rate:   3.0
+  w_u_accel:        0.1
+  w_terminal_scale: 1.0
+
+  # --- Limits ---
+  max_steer:        0.4
+  max_steer_rate:   2.0
+  max_accel:        3.0
+  max_decel:       -3.0
+  v_min:            0.0
+  v_max:           12.0
+
+  # --- Friction (default / fallback when mu_source=static) ---
+  mu_default:       0.85
+  speed_boost:      1.6     # raceline vx_ref 배수 (1.0=원본, ↑=더 빠르게. v_max·마찰 cap)
+  mu_scale_exp:     0.5     # μ-aware vx scaling — v∝√μ (friction-circle 물리)
+  mu_margin_k:      2.0
+  friction_circle:  true
+  friction_margin:  0.95
+  friction_slack_penalty: 1000.0
+
+  # --- μ source abstraction (runtime selected via launch arg) ---
+  # values: static | ground_truth | gp
+  #   static      : mu_default 고정
+  #   ground_truth: /mu_ground_truth → /gp_mpc/mu_estimate relay (sanity)
+  #   gp          : base μ 는 mu_default 유지. GP residual (Δvx,Δvy,Δω) 가
+  #                 OCP model 에 additive 주입되어 marginal effect 학습.
+  mu_source:        static
+  mu_estimate_topic: /gp_mpc/mu_estimate
+
+  # --- GP residual learner (UPenn-style online, arxiv 2303.13694) ---
+  # Inputs (6D):  vx, vy, omega, delta, a_cmd, delta_rate
+  # Outputs (3D): residual on (dvx/dt, dvy/dt, domega/dt) over Pacejka base.
+  # Trainer: lap-end GPyTorch BatchIndependentMultitaskGP (ExactGP, RBF+ARD).
+  # Publisher: 50Hz eval → /gp_mpc/residual (Float32MultiArray).
+  # MPC: broadcasts residual across N+1 stages (Phase 1, constant across horizon).
+  gp:
+    model_path:        /tmp/gp_mpc_models/latest.pth
+    buffer_size:       10000           # rolling FIFO, ~5 lap (더 많은 patch 커버)
+    train_epochs:      100             # 7D ARD 에서 학습 시간 완화
+    train_lr:          0.05
+    train_min_samples: 400
+    train_max_samples: 700             # 7D 차원 증가로 O(N³·D) 폭증 방지
+    outlier_quantile:  1.0             # OFF — icy 잔차가 꼬리에 있어서 제거 시 patch 구분 저하
+    skip_first_sec:    3.0
+    residual_clip:     [10.0, 5.0, 12.0]   # Δω 상한 8→12 (saturation 해소)
+    enable_stagewise:  false           # Phase 2
+    residual_enable:   true
+    torch_num_threads: 2
+
+  # --- μ patches (2D sim multisurface viz + ground truth) ---
+  # Per-map yaml path; empty = uniform mu_default everywhere.
+  mu_patches_file:  ""
+
+  # --- Node behavior ---
+  loop_rate_hz:     50
+  test_mode:        false
+  startup_delay_s:  7.0
+
+  warmup_vx_min:    0.2
+  warmup_speed_cmd: 2.0
+
+  reset_jump_thres_m: 1.0
+  stuck_status_thres: 5
+
+  codegen_dir:      /tmp/gp_mpc_c_generated
