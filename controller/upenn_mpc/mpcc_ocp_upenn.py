@@ -42,11 +42,11 @@ NP_GP = NP + 3  # 6 base + 3 residual (Δvx, Δvy, Δω)
 RESIDUAL_STATE_IDX = (3, 4, 5)  # vx, vy, omega
 
 
-def build_tracking_ocp_gp(
+def build_tracking_ocp_upenn(
     vp: dict,
     mpc_cfg: dict,
-    codegen_dir: str = "/tmp/gp_mpc_c_generated",
-    model_name: str = "tracking_ocp_gp",
+    codegen_dir: str = "/tmp/upenn_mpc_c_generated",
+    model_name: str = "tracking_ocp_upenn",
 ) -> "AcadosOcpSolver":
     """acados OCP with 3 extra stage params for GP residual (Δvx, Δvy, Δω).
 
@@ -187,7 +187,7 @@ def build_tracking_ocp_gp(
     return solver
 
 
-def solve_once_gp(
+def solve_once_upenn(
     solver: "AcadosOcpSolver",
     x0: np.ndarray,
     params_per_stage: np.ndarray,  # (N+1, NP_GP)
@@ -228,17 +228,17 @@ if __name__ == "__main__":
         "max_decel": -6.0,
     }
     vp = default_vehicle_params()
-    solver = build_tracking_ocp_gp(vp, mpc_cfg)
+    solver = build_tracking_ocp_upenn(vp, mpc_cfg)
 
     x0 = np.array([0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0])
     params = np.tile(
         [0.1, 0.0, 0.0, 0.7, 3.0, 0.0, 0.0, 0.0, 0.0],  # residual=0
         (mpc_cfg["N_horizon"] + 1, 1),
     )
-    u0, status, info = solve_once_gp(solver, x0, params)
+    u0, status, info = solve_once_upenn(solver, x0, params)
     print(f"status={status} u0={u0} solve_time={info['solve_time_ms']:.2f}ms")
 
     # With nonzero residual.
     params[:, NP:] = [0.5, -0.2, 0.3]
-    u0, status, info = solve_once_gp(solver, x0, params)
+    u0, status, info = solve_once_upenn(solver, x0, params)
     print(f"[residual] status={status} u0={u0} solve_time={info['solve_time_ms']:.2f}ms")

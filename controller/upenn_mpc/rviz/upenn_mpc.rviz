@@ -109,7 +109,7 @@ Visualization Manager:
       Displays:
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /gp_mpc/prediction
+          Marker Topic: /upenn_mpc/prediction
           Name: Prediction (green)
           Namespaces:
             {}
@@ -117,7 +117,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /gp_mpc/reference
+          Marker Topic: /upenn_mpc/reference
           Name: Reference window (orange)
           Namespaces:
             {}

@@ -6,7 +6,7 @@
   - 속도: /car_state/odom twist.linear.x
   - 명령 속도: /vesc/.../nav_1 drive.speed
   - gt μ / est μ
-  - ENABLE/DISABLE 토글 버튼 → /gp_mpc/mu_adapt_enable (Bool, latched)
+  - ENABLE/DISABLE 토글 버튼 → /upenn_mpc/mu_adapt_enable (Bool, latched)
 
 DISPLAY 없으면 console REPL fallback (Enter=toggle, y/n, Ctrl-C).
 """
@@ -36,29 +36,29 @@ class Dashboard:
         self.buffer_size = 0.0
         self.solve_ms = 0.0
         self.cmd_steer = 0.0
-        self.cmd_v_raw = 0.0         # /gp_mpc/cmd_raw.speed (pre mu_applier)
+        self.cmd_v_raw = 0.0         # /upenn_mpc/cmd_raw.speed (pre mu_applier)
         self.cmd_base_speed = 0.0
         self.cmd_base_steer = 0.0
 
-        self.pub = rospy.Publisher("/gp_mpc/mu_adapt_enable", Bool, queue_size=1, latch=True)
-        self.reset_pub = rospy.Publisher("/gp_mpc/gp_reset", Empty, queue_size=1)
+        self.pub = rospy.Publisher("/upenn_mpc/mu_adapt_enable", Bool, queue_size=1, latch=True)
+        self.reset_pub = rospy.Publisher("/upenn_mpc/gp_reset", Empty, queue_size=1)
         rospy.Subscriber("/car_state/odom", Odometry, self._odom_cb, queue_size=1)
         rospy.Subscriber("/vesc/high_level/ackermann_cmd_mux/input/nav_1",
                          AckermannDriveStamped, self._cmd_cb, queue_size=1)
         rospy.Subscriber("/mu_ground_truth", Float32, self._gt_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/mu_used", Float32, self._est_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/residual", Float32MultiArray, self._res_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/gp_sigma", Float32MultiArray, self._sig_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/gp_ready", Bool, self._ready_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/train_time_s", Float32, self._train_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/buffer_size", Float32, self._buf_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/solve_ms", Float32, self._solve_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/cmd_raw", AckermannDriveStamped,
+        rospy.Subscriber("/upenn_mpc/mu_used", Float32, self._est_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/residual", Float32MultiArray, self._res_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/gp_sigma", Float32MultiArray, self._sig_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/gp_ready", Bool, self._ready_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/train_time_s", Float32, self._train_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/buffer_size", Float32, self._buf_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/solve_ms", Float32, self._solve_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/cmd_raw", AckermannDriveStamped,
                          self._cmdraw_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/cmd_base_speed", Float32,
+        rospy.Subscriber("/upenn_mpc/cmd_base_speed", Float32,
                          lambda m: setattr(self, "cmd_base_speed", float(m.data)),
                          queue_size=1)
-        rospy.Subscriber("/gp_mpc/cmd_base_steer", Float32,
+        rospy.Subscriber("/upenn_mpc/cmd_base_steer", Float32,
                          lambda m: setattr(self, "cmd_base_steer", float(m.data)),
                          queue_size=1)
 

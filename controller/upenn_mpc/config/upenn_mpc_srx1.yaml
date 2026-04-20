@@ -1,9 +1,9 @@
 # ============================================================
-# gp_mpc — SRX1 tuning. Independent of controller/mpc & mpc_only.
-# All params under /gp_mpc/* namespace.
+# upenn_mpc — SRX1 tuning. Independent of controller/mpc & mpc_only.
+# All params under /upenn_mpc/* namespace.
 # ============================================================
 
-gp_mpc:
+upenn_mpc:
   # --- Horizon ---
   N_horizon:        20
   dt:               0.05
@@ -40,20 +40,20 @@ gp_mpc:
   # --- μ source abstraction (runtime selected via launch arg) ---
   # values: static | ground_truth | gp
   #   static      : mu_default 고정
-  #   ground_truth: /mu_ground_truth → /gp_mpc/mu_estimate relay (sanity)
+  #   ground_truth: /mu_ground_truth → /upenn_mpc/mu_estimate relay (sanity)
   #   gp          : base μ 는 mu_default 유지. GP residual (Δvx,Δvy,Δω) 가
   #                 OCP model 에 additive 주입되어 marginal effect 학습.
   mu_source:        static
-  mu_estimate_topic: /gp_mpc/mu_estimate
+  mu_estimate_topic: /upenn_mpc/mu_estimate
 
   # --- GP residual learner (UPenn-style online, arxiv 2303.13694) ---
   # Inputs (6D):  vx, vy, omega, delta, a_cmd, delta_rate
   # Outputs (3D): residual on (dvx/dt, dvy/dt, domega/dt) over Pacejka base.
   # Trainer: lap-end GPyTorch BatchIndependentMultitaskGP (ExactGP, RBF+ARD).
-  # Publisher: 50Hz eval → /gp_mpc/residual (Float32MultiArray).
+  # Publisher: 50Hz eval → /upenn_mpc/residual (Float32MultiArray).
   # MPC: broadcasts residual across N+1 stages (Phase 1, constant across horizon).
   gp:
-    model_path:        /tmp/gp_mpc_models/latest.pth
+    model_path:        /tmp/upenn_mpc_models/latest.pth
     buffer_size:       10000           # rolling FIFO, ~5 lap (더 많은 patch 커버)
     train_epochs:      100             # 7D ARD 에서 학습 시간 완화
     train_lr:          0.05
@@ -81,4 +81,4 @@ gp_mpc:
   reset_jump_thres_m: 1.0
   stuck_status_thres: 5
 
-  codegen_dir:      /tmp/gp_mpc_c_generated
+  codegen_dir:      /tmp/upenn_mpc_c_generated

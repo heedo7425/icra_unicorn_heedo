@@ -11,8 +11,8 @@ Publishes (10 Hz) to /mu_hud/markers:
 Subscribes:
   /car_state/pose
   /mu_ground_truth           (패치 μ)
-  /gp_mpc/residual           (GP 잔차 — correction 계산용)
-  /gp_mpc/gp_ready           (GP 학습 완료 여부)
+  /upenn_mpc/residual           (GP 잔차 — correction 계산용)
+  /upenn_mpc/gp_ready           (GP 학습 완료 여부)
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from std_msgs.msg import Bool, Float32, Float32MultiArray
 from visualization_msgs.msg import Marker, MarkerArray
 
 
-# Must match gp_mpc_srx1.yaml::gp.residual_clip
+# Must match upenn_mpc_srx1.yaml::gp.residual_clip
 RESIDUAL_CLIP = (10.0, 5.0, 12.0)
 
 
@@ -63,8 +63,8 @@ class GpMuHud:
 
         rospy.Subscriber("/car_state/pose", PoseStamped, self._pose_cb, queue_size=1)
         rospy.Subscriber("/mu_ground_truth", Float32, self._gt_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/residual", Float32MultiArray, self._res_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/gp_ready", Bool, self._ready_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/residual", Float32MultiArray, self._res_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/gp_ready", Bool, self._ready_cb, queue_size=1)
 
         rospy.Timer(rospy.Duration(0.1), self._tick)
         rospy.loginfo("[mu_hud] ready (gt μ + GP correction viz)")

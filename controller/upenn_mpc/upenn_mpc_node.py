@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-gp_mpc controller node — global raceline tracking with runtime μ.
+upenn_mpc controller node — global raceline tracking with runtime μ.
 
 Fork of controller/mpc_only/mpc_only_node.py. Adds a runtime μ input: instead
-of hard-coding mu_default, the node subscribes to /gp_mpc/mu_estimate (Float32)
+of hard-coding mu_default, the node subscribes to /upenn_mpc/mu_estimate (Float32)
 and injects the received value into every stage of the OCP preview.
 
 μ source selection is done OUTSIDE this node via launch arg mu_source:
   static        — no subscriber, use mu_default from yaml
   ground_truth  — mu_patch_publisher publishes /mu_ground_truth (patch lookup)
-                  remapped to /gp_mpc/mu_estimate at launch
-  rls           — mu_estimator_rls publishes /gp_mpc/mu_estimate
-  gp            — mu_estimator_gp  publishes /gp_mpc/mu_estimate
+                  remapped to /upenn_mpc/mu_estimate at launch
+  rls           — mu_estimator_rls publishes /upenn_mpc/mu_estimate
+  gp            — mu_estimator_gp  publishes /upenn_mpc/mu_estimate
 
 RViz topics:
-  /gp_mpc/prediction   MarkerArray   predicted xy over horizon (green)
-  /gp_mpc/reference    MarkerArray   raceline window (orange)
-  /gp_mpc/solve_ms     Float32       solve time per tick
-  /gp_mpc/mu_used      Float32       μ value actually fed into OCP this tick
+  /upenn_mpc/prediction   MarkerArray   predicted xy over horizon (green)
+  /upenn_mpc/reference    MarkerArray   raceline window (orange)
+  /upenn_mpc/solve_ms     Float32       solve time per tick
+  /upenn_mpc/mu_used      Float32       μ value actually fed into OCP this tick
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ if _PARENT not in sys.path:
 
 from mpc.reference_builder import build_preview, extract_frenet_state  # noqa: E402
 from mpc.vehicle_model import NU, NX, NP, load_vehicle_params_from_ros  # noqa: E402
-from gp_mpc.mpcc_ocp_gp import NP_GP  # noqa: E402
+from upenn_mpc.mpcc_ocp_upenn import NP_GP  # noqa: E402
 
 
 # Column indices for our "wpnts" ndarray (matches mpc_node.py expectations).
@@ -58,12 +58,12 @@ C_X, C_Y, C_Z, C_VX, _, C_S, C_KAPPA, C_PSI, C_AX, C_D = range(10)
 
 class EkfMpcNode:
     def __init__(self) -> None:
-        rospy.init_node("gp_mpc_controller", anonymous=False)
-        self.name = "gp_mpc_controller"
+        rospy.init_node("upenn_mpc_controller", anonymous=False)
+        self.name = "upenn_mpc_controller"
         self.lock = threading.Lock()
 
-        # ---- Params (under /gp_mpc/* namespace) ----
-        NS = "gp_mpc"
+        # ---- Params (under /upenn_mpc/* namespace) ----
+        NS = "upenn_mpc"
         self.loop_rate = float(rospy.get_param(f"{NS}/loop_rate_hz", 50))
         self.test_mode = bool(rospy.get_param(f"{NS}/test_mode", False))
         self.N = int(rospy.get_param(f"{NS}/N_horizon", 20))
@@ -121,12 +121,12 @@ class EkfMpcNode:
         self.publish_base_cmp = bool(rospy.get_param(f"{NS}/publish_base_cmp", True))
         if not self.test_mode:
             try:
-                from gp_mpc.mpcc_ocp_gp import build_tracking_ocp_gp  # noqa: E402
+                from upenn_mpc.mpcc_ocp_upenn import build_tracking_ocp_upenn  # noqa: E402
                 t0 = time.perf_counter()
                 codegen_dir = rospy.get_param(
-                    f"{NS}/codegen_dir", "/tmp/gp_mpc_c_generated"
+                    f"{NS}/codegen_dir", "/tmp/upenn_mpc_c_generated"
                 )
-                self.solver = build_tracking_ocp_gp(
+                self.solver = build_tracking_ocp_upenn(
                     self.vp, self.mpc_cfg, codegen_dir=codegen_dir
                 )
                 rospy.loginfo(
@@ -137,10 +137,10 @@ class EkfMpcNode:
                     t0 = time.perf_counter()
                     # Same builder, but we'll always pass residual=0 → base baseline.
                     # Separate solver 필요 — warm-start state 분리.
-                    self.solver_base = build_tracking_ocp_gp(
+                    self.solver_base = build_tracking_ocp_upenn(
                         self.vp, self.mpc_cfg,
                         codegen_dir=codegen_dir + "_base",
-                        model_name="tracking_ocp_gp_base",
+                        model_name="tracking_ocp_upenn_base",
                     )
                     rospy.loginfo(
                         f"[{self.name}] base-comparison solver built in "
@@ -178,13 +178,13 @@ class EkfMpcNode:
         self.initialpose_pub = rospy.Publisher(
             "/initialpose", PoseWithCovarianceStamped, queue_size=1, latch=True
         )
-        self.pred_pub = rospy.Publisher("/gp_mpc/prediction", MarkerArray, queue_size=1)
-        self.ref_pub = rospy.Publisher("/gp_mpc/reference", MarkerArray, queue_size=1)
-        self.solve_time_pub = rospy.Publisher("/gp_mpc/solve_ms", Float32, queue_size=1)
-        self.mu_used_pub = rospy.Publisher("/gp_mpc/mu_used", Float32, queue_size=1)
+        self.pred_pub = rospy.Publisher("/upenn_mpc/prediction", MarkerArray, queue_size=1)
+        self.ref_pub = rospy.Publisher("/upenn_mpc/reference", MarkerArray, queue_size=1)
+        self.solve_time_pub = rospy.Publisher("/upenn_mpc/solve_ms", Float32, queue_size=1)
+        self.mu_used_pub = rospy.Publisher("/upenn_mpc/mu_used", Float32, queue_size=1)
         # Base comparison (residual=0 parallel solve): 속도/조향 비교용
-        self.cmd_base_speed_pub = rospy.Publisher("/gp_mpc/cmd_base_speed", Float32, queue_size=1)
-        self.cmd_base_steer_pub = rospy.Publisher("/gp_mpc/cmd_base_steer", Float32, queue_size=1)
+        self.cmd_base_speed_pub = rospy.Publisher("/upenn_mpc/cmd_base_speed", Float32, queue_size=1)
+        self.cmd_base_steer_pub = rospy.Publisher("/upenn_mpc/cmd_base_steer", Float32, queue_size=1)
 
         rospy.Subscriber("/car_state/odom", Odometry, self._odom_cb)
         rospy.Subscriber("/car_state/pose", PoseStamped, self._pose_cb)
@@ -198,26 +198,26 @@ class EkfMpcNode:
         self.mu_runtime: float = self.mu_default
         self.mu_adapt_enable: bool = True   # 토글 가능한 adaptation on/off
         if self.mu_source != "static":
-            mu_topic = str(rospy.get_param(f"{NS}/mu_estimate_topic", "/gp_mpc/mu_estimate"))
+            mu_topic = str(rospy.get_param(f"{NS}/mu_estimate_topic", "/upenn_mpc/mu_estimate"))
             rospy.Subscriber(mu_topic, Float32, self._mu_cb, queue_size=1)
             rospy.loginfo(f"[{self.name}] μ source = {self.mu_source} (subscribing {mu_topic})")
         else:
             rospy.loginfo(f"[{self.name}] μ source = static (mu={self.mu_default})")
         # Runtime toggle for μ adaptation (independent of mu_source).
-        rospy.Subscriber("/gp_mpc/mu_adapt_enable", Bool, self._mu_enable_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/mu_adapt_enable", Bool, self._mu_enable_cb, queue_size=1)
 
         # --- GP residual injection ---
-        # /gp_mpc/residual (Float32MultiArray, data=[Δvx, Δvy, Δω]) broadcast
+        # /upenn_mpc/residual (Float32MultiArray, data=[Δvx, Δvy, Δω]) broadcast
         # across N+1 stages when gp_ready=True and residual_enable config is on.
         self.gp_residual = np.zeros(3, dtype=np.float64)
         self.gp_ready: bool = False
         self.residual_enable = bool(rospy.get_param(f"{NS}/gp/residual_enable", True))
-        rospy.Subscriber("/gp_mpc/residual", Float32MultiArray,
+        rospy.Subscriber("/upenn_mpc/residual", Float32MultiArray,
                          self._gp_residual_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/gp_ready", Bool,
+        rospy.Subscriber("/upenn_mpc/gp_ready", Bool,
                          self._gp_ready_cb, queue_size=1)
         from std_msgs.msg import Empty
-        rospy.Subscriber("/gp_mpc/gp_reset", Empty,
+        rospy.Subscriber("/upenn_mpc/gp_reset", Empty,
                          self._gp_reset_cb, queue_size=1)
 
         self.startup_delay_s = float(rospy.get_param(f"{NS}/startup_delay_s", 3.0))
@@ -419,7 +419,7 @@ class EkfMpcNode:
 
     # ---- Solve ----
     def _solve(self, x0: np.ndarray, wpnts: np.ndarray) -> Tuple[float, float, float, float, Optional[np.ndarray]]:
-        from gp_mpc.mpcc_ocp_gp import solve_once_gp
+        from upenn_mpc.mpcc_ocp_upenn import solve_once_upenn
 
         # Use runtime μ (patch/rls/gp) only if adaptation enabled; else fallback.
         if self.mu_source != "static" and self.mu_adapt_enable:
@@ -469,13 +469,13 @@ class EkfMpcNode:
         #   adapt OFF → solver_base (residual=0) 이 주행. 순수 base 동작.
         # 비교용으로는 항상 다른 쪽 solver 의 u0 도 publish.
         if self.mu_adapt_enable:
-            u0, status, info = solve_once_gp(self.solver, x0, params)
+            u0, status, info = solve_once_upenn(self.solver, x0, params)
             # 비교: base solver w/ residual=0
             if self.solver_base is not None and self.publish_base_cmp:
                 try:
                     params_zero = params.copy()
                     params_zero[:, NP:] = 0.0
-                    u0_base, _, _ = solve_once_gp(self.solver_base, x0, params_zero)
+                    u0_base, _, _ = solve_once_upenn(self.solver_base, x0, params_zero)
                     self.cmd_base_speed_pub.publish(Float32(data=float(np.clip(
                         x0[3] + float(u0_base[1]) * self.dt, 0.0, self.v_max))))
                     self.cmd_base_steer_pub.publish(Float32(data=float(np.clip(
@@ -486,9 +486,9 @@ class EkfMpcNode:
         else:
             # adapt OFF: base solver 로 주행. params 의 residual 은 이미 0.
             if self.solver_base is not None:
-                u0, status, info = solve_once_gp(self.solver_base, x0, params)
+                u0, status, info = solve_once_upenn(self.solver_base, x0, params)
             else:
-                u0, status, info = solve_once_gp(self.solver, x0, params)
+                u0, status, info = solve_once_upenn(self.solver, x0, params)
             # 비교: GP solver w/ 실제 residual (있으면) — publish_base_cmp 는 이제
             # "활성 solver 의 반대쪽 publish" 의미.
             if self.solver is not None and self.publish_base_cmp:
@@ -498,7 +498,7 @@ class EkfMpcNode:
                     with self.lock:
                         if self.gp_ready:
                             params_gp[:, NP:] = self.gp_residual
-                    u0_gp, _, _ = solve_once_gp(self.solver, x0, params_gp)
+                    u0_gp, _, _ = solve_once_upenn(self.solver, x0, params_gp)
                     # cmd_base_speed/steer 토픽은 "비활성 solver (= GP)" 가 내놓는 값
                     self.cmd_base_speed_pub.publish(Float32(data=float(np.clip(
                         x0[3] + float(u0_gp[1]) * self.dt, 0.0, self.v_max))))
@@ -525,7 +525,7 @@ class EkfMpcNode:
                     active.set(k, "u", u_zero)
                 self.last_delta = 0.0
                 self._stuck_count = 0
-                u0, status, info = solve_once_gp(active, x0, params)
+                u0, status, info = solve_once_upenn(active, x0, params)
 
         active_solver = self.solver if self.mu_adapt_enable else (self.solver_base or self.solver)
         x0_solver = active_solver.get(0, "x")

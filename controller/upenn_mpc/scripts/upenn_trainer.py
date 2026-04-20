@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-gp_trainer — lap-end online GP residual trainer (UPenn-style).
+upenn_trainer — lap-end online GP residual trainer (UPenn-style).
 
-Collects (x_k, u_k, x_{k+1}) pairs from /car_state/odom + /gp_mpc/cmd_raw,
+Collects (x_k, u_k, x_{k+1}) pairs from /car_state/odom + /upenn_mpc/cmd_raw,
 computes residual = measured_derivative - pacejka_numpy(...) on (vx, vy, ω)
 channels, then at every lap-end trains a GPyTorch BatchIndependentMultitaskGP
 (3 tasks, ExactGP, ScaleKernel(RBFKernel(ard=6))) and atomically saves to
-/tmp/gp_mpc_models/latest.pth.
+/tmp/upenn_mpc_models/latest.pth.
 
 Lap-end trigger: s wrap-around (|s_prev - s_now| > track_length/2, s_now small).
 
@@ -14,8 +14,8 @@ Inputs (6D): [vx, vy, omega, delta, u_ax, u_ddelta]
 Outputs (3D): residual on [dvx/dt, dvy/dt, domega/dt]
 
 Publishes:
-  /gp_mpc/gp_ready       (Bool)   — true after first successful train
-  /gp_mpc/train_time_s   (Float32) — wall time of last train
+  /upenn_mpc/gp_ready       (Bool)   — true after first successful train
+  /upenn_mpc/train_time_s   (Float32) — wall time of last train
 """
 
 from __future__ import annotations
@@ -109,10 +109,10 @@ class BatchIndependentMultitaskGPModel(gpytorch.models.ExactGP):
 # ------------------------------------------------------------------------
 class GPTrainer:
     def __init__(self) -> None:
-        rospy.init_node("gp_trainer", anonymous=False)
-        NS = "gp_mpc/gp"
+        rospy.init_node("upenn_trainer", anonymous=False)
+        NS = "upenn_mpc/gp"
 
-        self.model_path = str(rospy.get_param(f"{NS}/model_path", "/tmp/gp_mpc_models/latest.pth"))
+        self.model_path = str(rospy.get_param(f"{NS}/model_path", "/tmp/upenn_mpc_models/latest.pth"))
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
 
         self.buffer_size = int(rospy.get_param(f"{NS}/buffer_size", 5000))
@@ -123,7 +123,7 @@ class GPTrainer:
         self.outlier_q = float(rospy.get_param(f"{NS}/outlier_quantile", 1.0))
         self.skip_first_sec = float(rospy.get_param(f"{NS}/skip_first_sec", 3.0))
 
-        self.mu_train = float(rospy.get_param("gp_mpc/mu_default", 0.85))
+        self.mu_train = float(rospy.get_param("upenn_mpc/mu_default", 0.85))
 
         # Vehicle params (flat dict).
         vp_keys = ["m", "l_f", "l_r", "l_wb", "I_z"]
@@ -161,37 +161,37 @@ class GPTrainer:
 
         torch.set_num_threads(int(rospy.get_param(f"{NS}/torch_num_threads", 2)))
 
-        self.ready_pub = rospy.Publisher("/gp_mpc/gp_ready", Bool, queue_size=1, latch=True)
-        self.train_time_pub = rospy.Publisher("/gp_mpc/train_time_s", Float32, queue_size=1)
-        self.buffer_size_pub = rospy.Publisher("/gp_mpc/buffer_size", Float32, queue_size=1)
+        self.ready_pub = rospy.Publisher("/upenn_mpc/gp_ready", Bool, queue_size=1, latch=True)
+        self.train_time_pub = rospy.Publisher("/upenn_mpc/train_time_s", Float32, queue_size=1)
+        self.buffer_size_pub = rospy.Publisher("/upenn_mpc/buffer_size", Float32, queue_size=1)
 
         rospy.Subscriber("/car_state/odom", Odometry, self._odom_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/cmd_raw", AckermannDriveStamped, self._cmd_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/cmd_raw", AckermannDriveStamped, self._cmd_cb, queue_size=1)
         rospy.Subscriber("/car_state/odom_frenet", Odometry, self._frenet_cb, queue_size=1)
-        rospy.Subscriber("/gp_mpc/gp_reset", Empty, self._reset_cb, queue_size=1)
+        rospy.Subscriber("/upenn_mpc/gp_reset", Empty, self._reset_cb, queue_size=1)
 
         # Initial ready=False.
         self.ready_pub.publish(Bool(data=False))
 
         rospy.loginfo(
-            f"[gp_trainer] start — buffer={self.buffer_size} min={self.train_min_samples} "
+            f"[upenn_trainer] start — buffer={self.buffer_size} min={self.train_min_samples} "
             f"epochs={self.train_epochs} model_path={self.model_path}"
         )
 
     def _reset_cb(self, _msg) -> None:
-        """/gp_mpc/gp_reset → buffer · checkpoint · ready 모두 초기화."""
+        """/upenn_mpc/gp_reset → buffer · checkpoint · ready 모두 초기화."""
         with self.lock:
             self.buffer.clear()
         try:
             if os.path.isfile(self.model_path):
                 os.remove(self.model_path)
         except OSError as e:
-            rospy.logwarn(f"[gp_trainer] reset: model remove failed: {e}")
+            rospy.logwarn(f"[upenn_trainer] reset: model remove failed: {e}")
         self.last_lap_end_t = rospy.Time.now().to_sec()  # 즉시 재학습 금지
         self.ready_pub.publish(Bool(data=False))
         self.buffer_size_pub.publish(Float32(data=0.0))
         self.train_time_pub.publish(Float32(data=0.0))
-        rospy.loginfo("[gp_trainer] RESET — buffer + model cleared, ready=False")
+        rospy.loginfo("[upenn_trainer] RESET — buffer + model cleared, ready=False")
 
     # ---- Callbacks ----
     def _cmd_cb(self, msg: AckermannDriveStamped) -> None:
@@ -227,7 +227,7 @@ class GPTrainer:
                 now = rospy.Time.now().to_sec()
                 if now - self.last_lap_end_t > self.lap_end_cooldown_s and not self.training_in_progress:
                     self.last_lap_end_t = now
-                    rospy.loginfo(f"[gp_trainer] LAP END at s={s:.1f} → trigger train "
+                    rospy.loginfo(f"[upenn_trainer] LAP END at s={s:.1f} → trigger train "
                                   f"(buffer={len(self.buffer)})")
                     threading.Thread(target=self._train_and_save, daemon=True).start()
         self.prev_s = s
@@ -237,7 +237,7 @@ class GPTrainer:
         with self.lock:
             samples = list(self.buffer)
         if len(samples) < self.train_min_samples:
-            rospy.logwarn(f"[gp_trainer] buffer={len(samples)} < min={self.train_min_samples} → skip")
+            rospy.logwarn(f"[upenn_trainer] buffer={len(samples)} < min={self.train_min_samples} → skip")
             return None
 
         X_list = []
@@ -263,7 +263,7 @@ class GPTrainer:
             Y_list.append(y)
 
         if len(X_list) < self.train_min_samples:
-            rospy.logwarn(f"[gp_trainer] filtered pairs={len(X_list)} < min → skip")
+            rospy.logwarn(f"[upenn_trainer] filtered pairs={len(X_list)} < min → skip")
             return None
 
         X = np.stack(X_list, axis=0)  # (N, 6)
@@ -349,11 +349,11 @@ class GPTrainer:
             self.train_time_pub.publish(Float32(data=float(elapsed)))
             self.ready_pub.publish(Bool(data=True))
             rospy.loginfo(
-                f"[gp_trainer] trained N={N} epochs={self.train_epochs} "
+                f"[upenn_trainer] trained N={N} epochs={self.train_epochs} "
                 f"in {elapsed:.2f}s → {self.model_path}"
             )
         except Exception as e:
-            rospy.logerr(f"[gp_trainer] train failed: {e}")
+            rospy.logerr(f"[upenn_trainer] train failed: {e}")
         finally:
             self.training_in_progress = False
 

@@ -1,4 +1,4 @@
-# `controller/gp_mpc` — GP residual MPC (UPenn-style)
+# `controller/upenn_mpc` — GP residual MPC (UPenn-style)
 
 > Base Pacejka dynamic bicycle MPC 위에 **3D 잔차 GP** `(Δvx, Δvy, Δω)` 를 얹어
 > 온라인으로 노면 특성을 적응.
@@ -41,13 +41,13 @@ GP outputs (3 독립 task): `(Δvx, Δvy, Δω)` 각각 ExactGP, RBF+ARD kernel,
 
 | 노드 | 역할 | 주기 |
 |---|---|---|
-| `gp_mpc_node.py` | acados OCP + residual 주입, 두 solver (active/base) 병렬 solve | 50Hz |
-| `scripts/gp_trainer.py` | lap-end 마다 ExactGP 3-task 학습 | lap event |
-| `scripts/gp_residual_publisher.py` | 50Hz 로 GP 평가 → `/gp_mpc/residual` | 50Hz |
-| `scripts/gp_mu_patch_publisher.py` | μ patch 로부터 ground-truth μ publish (sim 가상 마찰용) | event |
-| `scripts/gp_mu_applier.py` | μ_gt 기반 cmd scaling (2D sim 의 가상 마찰 효과) | 50Hz |
-| `scripts/gp_mu_hud.py` | rviz HUD: ground-truth μ + GP correction strength viz | 10Hz |
-| `scripts/gp_mu_toggle_gui.py` | tkinter 대시보드: vx/cmd/solve/Δ residual/scroll plot/Reset/Toggle 버튼 | 5Hz |
+| `upenn_mpc_node.py` | acados OCP + residual 주입, 두 solver (active/base) 병렬 solve | 50Hz |
+| `scripts/upenn_trainer.py` | lap-end 마다 ExactGP 3-task 학습 | lap event |
+| `scripts/upenn_residual_publisher.py` | 50Hz 로 GP 평가 → `/upenn_mpc/residual` | 50Hz |
+| `scripts/upenn_mu_patch_publisher.py` | μ patch 로부터 ground-truth μ publish (sim 가상 마찰용) | event |
+| `scripts/upenn_mu_applier.py` | μ_gt 기반 cmd scaling (2D sim 의 가상 마찰 효과) | 50Hz |
+| `scripts/upenn_mu_hud.py` | rviz HUD: ground-truth μ + GP correction strength viz | 10Hz |
+| `scripts/upenn_mu_toggle_gui.py` | tkinter 대시보드: vx/cmd/solve/Δ residual/scroll plot/Reset/Toggle 버튼 | 5Hz |
 
 **핵심 기능 요약**:
 - **Online incremental 학습** — 사전 surface library 불필요
@@ -71,26 +71,26 @@ GP outputs (3 독립 task): `(Δvx, Δvy, Δω)` 각각 ExactGP, RBF+ARD kernel,
 ## 4. 파일 구조
 
 ```
-controller/gp_mpc/
-├── gp_mpc_node.py                  # MPC 메인 — acados OCP + residual 주입
-├── mpcc_ocp_gp.py                  # build_tracking_ocp_gp (NP_GP = NP + 3)
+controller/upenn_mpc/
+├── upenn_mpc_node.py                  # MPC 메인 — acados OCP + residual 주입
+├── mpcc_ocp_upenn.py                  # build_tracking_ocp_upenn (NP_GP = NP + 3)
 ├── config/
-│   ├── gp_mpc_srx1.yaml            # 전체 튜닝 파라미터
+│   ├── upenn_mpc_srx1.yaml            # 전체 튜닝 파라미터
 │   └── mu_patches_f.yaml           # 2D sim μ patch (s-range, d-range, μ 값)
-├── launch/gp_mpc_sim.launch        # 2D sim 런치 (base_system + 모든 노드)
-├── rviz/gp_mpc.rviz                # rviz config (prediction, reference, patches, HUD)
+├── launch/upenn_mpc_sim.launch        # 2D sim 런치 (base_system + 모든 노드)
+├── rviz/upenn_mpc.rviz                # rviz config (prediction, reference, patches, HUD)
 └── scripts/
-    ├── gp_trainer.py
-    ├── gp_residual_publisher.py
-    ├── gp_mu_patch_publisher.py
-    ├── gp_mu_applier.py
-    ├── gp_mu_hud.py
-    └── gp_mu_toggle_gui.py
+    ├── upenn_trainer.py
+    ├── upenn_residual_publisher.py
+    ├── upenn_mu_patch_publisher.py
+    ├── upenn_mu_applier.py
+    ├── upenn_mu_hud.py
+    └── upenn_mu_toggle_gui.py
 ```
 
 ---
 
-## 5. 파라미터 (`config/gp_mpc_srx1.yaml`)
+## 5. 파라미터 (`config/upenn_mpc_srx1.yaml`)
 
 ### MPC 공통
 | 키 | 의미 | 기본값 |
@@ -117,7 +117,7 @@ controller/gp_mpc/
 ### GP 세부 (`gp:` 섹션)
 | 키 | 의미 | 기본값 |
 |---|---|---|
-| `model_path` | 체크포인트 경로 | `/tmp/gp_mpc_models/latest.pth` |
+| `model_path` | 체크포인트 경로 | `/tmp/upenn_mpc_models/latest.pth` |
 | `buffer_size` | 학습용 rolling FIFO | **10000** (≈ 5 lap) |
 | `train_min_samples` | 첫 학습 전 최소 샘플 | 400 |
 | `train_max_samples` | ExactGP O(N³) 보호용 subsample | **700** (7D ARD 고려) |
@@ -137,12 +137,12 @@ controller/gp_mpc/
 | `warmup_exit_vx` | 1회 달성 후 warmup 영구 disarm | 0.8 |
 | `crash_stuck_sec` | 이 시간 stuck 시 warmup 재무장 | 1.5 |
 
-### Launch 인자 (`gp_mpc_sim.launch`)
+### Launch 인자 (`upenn_mpc_sim.launch`)
 | arg | 기본 | 설명 |
 |---|---|---|
 | `map` | `f` | 맵 이름 (`stack_master/maps/<name>/`) |
 | `mu_source` | `gp` | `static` / `ground_truth` / `gp` |
-| `apply_mu_to_sim` | `true` | `gp_mu_applier` 의 cmd scaling |
+| `apply_mu_to_sim` | `true` | `upenn_mu_applier` 의 cmd scaling |
 | `rviz` | `true` | rviz 표시 |
 | `toggle_gui` | `true` | tkinter 대시보드 표시 |
 
@@ -151,7 +151,7 @@ controller/gp_mpc/
 ## 6. 실행 (2D sim)
 
 ```bash
-CAR_NAME=SIM roslaunch controller gp_mpc_sim.launch map:=f mu_source:=gp
+CAR_NAME=SIM roslaunch controller upenn_mpc_sim.launch map:=f mu_source:=gp
 ```
 
 첫 lap 은 cold-start (GP off). lap 끝나면 trainer 가 학습 → lap 2 부터 GP residual 활성.
@@ -168,8 +168,8 @@ CAR_NAME=SIM roslaunch controller gp_mpc_sim.launch map:=f mu_source:=gp
 
 ### Step 1: 파일 복사
 ```bash
-# 이 브랜치에서 controller/gp_mpc/ 전체를 main 레포로 복사.
-cp -r controller/gp_mpc/ <main-repo>/controller/gp_mpc/
+# 이 브랜치에서 controller/upenn_mpc/ 전체를 main 레포로 복사.
+cp -r controller/upenn_mpc/ <main-repo>/controller/upenn_mpc/
 # mpc 쪽 base 모듈 (vehicle_model, mpcc_ocp, reference_builder) 은 import 로 공유됨.
 ```
 
@@ -182,13 +182,13 @@ cp -r controller/gp_mpc/ <main-repo>/controller/gp_mpc/
 
 ### Step 3: 차량 파라미터
 - `shared_vehicle/vehicle_<YourCar>.yaml` 의 `m`, `l_f`, `l_r`, `I_z`, `Bf/Cf/Df/Ef`, `Br/Cr/Dr/Er` 을 해당 차량 실측값으로 교체
-- `gp_mpc_srx1.yaml` 의 `mu_default` 를 실차 측정 μ 로 설정
+- `upenn_mpc_srx1.yaml` 의 `mu_default` 를 실차 측정 μ 로 설정
 
 ### Step 4: 런치 수정 (실차용)
-- `launch/gp_mpc_sim.launch` 에서:
+- `launch/upenn_mpc_sim.launch` 에서:
   - `base_system.launch` 의 `sim:=true` → 실차 런치로 교체 (예: `headtohead.launch` 류)
-  - `gp_mu_applier` 는 **제거** (실차에선 실물 마찰이 작동)
-  - `gp_mu_patch_publisher` 도 제거 (patch 개념은 2D sim 전용)
+  - `upenn_mu_applier` 는 **제거** (실차에선 실물 마찰이 작동)
+  - `upenn_mu_patch_publisher` 도 제거 (patch 개념은 2D sim 전용)
   - `/vesc/...nav_1` 토픽은 동일하게 유지 (VESC mux 입력)
   - RViz config 는 실차 맵 tf 에 맞게 조정
 
@@ -196,8 +196,8 @@ cp -r controller/gp_mpc/ <main-repo>/controller/gp_mpc/
 ```bash
 # NUC 에서 MPC + GP 동시 실행 CPU 부하 측정
 stress-ng --cpu 4 --timeout 60s &
-roslaunch controller gp_mpc_sim.launch
-rostopic hz /gp_mpc/solve_ms   # <25ms 유지 확인
+roslaunch controller upenn_mpc_sim.launch
+rostopic hz /upenn_mpc/solve_ms   # <25ms 유지 확인
 rostopic hz /vesc/.../nav_1    # 50Hz 유지 확인
 ```
 
@@ -210,9 +210,9 @@ rostopic hz /vesc/.../nav_1    # 50Hz 유지 확인
 - 새 노면 감지 시 `Reset GP` 버튼으로 재학습 가능
 
 ### 주의 / Risk
-- **acados 없는 차량**: IPOPT fallback 쓰려면 `mpcc_ocp_gp.py` 의 solver 설정 교체 필요 (p-solver 변경). 실시간성 약화.
+- **acados 없는 차량**: IPOPT fallback 쓰려면 `mpcc_ocp_upenn.py` 의 solver 설정 교체 필요 (p-solver 변경). 실시간성 약화.
 - **gpytorch 없는 차량**: pip install. 또는 numpy-only sparse GP 로 포팅 (~50 LOC).
-- **친구/동료 레포와 병합**: namespace `/gp_mpc/*` 는 고유하므로 충돌 없음. codegen dir `/tmp/gp_mpc_c_generated` 도 격리.
+- **친구/동료 레포와 병합**: namespace `/upenn_mpc/*` 는 고유하므로 충돌 없음. codegen dir `/tmp/upenn_mpc_c_generated` 도 격리.
 
 ---
 
