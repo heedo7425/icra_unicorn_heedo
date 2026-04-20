@@ -1,0 +1,38 @@
+# Quality gate thresholds and orchestrator tuning.
+# Loaded into /race_day_id/* by race_day_id.launch.
+
+# Maneuver queue (orchestrator runs in this order, skipping aborts).
+maneuver_queue: [ramp_steer, steady_circle, slalom, free_lap]
+
+# Quality gate (see fit_pipeline.py::evaluate_fit).
+rmse_front_max: 0.15       # normalized RMSE of Fyf residual
+rmse_rear_max: 0.15
+coverage_front_bins_min: 5 # |alpha_f| bin width 0.05 rad
+coverage_rear_bins_min: 4  # |alpha_r| bin width 0.02 rad
+coverage_front_bin_rad: 0.05
+coverage_rear_bin_rad: 0.02
+mu_min: 0.3
+mu_max: 1.5
+df_sanity_frac: 0.40       # |Df - prior| / prior <= this
+allow_bound_violation: false
+
+# Recorder
+recorder_hz: 70.0
+recorder_buffer_s: 120.0
+
+# Safety (latched abort)
+abort_omega_rad: 8.0
+abort_alpha_r_rad: 0.35
+abort_pad_radius_m: 20.0    # placeholder; maneuver_profiles.yaml refines per-maneuver
+
+# Respawn (kill+respawn fallback wait)
+respawn_wait_s: 5.0
+respawn_retry: 1
+
+# Paths (relative to package share unless absolute)
+backup_subdir: data/backups
+recording_subdir: data/recordings
+
+# Flags
+dry_run: false              # true -> skip yaml write + respawn; collect + fit only
+synthetic_gt: false         # true -> fit on synthetic data (sim-only validation path)

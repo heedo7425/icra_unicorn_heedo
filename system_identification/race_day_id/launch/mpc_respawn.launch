@@ -1,0 +1,20 @@
+<launch>
+  <!-- Re-include the MPC subgraph after yaml write so the new pacejka params
+       are loaded. Invoked as a subprocess by mpc_respawn.kill_and_respawn.
+       Must not load pacejka yaml itself — that is written by race_day_id to
+       stack_master/config/{car}/{car}_pacejka.yaml and picked up by mpc_node
+       via rosparam on init (controller/mpc/vehicle_model.py:194-213). -->
+  <arg name="racecar_version" default="$(optenv CAR_NAME SIM)"/>
+  <arg name="drive_topic" default="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
+
+  <!-- Re-apply updated pacejka yaml to the global param server so that any
+       newly-spawned MPC picks up the new values. This is safe (idempotent)
+       because the yaml was just written by race_day_id/yaml_writer. -->
+  <rosparam command="load"
+            file="$(find stack_master)/config/$(arg racecar_version)/$(arg racecar_version)_pacejka.yaml"/>
+
+  <include file="$(find controller)/mpc/launch/mpc_standalone.launch">
+    <arg name="racecar_version" value="$(arg racecar_version)"/>
+    <arg name="drive_topic" value="$(arg drive_topic)"/>
+  </include>
+</launch>

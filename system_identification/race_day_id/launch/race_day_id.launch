@@ -1,0 +1,21 @@
+<launch>
+  <!-- Race-day Pacejka tire identification pipeline (real car). -->
+  <arg name="racecar_version" default="$(optenv CAR_NAME SIM)"/>
+  <arg name="dry_run" default="false"/>
+  <arg name="synthetic_gt" default="false"/>
+  <arg name="auto_start" default="false"/>
+
+  <rosparam command="load" file="$(find race_day_id)/config/race_day_id_params.yaml"
+            ns="race_day_id"/>
+  <rosparam command="load" file="$(find race_day_id)/config/maneuver_profiles.yaml"
+            ns="race_day_id/maneuvers"/>
+
+  <param name="race_day_id/dry_run" value="$(arg dry_run)"/>
+  <param name="race_day_id/synthetic_gt" value="$(arg synthetic_gt)"/>
+  <param name="race_day_id/auto_start" value="$(arg auto_start)"/>
+  <param name="race_day_id/racecar_version" value="$(arg racecar_version)"/>
+
+  <node name="race_day_id_orchestrator"
+        pkg="race_day_id" type="orchestrator_node.py"
+        output="screen" required="true"/>
+</launch>

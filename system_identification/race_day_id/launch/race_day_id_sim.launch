@@ -1,0 +1,16 @@
+<launch>
+  <!-- f110-sim wiring validation. Not a real param fit (sim friction is scalar).
+       Use synthetic_gt:=true to validate solver recovery on injected data. -->
+  <arg name="synthetic_gt" default="true"/>
+  <arg name="dry_run" default="true"/>
+  <arg name="auto_start" default="true"/>
+
+  <param name="racecar_version" value="SIM"/>
+
+  <include file="$(find race_day_id)/launch/race_day_id.launch">
+    <arg name="racecar_version" value="SIM"/>
+    <arg name="dry_run" value="$(arg dry_run)"/>
+    <arg name="synthetic_gt" value="$(arg synthetic_gt)"/>
+    <arg name="auto_start" value="$(arg auto_start)"/>
+  </include>
+</launch>
