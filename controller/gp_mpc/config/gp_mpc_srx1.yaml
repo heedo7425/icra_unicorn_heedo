@@ -10,7 +10,7 @@ gp_mpc:
   window_size:      200
 
   # --- State / input weights ---
-  w_d:              8.0
+  w_d:              14.0    # 8→14 코너 안쪽 접촉 방지 (inside cut 억제)
   w_dpsi:           6.0
   w_vx:             3.0
   w_vy:             1.0
@@ -30,11 +30,11 @@ gp_mpc:
 
   # --- Friction (default / fallback when mu_source=static) ---
   mu_default:       0.85
-  speed_boost:      1.6     # raceline vx_ref 배수 (1.0=원본, ↑=더 빠르게. v_max·마찰 cap)
-  mu_scale_exp:     0.5     # μ-aware vx scaling — v∝√μ (friction-circle 물리)
+  speed_boost:      1.3     # 1.6→1.3 코너 진입 속도 완화
+  mu_scale_exp:     0.3     # 0.5→0.3 grippy 에서 덜 공격적 가속
   mu_margin_k:      2.0
   friction_circle:  true
-  friction_margin:  0.95
+  friction_margin:  0.85    # 0.95→0.85 친숙권 안쪽만 사용, 코너 여유
   friction_slack_penalty: 1000.0
 
   # --- μ source abstraction (runtime selected via launch arg) ---

@@ -173,7 +173,11 @@ class EkfMpcNode:
         self.drive_topic = rospy.get_param(
             "~drive_topic", "/vesc/high_level/ackermann_cmd_mux/input/nav_1"
         )
+        from geometry_msgs.msg import PoseWithCovarianceStamped
         self.drive_pub = rospy.Publisher(self.drive_topic, AckermannDriveStamped, queue_size=10)
+        self.initialpose_pub = rospy.Publisher(
+            "/initialpose", PoseWithCovarianceStamped, queue_size=1, latch=True
+        )
         self.pred_pub = rospy.Publisher("/gp_mpc/prediction", MarkerArray, queue_size=1)
         self.ref_pub = rospy.Publisher("/gp_mpc/reference", MarkerArray, queue_size=1)
         self.solve_time_pub = rospy.Publisher("/gp_mpc/solve_ms", Float32, queue_size=1)
@@ -212,6 +216,9 @@ class EkfMpcNode:
                          self._gp_residual_cb, queue_size=1)
         rospy.Subscriber("/gp_mpc/gp_ready", Bool,
                          self._gp_ready_cb, queue_size=1)
+        from std_msgs.msg import Empty
+        rospy.Subscriber("/gp_mpc/gp_reset", Empty,
+                         self._gp_reset_cb, queue_size=1)
 
         self.startup_delay_s = float(rospy.get_param(f"{NS}/startup_delay_s", 3.0))
         self._start_time = rospy.Time.now().to_sec()
@@ -254,9 +261,13 @@ class EkfMpcNode:
             self.mu_runtime = mu
 
     def _mu_enable_cb(self, msg) -> None:
+        new_state = bool(msg.data)
         with self.lock:
-            self.mu_adapt_enable = bool(msg.data)
-        rospy.loginfo(f"[{self.name}] μ adaptation {'ENABLED' if self.mu_adapt_enable else 'DISABLED'}")
+            changed = new_state != self.mu_adapt_enable
+            self.mu_adapt_enable = new_state
+        rospy.loginfo(f"[{self.name}] μ adaptation {'ENABLED' if new_state else 'DISABLED'}")
+        if changed:
+            self._respawn_and_reset_solvers()
 
     def _gp_residual_cb(self, msg: Float32MultiArray) -> None:
         if len(msg.data) < 3:
@@ -267,6 +278,10 @@ class EkfMpcNode:
     def _gp_ready_cb(self, msg: Bool) -> None:
         with self.lock:
             self.gp_ready = bool(msg.data)
+
+    def _gp_reset_cb(self, _msg) -> None:
+        rospy.loginfo(f"[{self.name}] GP reset received — respawn + cold-start")
+        self._respawn_and_reset_solvers()
 
     def _gbscaled_cb(self, msg: WpntArray) -> None:
         self._cache_wpnts(msg, source="scaled")
@@ -353,7 +368,7 @@ class EkfMpcNode:
     def _wrap_pi(a: float) -> float:
         return (a + np.pi) % (2 * np.pi) - np.pi
 
-    def _cold_start_solver(self, x0: np.ndarray) -> None:
+    def _cold_start_solver(self, x0: np.ndarray, include_base: bool = False) -> None:
         if self.solver is None:
             return
         u_zero = np.zeros(NU, dtype=np.float64)
@@ -361,7 +376,46 @@ class EkfMpcNode:
             self.solver.set(k, "x", x0)
         for k in range(self.N):
             self.solver.set(k, "u", u_zero)
+        if include_base and self.solver_base is not None:
+            for k in range(self.N + 1):
+                self.solver_base.set(k, "x", x0)
+            for k in range(self.N):
+                self.solver_base.set(k, "u", u_zero)
         self.last_delta = 0.0
+
+    def _respawn_and_reset_solvers(self) -> None:
+        """차를 wpnt[0] 으로 respawn + 두 solver cold-start.
+        toggle / gp_reset 시 깨끗한 baseline 확보용.
+        """
+        gw = self.global_wpnts_np
+        if gw is None or len(gw) < 5:
+            rospy.logwarn(f"[{self.name}] respawn skipped — no global waypoints")
+            return
+        # wpnt[0] + tangent from wpnt[5] (spawn_on_waypoint 과 동일)
+        x0 = float(gw[0, C_X]); y0 = float(gw[0, C_Y])
+        x1 = float(gw[5 % len(gw), C_X]); y1 = float(gw[5 % len(gw), C_Y])
+        yaw = math.atan2(y1 - y0, x1 - x0)
+        from geometry_msgs.msg import PoseWithCovarianceStamped
+        msg = PoseWithCovarianceStamped()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = "map"
+        msg.pose.pose.position.x = x0
+        msg.pose.pose.position.y = y0
+        qz = math.sin(yaw / 2.0); qw = math.cos(yaw / 2.0)
+        msg.pose.pose.orientation.z = qz
+        msg.pose.pose.orientation.w = qw
+        msg.pose.covariance = [0.0] * 36
+        # Latched publish × a few for reliability.
+        for _ in range(5):
+            self.initialpose_pub.publish(msg)
+            rospy.sleep(0.05)
+        # Zero-state cold start on both solvers.
+        x0_state = np.zeros(NX, dtype=np.float64)
+        self._cold_start_solver(x0_state, include_base=True)
+        self._warmup_armed = True
+        self._stuck_ticks = 0
+        self._stuck_count = 0
+        rospy.logwarn(f"[{self.name}] RESPAWN (wpnt[0]) + solvers cold-started")
 
     # ---- Solve ----
     def _solve(self, x0: np.ndarray, wpnts: np.ndarray) -> Tuple[float, float, float, float, Optional[np.ndarray]]:
@@ -410,25 +464,49 @@ class EkfMpcNode:
             rospy.logerr_throttle(1.0, f"[{self.name}] params non-finite at {bad[:5].tolist()}")
             return 0.0, 0.0, 0.0, 0.0, None
 
-        u0, status, info = solve_once_gp(self.solver, x0, params)
-
-        # Parallel base solve (residual=0) — 비교용.
-        if self.solver_base is not None and self.publish_base_cmp:
-            try:
-                params_zero = params.copy()
-                params_zero[:, NP:] = 0.0
-                u0_base, _, _ = solve_once_gp(self.solver_base, x0, params_zero)
-                base_vx_cmd = float(np.clip(
-                    x0[3] + float(u0_base[1]) * self.dt, 0.0, self.v_max
-                ))
-                base_steer = float(np.clip(
-                    self.last_delta + float(u0_base[0]) * self.dt,
-                    -self.max_steer, self.max_steer,
-                ))
-                self.cmd_base_speed_pub.publish(Float32(data=base_vx_cmd))
-                self.cmd_base_steer_pub.publish(Float32(data=base_steer))
-            except Exception as e:
-                rospy.logwarn_throttle(5.0, f"[{self.name}] base solve failed: {e}")
+        # Active solver 선택:
+        #   adapt ON  → solver (residual 주입) 이 주행
+        #   adapt OFF → solver_base (residual=0) 이 주행. 순수 base 동작.
+        # 비교용으로는 항상 다른 쪽 solver 의 u0 도 publish.
+        if self.mu_adapt_enable:
+            u0, status, info = solve_once_gp(self.solver, x0, params)
+            # 비교: base solver w/ residual=0
+            if self.solver_base is not None and self.publish_base_cmp:
+                try:
+                    params_zero = params.copy()
+                    params_zero[:, NP:] = 0.0
+                    u0_base, _, _ = solve_once_gp(self.solver_base, x0, params_zero)
+                    self.cmd_base_speed_pub.publish(Float32(data=float(np.clip(
+                        x0[3] + float(u0_base[1]) * self.dt, 0.0, self.v_max))))
+                    self.cmd_base_steer_pub.publish(Float32(data=float(np.clip(
+                        self.last_delta + float(u0_base[0]) * self.dt,
+                        -self.max_steer, self.max_steer))))
+                except Exception as e:
+                    rospy.logwarn_throttle(5.0, f"[{self.name}] base cmp solve fail: {e}")
+        else:
+            # adapt OFF: base solver 로 주행. params 의 residual 은 이미 0.
+            if self.solver_base is not None:
+                u0, status, info = solve_once_gp(self.solver_base, x0, params)
+            else:
+                u0, status, info = solve_once_gp(self.solver, x0, params)
+            # 비교: GP solver w/ 실제 residual (있으면) — publish_base_cmp 는 이제
+            # "활성 solver 의 반대쪽 publish" 의미.
+            if self.solver is not None and self.publish_base_cmp:
+                try:
+                    # GP residual 주입한 버전
+                    params_gp = params.copy()
+                    with self.lock:
+                        if self.gp_ready:
+                            params_gp[:, NP:] = self.gp_residual
+                    u0_gp, _, _ = solve_once_gp(self.solver, x0, params_gp)
+                    # cmd_base_speed/steer 토픽은 "비활성 solver (= GP)" 가 내놓는 값
+                    self.cmd_base_speed_pub.publish(Float32(data=float(np.clip(
+                        x0[3] + float(u0_gp[1]) * self.dt, 0.0, self.v_max))))
+                    self.cmd_base_steer_pub.publish(Float32(data=float(np.clip(
+                        self.last_delta + float(u0_gp[0]) * self.dt,
+                        -self.max_steer, self.max_steer))))
+                except Exception as e:
+                    rospy.logwarn_throttle(5.0, f"[{self.name}] gp cmp solve fail: {e}")
 
         if status == 0:
             self._stuck_count = 0
@@ -438,12 +516,20 @@ class EkfMpcNode:
                 rospy.logwarn(
                     f"[{self.name}] RESCUE: status!=0 for {self._stuck_count} ticks → cold-start"
                 )
-                self._cold_start_solver(x0)
+                active = self.solver if self.mu_adapt_enable else (self.solver_base or self.solver)
+                # Cold-start active solver 만.
+                u_zero = np.zeros(NU, dtype=np.float64)
+                for k in range(self.N + 1):
+                    active.set(k, "x", x0)
+                for k in range(self.N):
+                    active.set(k, "u", u_zero)
+                self.last_delta = 0.0
                 self._stuck_count = 0
-                u0, status, info = solve_once_gp(self.solver, x0, params)
+                u0, status, info = solve_once_gp(active, x0, params)
 
-        x0_solver = self.solver.get(0, "x")
-        x_end = self.solver.get(self.N, "x")
+        active_solver = self.solver if self.mu_adapt_enable else (self.solver_base or self.solver)
+        x0_solver = active_solver.get(0, "x")
+        x_end = active_solver.get(self.N, "x")
         rospy.loginfo_throttle(
             1.0,
             f"[{self.name}] x0={x0[:4].round(3)} x0_s={x0_solver[:4].round(3)} "

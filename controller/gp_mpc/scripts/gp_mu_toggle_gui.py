@@ -36,6 +36,7 @@ class Dashboard:
         self.buffer_size = 0.0
         self.solve_ms = 0.0
         self.cmd_steer = 0.0
+        self.cmd_v_raw = 0.0         # /gp_mpc/cmd_raw.speed (pre mu_applier)
         self.cmd_base_speed = 0.0
         self.cmd_base_steer = 0.0
 
@@ -75,7 +76,9 @@ class Dashboard:
     def _train_cb(self, m):  self.train_time_s = float(m.data)
     def _buf_cb(self, m):    self.buffer_size = float(m.data)
     def _solve_cb(self, m):  self.solve_ms = float(m.data)
-    def _cmdraw_cb(self, m): self.cmd_steer = float(m.drive.steering_angle)
+    def _cmdraw_cb(self, m):
+        self.cmd_steer = float(m.drive.steering_angle)
+        self.cmd_v_raw = float(m.drive.speed)
 
     def set_enabled(self, v: bool) -> None:
         self.enabled = v
@@ -232,9 +235,10 @@ def gui_main(dash: Dashboard):
         solve_lbl.config(text=f"{dash.solve_ms:4.1f} ms",
                          fg="#6cf" if dash.solve_ms < 15 else ("#fc6" if dash.solve_ms < 25 else "#f55"))
 
-        # GP vs Base 비교
-        v_diff = dash.cmd_v - dash.cmd_base_speed
-        cmp_v_gp.config(text=f"{dash.cmd_v:5.2f}")
+        # GP vs Base 비교 — 양쪽 모두 MPC raw cmd (pre mu_applier scaling).
+        # GP reset 후 residual=0 이면 두 값이 같아야 함 (warm-start 수렴 후).
+        v_diff = dash.cmd_v_raw - dash.cmd_base_speed
+        cmp_v_gp.config(text=f"{dash.cmd_v_raw:5.2f}")
         cmp_v_base.config(text=f"{dash.cmd_base_speed:5.2f}")
         v_diff_color = "#6f6" if v_diff > 0.15 else ("#f66" if v_diff < -0.15 else "#fc6")
         cmp_v_diff.config(text=f"{v_diff:+5.2f}", fg=v_diff_color)
