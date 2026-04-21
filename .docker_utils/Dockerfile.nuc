@@ -29,6 +29,10 @@ RUN . /.install_utils/cartographer_dep.sh
 
 USER root
 RUN apt-get install -y x11-apps
+# ### HJ : rosbridge_suite — bridges topics to Isaac Sim (issac_icra) via
+# WebSocket. Needed when running MPC against the Isaac simulator instead of
+# the Gazebo 2D sim. See isaac_2026icra repo for the Isaac side.
+RUN apt-get install -y ros-noetic-rosbridge-suite
 RUN chown -R ${USER}:${USER} /home/${USER}\
     && apt-get update \
     && apt-get install -y sudo \

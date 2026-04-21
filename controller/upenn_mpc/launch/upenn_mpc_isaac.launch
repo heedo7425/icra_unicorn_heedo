@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<!-- upenn_mpc + Isaac Sim integration launch.
+
+     Drops the Gazebo 2D sim from upenn_mpc_sim.launch and exposes a
+     rosbridge_websocket endpoint (port 9090) so the Isaac Sim scene
+     (issac_icra container, isaac_2026icra repo) can publish state and
+     subscribe to Ackermann cmds.
+
+     Usage:
+       # 1. Start this launch on the ROS1 side
+       CAR_NAME=SIM roslaunch controller upenn_mpc_isaac.launch map:=f
+
+       # 2. Then start Isaac Sim (separate shell):
+       docker exec -e DISPLAY=$DISPLAY -d issac_icra bash -c \
+           "cd /workspace/usd && /isaac-sim/python.sh \
+            /workspace/scripts/run_mpc_sim.py --speed 1.5"
+-->
+<launch>
+  <arg name="racecar_version" default="SIM"/>
+  <arg name="map"             default="f"/>
+  <arg name="rviz"            default="true"/>
+  <arg name="rosbridge_port"  default="9090"/>
+
+  <!-- ### HJ : rosbridge_server — ROS1 ↔ Isaac Sim (WebSocket JSON).
+       Must come up BEFORE the Isaac Sim scene connects as a roslibpy client. -->
+  <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+    <arg name="port" value="$(arg rosbridge_port)"/>
+  </include>
+
+  <!-- ### HJ : Shared vehicle params (single source of truth with Isaac Sim).
+       Loaded into GLOBAL namespace (/vehicle/*, /tire_front/*, /tire_rear/*,
+       /friction_circle/*) so both the Isaac Pacejka module and the MPC here
+       read identical values. -->
+  <rosparam command="load" file="/shared_vehicle/vehicle_srx1.yaml"/>
+
+  <!-- robot_description + map + pcd_map publisher (no Gazebo world here —
+       Isaac Sim is the physics backend). -->
+  <include file="$(find stack_master)/launch/base_system.launch">
+    <arg name="racecar_version" value="$(arg racecar_version)"/>
+    <arg name="map"             value="$(arg map)"/>
+    <arg name="sim"             value="false"/>
+  </include>
+
+  <!-- upenn_mpc node — unchanged from sim launch. -->
+  <node name="upenn_mpc" pkg="controller" type="upenn_mpc_node.py"
+        output="screen" required="true">
+    <rosparam command="load"
+              file="$(find controller)/upenn_mpc/config/upenn_mpc_srx1.yaml"/>
+    <param name="mu_source" value="static"/>
+    <param name="gp/enable" value="false"/>     <!-- online mu 학습 비활성 -->
+  </node>
+
+  <!-- Reference builder — publishes /upenn_mpc/prediction and friends. -->
+  <node name="reference_builder" pkg="controller" type="reference_builder.py"
+        output="screen"/>
+
+  <!-- RViz (shows MPC predict path, raceline, odom) -->
+  <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find controller)/upenn_mpc/rviz/upenn_mpc.rviz"
+        output="screen"/>
+</launch>
