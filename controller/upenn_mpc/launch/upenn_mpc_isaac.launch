@@ -41,6 +41,13 @@
     <arg name="sim"             value="false"/>
   </include>
 
+  <!-- ### HJ : Isaac Sim is headless-physics; RViz (on this ROS1 side)
+       is the debugging surface. The bridge gives us /car_state/odom but
+       no TF — this adapter publishes map→base_link + base_link→livox_frame
+       so RViz can show the pose + MPC predict path + lidar in one frame. -->
+  <node name="isaac_odom_tf" pkg="controller" type="isaac_odom_tf.py"
+        output="screen"/>
+
   <!-- upenn_mpc node — unchanged from sim launch. -->
   <node name="upenn_mpc" pkg="controller" type="upenn_mpc_node.py"
         output="screen" required="true">
