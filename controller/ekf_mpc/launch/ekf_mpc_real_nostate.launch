@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<!-- ekf_mpc 실차 런치 (nostate: state_machine / planners 우회).
+
+     전제: 3d_base_system.launch 는 별도 터미널에서 먼저 기동되어 있어야 함.
+       roslaunch stack_master 3d_base_system.launch map:=<map> racecar_version:=$CAR_NAME SE:=glil_only
+
+     본 런치는 MPC + Pacejka EKF μ estimator (+ long channel + s-memory) + HUD 만 올림.
+     /global_waypoints_scaled 직추종 (raceline only, 장애물 회피 없음).
+     drive → /vesc/high_level/ackermann_cmd_mux/input/nav_1 직결 (mu_applier 없음).
+
+     주의: 2D sim 의 patch_publisher / applier 제거. 실차에선 /mu_ground_truth 가 없으므로
+           HUD 는 est 만 표시. ekf 관측(a_y, long a_x)은 실차 IMU/odom 직접 사용.
+
+     동시 실행 금지: 3d_headtohead.launch (controller_manager 가 nav_1 충돌).
+
+     Usage:
+       CAR_NAME=SRX1 roslaunch controller ekf_mpc_real_nostate.launch
+       (mu_source default=ekf. override: static | ground_truth | gp)
+-->
+<launch>
+  <arg name="mu_source"  default="ekf"
+       doc="static | ground_truth | ekf | gp"/>
+  <arg name="rviz"       default="false"/>
+  <arg name="hud"        default="true"/>
+  <arg name="toggle_gui" default="true"/>
+
+  <!-- MPC params (ekf_mpc namespace) -->
+  <rosparam command="load"
+            file="$(find controller)/ekf_mpc/config/ekf_mpc_srx1.yaml"
+            ns=""/>
+  <param name="ekf_mpc/mu_source" value="$(arg mu_source)"/>
+
+  <!-- ground_truth relay: 실차에선 /mu_ground_truth 소스가 없으므로 사용 비권장 -->
+  <node if="$(eval mu_source == 'ground_truth')"
+        pkg="topic_tools" type="relay" name="mu_gt_relay"
+        args="/mu_ground_truth /ekf_mpc/mu_estimate"/>
+
+  <!-- Pacejka EKF μ estimator (+ long channel + s-memory) -->
+  <node if="$(eval mu_source == 'ekf')"
+        pkg="controller" type="mu_estimator_ekf.py"
+        name="mu_estimator" output="screen"/>
+
+  <!-- GP stub (fallback) -->
+  <node if="$(eval mu_source == 'gp')"
+        pkg="controller" type="ekf_mu_estimator_gp.py"
+        name="mu_estimator" output="screen"/>
+
+  <!-- MPC: drive_topic 을 VESC mux 입력에 직결 -->
+  <node pkg="controller" type="ekf_mpc_node.py"
+        name="ekf_mpc_controller" output="screen">
+    <param name="~drive_topic"
+           value="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
+  </node>
+
+  <!-- HUD -->
+  <node if="$(arg hud)" pkg="controller" type="ekf_mu_hud.py"
+        name="mu_hud" output="screen">
+    <param name="~frame_id" value="map"/>
+  </node>
+
+  <!-- μ adaptation 토글 GUI (/ekf_mpc/mu_adapt_enable) -->
+  <node if="$(arg toggle_gui)" pkg="controller" type="ekf_mu_toggle_gui.py"
+        name="mu_toggle_gui" output="screen"/>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_ekf_mpc"
+        args="-d $(find controller)/ekf_mpc/rviz/ekf_mpc.rviz"/>
+</launch>

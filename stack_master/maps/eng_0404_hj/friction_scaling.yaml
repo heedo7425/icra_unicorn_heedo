@@ -1,6 +1,0 @@
-global_friction: 1.0
-n_sectors: 1
-Sector0:
-  start: 0
-  end: 598
-  friction: 1.0

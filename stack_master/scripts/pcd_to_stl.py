@@ -1,1 +1,0 @@
-/home/hmcl/icra2026_ws/ICRA2026_HJ/stack_master/maps/pcdtostl/pcd_to_stl.py

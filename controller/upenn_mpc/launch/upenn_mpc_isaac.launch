@@ -1,67 +1,77 @@
 <?xml version="1.0"?>
 <!-- upenn_mpc + Isaac Sim integration launch.
 
-     Drops the Gazebo 2D sim from upenn_mpc_sim.launch and exposes a
-     rosbridge_websocket endpoint (port 9090) so the Isaac Sim scene
-     (issac_icra container, isaac_2026icra repo) can publish state and
-     subscribe to Ackermann cmds.
+     Isaac Sim publishes state via rosbridge_suite (WebSocket). This launch
+     brings up the ROS1 side: rosbridge, map, waypoints, MPC, TF, RViz.
+     f1tenth_simulator and Gazebo are NOT started here.
 
-     Usage:
-       # 1. Start this launch on the ROS1 side
-       CAR_NAME=SIM roslaunch controller upenn_mpc_isaac.launch map:=f
-
-       # 2. Then start Isaac Sim (separate shell):
-       docker exec -e DISPLAY=$DISPLAY -d issac_icra bash -c \
-           "cd /workspace/usd && /isaac-sim/python.sh \
-            /workspace/scripts/run_mpc_sim.py --speed 1.5"
+     Usage:  CAR_NAME=SIM roslaunch controller upenn_mpc_isaac.launch map:=f
 -->
 <launch>
   <arg name="racecar_version" default="SIM"/>
   <arg name="map"             default="f"/>
   <arg name="rviz"            default="true"/>
   <arg name="rosbridge_port"  default="9090"/>
+  <arg name="tire_model"      default="pacejka"/>
 
-  <!-- ### HJ : rosbridge_server — ROS1 ↔ Isaac Sim (WebSocket JSON).
-       Must come up BEFORE the Isaac Sim scene connects as a roslibpy client. -->
+  <param name="/racecar_version" value="$(arg racecar_version)"/>
+  <param name="/tire_model"      value="$(arg tire_model)"/>
+  <param name="sim"              value="true"/>
+
+  <!-- Shared vehicle params (single source of truth with Isaac Sim). -->
+  <rosparam command="load" file="/shared_vehicle/vehicle_srx1.yaml"/>
+
+  <!-- rosbridge_server: Isaac Sim connects as a roslibpy client. -->
   <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
     <arg name="port" value="$(arg rosbridge_port)"/>
   </include>
 
-  <!-- ### HJ : Shared vehicle params (single source of truth with Isaac Sim).
-       Loaded into GLOBAL namespace (/vehicle/*, /tire_front/*, /tire_rear/*,
-       /friction_circle/*) so both the Isaac Pacejka module and the MPC here
-       read identical values. -->
-  <rosparam command="load" file="/shared_vehicle/vehicle_srx1.yaml"/>
+  <!-- Map server (track occupancy grid). -->
+  <node pkg="map_server" name="map_server" type="map_server"
+        args="$(find stack_master)/maps/$(arg map)/$(arg map).yaml"/>
 
-  <!-- robot_description + map + pcd_map publisher (no Gazebo world here —
-       Isaac Sim is the physics backend). -->
-  <include file="$(find stack_master)/launch/base_system.launch">
-    <arg name="racecar_version" value="$(arg racecar_version)"/>
-    <arg name="map"             value="$(arg map)"/>
-    <arg name="sim"             value="false"/>
-  </include>
+  <!-- Racecar URDF + robot_state_publisher (for RViz RobotModel display). -->
+  <include file="$(find f1tenth_simulator)/launch/racecar_model.launch"/>
 
-  <!-- ### HJ : Isaac Sim is headless-physics; RViz (on this ROS1 side)
-       is the debugging surface. The bridge gives us /car_state/odom but
-       no TF — this adapter publishes map→base_link + base_link→livox_frame
-       so RViz can show the pose + MPC predict path + lidar in one frame. -->
+  <!-- Model params (tire + geometry for MPC). -->
+  <rosparam ns="model_params" command="load"
+            file="$(find stack_master)/config/$(arg racecar_version)/$(arg racecar_version)_$(arg tire_model).yaml"/>
+
+  <!-- Global waypoints / raceline publisher. -->
+  <node name="global_republisher" pkg="gb_optimizer" type="global_trajectory_publisher.py"
+        output="screen">
+    <param name="map" value="$(arg map)"/>
+  </node>
+
+  <!-- Frenet conversion (needs /car_state/odom from Isaac). -->
+  <include file="$(find frenet_odom_republisher)/launch/frenet_odom_republisher.launch"/>
+
+  <!-- Isaac Sim → TF adapter. Publishes map → racecar/base_link so the
+       f1tenth RobotModel (which lives under /racecar/robot_description)
+       tracks the ego in RViz. -->
+  <!-- Isaac Sim broadcasts map -> base_link. The f1tenth racecar URDF root
+       link is `base_link` (loaded at /racecar/robot_description, tf_prefix
+       commented out in racecar_model.launch), so the RobotModel resolves
+       that frame name directly — no "racecar/" prefix. -->
   <node name="isaac_odom_tf" pkg="controller" type="isaac_odom_tf.py"
+        output="screen">
+    <param name="child_frame" value="base_link"/>
+  </node>
+
+  <!-- Lap analyser (for performance metrics in RViz / console). -->
+  <node name="lap_analyser" pkg="lap_analyser" type="lap_analyser.py"
         output="screen"/>
 
-  <!-- upenn_mpc node — unchanged from sim launch. -->
+  <!-- upenn_mpc controller. -->
   <node name="upenn_mpc" pkg="controller" type="upenn_mpc_node.py"
         output="screen" required="true">
     <rosparam command="load"
               file="$(find controller)/upenn_mpc/config/upenn_mpc_srx1.yaml"/>
     <param name="mu_source" value="static"/>
-    <param name="gp/enable" value="false"/>     <!-- online mu 학습 비활성 -->
+    <param name="gp/enable" value="false"/>
   </node>
 
-  <!-- Reference builder — publishes /upenn_mpc/prediction and friends. -->
-  <node name="reference_builder" pkg="controller" type="reference_builder.py"
-        output="screen"/>
-
-  <!-- RViz (shows MPC predict path, raceline, odom) -->
+  <!-- RViz — 기본 upenn_mpc 설정 재사용 (prediction, reference, TF, 등). -->
   <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz"
         args="-d $(find controller)/upenn_mpc/rviz/upenn_mpc.rviz"
         output="screen"/>

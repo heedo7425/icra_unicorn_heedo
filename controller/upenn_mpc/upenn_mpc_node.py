@@ -46,14 +46,14 @@ _PARENT = os.path.dirname(_HERE)  # -> controller/
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from mpc.reference_builder import build_preview, extract_frenet_state  # noqa: E402
-from mpc.vehicle_model import NU, NX, NP, load_vehicle_params_from_ros  # noqa: E402
+from upenn_mpc.reference_builder import build_preview, extract_frenet_state  # noqa: E402
+from upenn_mpc.vehicle_model import NU, NX, NP, load_vehicle_params_from_ros  # noqa: E402
 from upenn_mpc.mpcc_ocp_upenn import NP_GP  # noqa: E402
 
 
 # Column indices for our "wpnts" ndarray (matches mpc_node.py expectations).
 # [x, y, z, vx_mps, safety_ratio(unused=0), s_m, kappa_radpm, psi_rad, ax_mps2, d_m]
-C_X, C_Y, C_Z, C_VX, _, C_S, C_KAPPA, C_PSI, C_AX, C_D = range(10)
+C_X, C_Y, C_Z, C_VX, _, C_S, C_KAPPA, C_PSI, C_AX, C_D, C_MU_RAD = range(11)
 
 
 class EkfMpcNode:
@@ -292,8 +292,10 @@ class EkfMpcNode:
             self._cache_wpnts(msg, source="raw")
 
     def _cache_wpnts(self, msg: WpntArray, source: str) -> None:
+        # 3D: mu_rad (pitch / grade) 은 Wpnt.msg 에 있음. 2D 맵에선 0.
         arr = np.array([
-            [w.x_m, w.y_m, w.z_m, w.vx_mps, 0.0, w.s_m, w.kappa_radpm, w.psi_rad, w.ax_mps2, w.d_m]
+            [w.x_m, w.y_m, w.z_m, w.vx_mps, 0.0, w.s_m, w.kappa_radpm, w.psi_rad, w.ax_mps2, w.d_m,
+             getattr(w, "mu_rad", 0.0)]
             for w in msg.wpnts
         ], dtype=np.float64)
         if arr.shape[0] < 2:
@@ -426,6 +428,9 @@ class EkfMpcNode:
             mu_for_stage = self.mu_runtime
         else:
             mu_for_stage = self.mu_default
+        # 3D: mu_rad (pitch/grade) 를 wpnts ndarray 의 C_MU_RAD 열에서 가져와
+        # OCP stage param theta 에 주입. 평면 맵이면 all-zero.
+        mu_rad_arr = wpnts[:, C_MU_RAD] if wpnts.shape[1] > C_MU_RAD else None
         params_base = build_preview(
             wpnts,
             s_ego=0.0,
@@ -433,6 +438,7 @@ class EkfMpcNode:
             dt=self.dt,
             track_length=self.track_length,
             mu_default=mu_for_stage,
+            mu_rad=mu_rad_arr,
         )
         # Speed boost + μ-aware scaling.
         # 물리: friction-circle 내에서 v ∝ √(μ · g / κ). 그립 많을수록 더 빠르게.
@@ -674,7 +680,10 @@ class EkfMpcNode:
                         f"[{self.name}] CRASH RECOVERY — warmup re-armed after "
                         f"{self._stuck_ticks / self.loop_rate:.1f}s stuck"
                     )
-                if self._warmup_armed and vx_now < self.warmup_vx_min:
+                # WARMUP DISABLED for Isaac 3D banking debugging (2026-04-22)
+                # Reason: on banked track car accelerates slowly, WARMUP kept
+                # flapping and forced steer=0 which drove the car off the raceline.
+                if False and self._warmup_armed and vx_now < self.warmup_vx_min:
                     speed = self.warmup_speed_cmd
                     accel = 1.0
                     steer = 0.0

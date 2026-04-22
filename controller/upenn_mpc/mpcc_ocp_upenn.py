@@ -35,7 +35,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from mpc.vehicle_model import NX, NU, NP, build_dynamic_bicycle_model  # noqa: E402
+from upenn_mpc.vehicle_model import NX, NU, NP, build_dynamic_bicycle_model  # noqa: E402
 
 
 NP_GP = NP + 3  # 6 base + 3 residual (Δvx, Δvy, Δω)
@@ -216,7 +216,7 @@ def solve_once_upenn(
 
 
 if __name__ == "__main__":
-    from mpc.vehicle_model import default_vehicle_params
+    from upenn_mpc.vehicle_model import default_vehicle_params
 
     mpc_cfg = {
         "N_horizon": 20,

@@ -240,6 +240,15 @@ def export_waypoints():
     d2y_dt2 = cs_y(arc_new, 2)
     kappa = (dx_dt * d2y_dt2 - dy_dt * d2x_dt2) / (dx_dt**2 + dy_dt**2)**1.5
 
+    # Periodic CubicSpline 의 미분이 seam (s=0 과 s=total_loop) 에서 수치적으로
+    # 튀는 경우가 있음 (ds_close ≈ 0 인 closure 중복점 + smoothed.csv 의 첫/끝
+    # 완전 일치 지점이 매개변수화 singularity 를 유발). wp0 과 wp_last 는 같은
+    # 점이므로 그 다음 깨끗한 내부 점(wp1) 값으로 덮어써 seam 아티팩트 제거.
+    psi[0] = psi[1]
+    psi[-1] = psi[1]
+    kappa[0] = kappa[1]
+    kappa[-1] = kappa[1]
+
     dz_dt = cs_z(arc_new, 1)
     mu = -np.arcsin(np.clip(dz_dt / np.sqrt(dx_dt**2 + dy_dt**2 + dz_dt**2), -1.0, 1.0))
     ### IY : end

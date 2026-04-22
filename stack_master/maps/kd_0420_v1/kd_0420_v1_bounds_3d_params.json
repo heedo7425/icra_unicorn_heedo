@@ -1,0 +1,12 @@
+{
+  "max_search": 3.0142857142857142,
+  "density_thresh": 4.0,
+  "smooth_window": 4.0,
+  "slide_window": 5,
+  "bin_size": 0.05,
+  "z_min_rel": 0.08131868131868125,
+  "z_max_rel": 0.2338461538461537,
+  "side_tol_deg": 33.043956043956044,
+  "step_size": 0.2,
+  "z_offset": -0.12
+}
