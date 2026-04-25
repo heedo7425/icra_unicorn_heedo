@@ -1,14 +1,20 @@
 # ============================================================
-# upenn_mpc — SRX1 tuning. Independent of controller/mpc & mpc_only.
-# All params under /upenn_mpc/* namespace.
+# upenn_mpcc — SRX1 tuning for TRUE MPCC (Model Predictive Contouring Control).
+# All params under /upenn_mpcc/* namespace.
+#
+# MPCC vs MPC 차이:
+#   - vx_ref 추종 제거. 대신 progress reward (-w_progress * vx) 로 "빨리 가도록"
+#     유도. 속도 상한은 friction circle + v_max 가 결정.
+#   - cost type = EXTERNAL (NLS 아님). contouring(n²) + heading(dpsi²) + reg
+#     + progress 선형항 복합. w_progress/w_progress_e 가 추가됨.
 #
 # 튜닝 가이드:
-#   - 증상별 대응은 각 weight 의 "증가 시 / 감소 시" 주석 참조.
-#   - 가중치는 상대값이 중요. 절대 스케일은 전체 비례 조정해도 OK.
-#   - 먼저 "차가 달리긴 하는지" 확보 → 그 다음 apex/속도 디테일 튜닝.
+#   - 먼저 "차가 달리긴 하는지" 확보 → apex/속도 디테일 튜닝.
+#   - w_progress 올리면 공격적 (친 friction 한계까지 뛰게 됨).
+#   - w_d (contouring) 는 path 에 얼마나 붙을지, w_progress 와 tradeoff.
 # ============================================================
 
-upenn_mpc:
+upenn_mpcc:
   # ============================================================
   # Horizon — MPC 가 앞을 얼마나 내다볼지
   # ============================================================
@@ -18,7 +24,8 @@ upenn_mpc:
   #     먼 preview 가 제어에 "누수" 되어 조기 turn-in 유발 가능.
   #   ↓ 반응적. 근거리만 보고 대응. 빠른 코너에서 놓칠 수 있음.
   # 권장: 15~30.
-  N_horizon:        20
+  N_horizon:        30    # iter5: 20 → 30.  T_horizon = 30·0.05 = 1.5s.
+                          # vx=10 에서 preview 15m — 코너 2-3초 전 감속 유도.
 
   # Sample time (s). 매 스텝 길이.
   #   ↑ horizon 길이 확보에 유리. discretization 오차↑.
@@ -43,7 +50,7 @@ upenn_mpc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d:              1.5
+  w_d:              5.0   # iter24: 6 살짝 worse → 5 (iter22 best) 복귀.
 
   # [Heading error] dpsi = wrap(yaw - psi_ref). Path tangent 와 차량 방향 차이.
   #   ↑ Heading 맞추려 적극 조향. turn-in 빠름, 코너 복귀 빠름. 과하면 oversteer.
@@ -52,15 +59,29 @@ upenn_mpc:
   #   코너 못 돌고 직진 → ↑ (적극 turn-in)
   #   코너 후 스핀/요 복귀 실패 → ↑ (단, w_omega 와 같이)
   #   일찍 꺾음/조기 조향 → ↓
-  w_dpsi:           5.5
+  w_dpsi:           5.5   # iter27: 8 → 5.5 복귀 (iter22 동등 → 5.5 단순).
 
-  # [Longitudinal speed] vx - vx_ref 페널티.
-  #   ↑ 기준 속도 유지에 집착. 코너 브레이킹 억제 → tire saturation 위험.
-  #   ↓ 브레이킹 자유도 ↑. 코너 진입 속도 ↓, 랩타임 ↓.
+  # [Progress reward] MPCC 의 핵심: stage cost 에 -w_progress * vx 추가.
+  # 즉 "vx 크게 갖는 게 이득" → optimizer 가 자연스레 가속. friction circle
+  # 이 코너에서 자동 brake 역할.
+  #   ↑ 공격적 주행. friction limit 까지 밀어붙임. 스핀 위험.
+  #   ↓ 보수적. 느리게 감. w_d/w_dpsi 와의 균형으로 소극적 주행.
   # 증상 매핑:
-  #   코너에서 너무 빨리 진입 → ↓
-  #   직진에서 못 가속 → ↑
-  w_vx:             1.5
+  #   직진/코너 탈출에서 가속 부족 → ↑
+  #   코너 진입이 너무 빨라 스핀 → ↓
+  # 권장: 1.0 ~ 5.0
+  w_progress:       2.0   # iter20: 1.0 → 2.0. w_d 완화와 세트, progress 회복.
+
+  # [Terminal progress reward] terminal cost 에 -w_progress_e * s.
+  # horizon 끝 시점에 s 가 최대가 되도록 유도 (먼 미래까지 달려나가게).
+  #   ↑ horizon 끝 진행 강조. 더 공격적 looking-ahead.
+  #   ↓ terminal 무관심. 진동 가능.
+  # 권장: 10.0 ~ 50.0 (stage 의 ~10x 가 일반적).
+  w_progress_e:     3.0    # iter8: 10 → 3. horizon 끝 raceline 복귀 못 하던 이슈
+                           # (stage0/end 둘 다 0.7m 괴리) 해결 목적.
+
+  # [Legacy] w_vx — MPCC 에선 사용 안 함 (vx_ref tracking 제거). 남겨만 둠.
+  w_vx:             0.0
 
   # [Lateral velocity slip] vy 페널티.
   #   ↑ 슬립 억제. 코너링 시 steady turn 선호. 공격성↓.
@@ -88,7 +109,7 @@ upenn_mpc:
   # 증상 매핑:
   #   조향 saturation/떨림 → ↑
   #   조향 반응 느려 벽 충돌 → ↓
-  w_u_steer_rate:   1.0
+  w_u_steer_rate:   3.0
 
   # [Longitudinal accel] a_x 페널티. 감속/가속 smoothness.
   #   ↑ 급 가감속 억제. smooth 한 속도 프로파일.
@@ -99,7 +120,7 @@ upenn_mpc:
   #   ↑ horizon 끝에 더 strong 하게 기준선/heading 맞추려 함. 안정성↑.
   #   ↓ terminal 무관심. 진동 가능.
   # 권장: 1.0~3.0.
-  w_terminal_scale: 1.5
+  w_terminal_scale: 2.0   # iter25: 3.0 → 2.0 복귀 (3 은 sim freeze).
 
   # ============================================================
   # Limits — 차량 물리 한계 (hard constraints)
@@ -125,7 +146,7 @@ upenn_mpc:
   #     저속 singular 회피는 w_vx 상향 + vehicle_model vx floor 로 대응.
   #   v_max: 주행 상한. 원래 6.0 → 부하 테스트용 12.0 으로 개방.
   v_min:            0.0
-  v_max:            12.0
+  v_max:            7.0    # iter22 best (centerline 6랩 lap_time 16.9s).
 
   # ============================================================
   # Friction — 노면 마찰 관련
@@ -133,7 +154,7 @@ upenn_mpc:
 
   # 기본 μ (mu_source=static 일 때 OCP 에 주입되는 값).
   # 실노면 기준. 드라이: 0.9~1.0, 미끄러움: 0.3~0.6.
-  mu_default:       0.85
+  mu_default:       0.85   # iter15: sim 과 매칭 복원. v_max 만 raceline 에 맞게.
 
   # vx_ref 에 곱하는 배수. raceline vx 전체를 스케일.
   #   ↑ 전체적으로 더 빠르게 (테스트/성능 평가용).
@@ -159,7 +180,7 @@ upenn_mpc:
   # Friction circle 여유 (0~1). (μ·margin·Nz) 의 허용 ratio.
   #   ↓ 안전 (더 일찍 saturation 취급).
   #   ↑ tire 최대 활용. 위험.
-  friction_margin:  0.95
+  friction_margin:  0.75   # iter26: iter22 best 복귀.
 
   # Friction 제약 위반 시 slack penalty. 너무 낮으면 제약 무력화.
   friction_slack_penalty: 1000.0
@@ -171,7 +192,8 @@ upenn_mpc:
   # ground_truth : /mu_ground_truth → /upenn_mpc/mu_estimate relay (sanity check)
   # gp           : base μ = mu_default 유지. GP residual(Δvx,Δvy,Δω) 를
   #                OCP model 에 additive 주입 → 마찰 변화를 online 학습.
-  mu_source:        static
+  mu_source:        gp     # iter28: centerline 6랩 안정 → GP 학습 데이터 확보 가능.
+                           # 모델 mismatch (Pacejka vs sim linear tire) 보정 시도.
   mu_estimate_topic: /upenn_mpc/mu_estimate
 
   # ============================================================
@@ -207,7 +229,7 @@ upenn_mpc:
     # Stagewise residual 사용 (Phase 2). 현재 false (Phase 1: 전 horizon constant).
     enable_stagewise:  false
     # Residual 주입 ON/OFF. 디버깅 시 false 로 끄면 pure Pacejka 비교 가능.
-    residual_enable:   true
+    residual_enable:   true  # iter28: GP residual 활성
     # PyTorch thread 수. 너무 크면 ROS 다른 노드와 경합.
     torch_num_threads: 2
 
@@ -245,7 +267,7 @@ upenn_mpc:
   stuck_status_thres: 5
 
   # acados C-codegen 디렉토리. 임시 경로 OK.
-  codegen_dir:      /tmp/upenn_mpc_c_generated
+  codegen_dir:      /tmp/upenn_mpcc_c_generated
 
   # ============================================================
   # Line source — MPC 추종 기준선 (launch 에서 line:= arg 로 override)

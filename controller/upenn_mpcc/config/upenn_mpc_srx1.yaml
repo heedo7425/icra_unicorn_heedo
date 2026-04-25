@@ -74,7 +74,7 @@ upenn_mpc:
   # 증상 매핑:
   #   스핀/요 폭주 → ↑
   #   코너 진입 둔함 → ↓
-  w_omega:          2.0
+  w_omega:          
 
   # [Steering angle] 절대 steer 크기 페널티 (steering-centering).
   #   ↑ 조향을 0 근처로 유지. 직진 안정. 코너 공격성↓.
@@ -88,7 +88,7 @@ upenn_mpc:
   # 증상 매핑:
   #   조향 saturation/떨림 → ↑
   #   조향 반응 느려 벽 충돌 → ↓
-  w_u_steer_rate:   1.0
+  w_u_steer_rate:   3.0
 
   # [Longitudinal accel] a_x 페널티. 감속/가속 smoothness.
   #   ↑ 급 가감속 억제. smooth 한 속도 프로파일.

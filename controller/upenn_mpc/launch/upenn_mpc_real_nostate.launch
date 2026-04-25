@@ -17,6 +17,8 @@
 <launch>
   <arg name="mu_source"  default="gp"
        doc="static | ground_truth | gp"/>
+  <arg name="line"       default="raceline"
+       doc="raceline | centerline — MPC 가 추종할 기준선"/>
   <arg name="rviz"       default="false"/>
   <arg name="hud"        default="true"/>
   <arg name="toggle_gui" default="true"/>
@@ -26,6 +28,7 @@
             file="$(find controller)/upenn_mpc/config/upenn_mpc_srx1.yaml"
             ns=""/>
   <param name="upenn_mpc/mu_source" value="$(arg mu_source)"/>
+  <param name="upenn_mpc/line_source" value="$(arg line)"/>
 
   <!-- ground_truth relay: 실차에선 /mu_ground_truth 소스가 없으므로 사용 비권장.
        호환 유지용으로만 둠. -->

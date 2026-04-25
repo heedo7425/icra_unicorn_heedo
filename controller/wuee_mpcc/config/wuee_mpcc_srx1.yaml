@@ -1,0 +1,101 @@
+# Main MPCC weights.
+# (2026-04-22 HJ) tailing 완화 — r2↑ qc↓ + damping 3종 도입 (q_omega/delta/vy).
+# (2026-04-23 HJ) 전체 재분석 결과:
+# bag 로그에서 progress reward(-γ·θ̇ → -750 per horizon) 가 다른 cost 를 압도.
+# MPCC 가 "속도 유지 + 경로 이탈" 을 "감속 + 경로 추종" 보다 선호. hairpin 못 돌고 벽.
+# qc 10 배, gamma 절반 → path tracking vs progress 균형 재조정.
+qc: 6.0       # 3.0 → 6.0  (2026-04-23 HJ pm: bag 재분석에서 n=+1.04m 이탈 재발.
+              # Pacejka ON / μ=0.85 로 속도 과대 plan 은 잡혔지만 path tracking 여전
+              # 약함. qc 2 배로 상향해 progress vs path 균형 재조정.)
+ql: 1
+gamma: 1      # 2 → 1      (progress reward 추가 축소, qc 상향과 세트)
+
+r1: 1e-5
+r2: 5e-1      # 3e-1 → 5e-1  (2026-04-24 HJ: r2=0.3 으로는 chatter 93% 유지,
+              # cmd δ 가 ±0.26 rad/tick 으로 튀어 actuator (rate=3.2) 가 평균
+              # 화해 차가 못 꺾음. dδ penalty 더 강화.)
+r3: 1e-3
+
+# Damping — bicycle_model.py cost 에 추가된 항의 가중치.
+# (2026-04-23 HJ) q_omega=8 은 극헤어핀 (|κ|=1/m, radius≈1m) 통과에 필요한
+# ω=-1.9rad/s 를 너무 강하게 페널티 → MPCC 가 경로 이탈을 택함. 1.5 로 낮춰
+# tailing 어느정도 억제 + corner turn-in 보존.
+q_omega: 1.5  # iter7: 원래값 복귀. publish 방식 교체로 chatter 근본 제거 기대.
+q_delta: 0.8  # 0.5 → 0.8 (2026-04-24 HJ pm: q_delta=0.5 로 완화하니 chatter
+              # 재발 (93% tick), 차가 못 꺾어 우측 벽 박음. 초기 stuck 0.7s
+              # 악화는 감내하고 chatter 안정 우선.)
+q_vy: 0.3     # 측면 슬립 억제
+
+
+# (2026-04-22) status 4 (NLP infeasible) 루프 방지:
+#   - slack_constraint ↑  : 경계/nonlinear 제약 slack 허용 완화
+#   - track_savety_margin ↓ : 실제 주행 가능 폭 확대 (경계에 덜 빡빡)
+slack_constraint: 0.05     # 0.005 → 0.05
+track_savety_margin: 0.35  # iter2 에서 0.5 는 infeasible 폭주 → 0.35 복귀.
+
+Tf: 0.5        # iter9: hybrid publish + 짧은 horizon 재시도 (iter4 에서 6.32m)
+N:  20
+T: 1800
+sref_N: 3
+s_offset: 0.5
+
+t_delay: 0.05   # 실제 propagation = t_delay + 1/MPC_freq = 0.05+0.025 = 75ms.
+                # bag cross-corr peak lag 와 이미 정합. 0.075 로 올리면 100ms
+                # propagation 이 되어 stage-0 equality 가 발산 → status 4 루프.
+MPC_freq: 40
+
+m: 3.54 #0.043
+C1: 0.472312704 # lr / (lr + lf)
+C2: 3.25732899 #1/(lr+lf)
+CSf: 4.718
+CSr: 5.4562
+Cr0: 0.01 # 0.011 rolling resistance init file
+Cr2: 0.0136 # drag force coeff from f110.init
+Cr3: 1.0
+Iz: 0.05797
+lr: 0.145
+lf: 0.162
+
+# ### HJ : Pacejka 계수 — race_stack canonical SRX1_pacejka.yaml / shared_vehicle 와 동일.
+# F = mu * N * D * sin(C * atan(B*α - E*(B*α - atan(B*α))))
+Bf: 4.80
+Cf: 2.16
+Df: 0.65
+Ef: 0.37
+Br: 20.0
+Cr: 1.50
+Dr: 0.618
+Er: 0.0
+mu_tire: 0.85        # (2026-04-23 HJ) sim friction_coeff 도 0.85 로 맞춤
+                     # (pbl_params.yaml 수정). Pacejka 활성화 조건에서
+                     # sim-model mismatch 최소화.
+
+# Friction circle safety margin (0~1). tire 한계의 몇 % 까지 MPCC 가 plan 할지.
+#   1.0: 한계까지 풀로 (sim/모델이 정확해야 함)
+#   0.7~0.85: model-sim mismatch buffer 필요한 실차 초기 테스트용
+#   ↓ 일수록 코너 진입 감속 많이 함 = 더 보수적.
+friction_margin: 0.5   # iter4: iter1 baseline 복귀 (0.3 은 속도 너무 낮아짐).
+
+Imax_c: 65
+# (2026-04-24 HJ) drivetrain 파라미터 재튜닝 — bag 분석에서 MPCC stage-1 예상
+# 이동거리 / 실제 vx 기반 이동거리 = 1.48 로 MPCC 가 가속을 48% 과대평가 중.
+# Fx = m·(Imax_c - Cr0·vx)·D/(throttle_max·Caccel) 이므로 Caccel/Cdecel 을
+# ×1.48 배로 올려 MPCC 의 가속 plan 을 sim (max_accel 7.51) 수준까지 낮춤.
+# 이전 값: Caccel=7.1355, Cdecel=5.9360.
+Caccel: 10.560571188800443   # 7.1355 × 1.48
+Cdecel: 8.785239150546737    # 5.9360 × 1.48
+
+fixed_horizon: False
+# (2026-04-23 HJ) Pacejka 재활성. sim friction_coeff 를 0.85 로 맞춘 상태에서
+# MPCC Pacejka 모델과의 mismatch 는 coefficient 정합성 (SRX1 canonical) 만
+#유지하면 작음. friction circle 이 살아나 코너 속도 한계를 실제 반영.
+use_pacejka_tiremodel: True
+slip_angle_approximation: True
+
+# steer-rate 하드 리밋 (rad/s). 하드웨어 max_steering_vel=3.2 이므로 2.5 까지 안전.
+# (2026-04-23 HJ) 0.5 에선 1 tick(25ms) 최대 Δδ=0.0125 rad → hairpin 반응 600ms
+# 필요 > apex 도달 550ms. MPCC 가 이미 늦어버림. 하드웨어 한계 근처로 상향.
+ddelta_max: 3.2               # 2.5 → 3.2 (2026-04-23 HJ pm: stage-1 δ ramp
+                              # 가 느려 코너 진입 지연 — "path 는 꺾는데 차는
+                              # 안 꺾음" 증상. 하드웨어/sim max_steering_vel
+                              # 과 동일 값으로 상향.)

@@ -14,6 +14,8 @@
     doc="Whether to launch the scan-align node that calculates localization accuracy." />
   <arg name="use_vesc_imu" default="False" doc="whether use built-in vesc imu or microstrain" />
   <arg name="enable_smart_scaling" default="True" doc="Enable smart waypoints velocity scaling" />
+  <arg name="waypoints_topic" default="/global_waypoints"
+       doc="frenet_odom_republisher 가 frenet 원점으로 쓸 WpntArray 토픽. raceline 기준이면 /global_waypoints, centerline 기준이면 /centerline_waypoints." />
 
   <param name="racecar_version" value="$(arg racecar_version)" />
   <param name="map" value="$(arg map)" />
@@ -74,7 +76,9 @@
     </include>
 
     <!-- republishes car state odom in frenet frame -->
-    <include file="$(find frenet_odom_republisher)/launch/frenet_odom_republisher.launch" />
+    <include file="$(find frenet_odom_republisher)/launch/frenet_odom_republisher.launch">
+      <arg name="waypoints_topic" value="$(arg waypoints_topic)"/>
+    </include>
   </group>
 
   <!-- analyses and publishes lap times and lateral errors -->

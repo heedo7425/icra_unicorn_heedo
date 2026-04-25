@@ -1,0 +1,48 @@
+# μ patches for map `f` — 극단값 4개 (저마찰 0.4, 고마찰 1.2) 직선·코너 각 쌍.
+#
+# 트랙 κ 샘플링:
+#   s= 0: -0.70 (start corner, 매우 sharp)
+#   s=10: -0.003 (pure straight)           ← 직선
+#   s=20: -0.13  (corner entry)
+#   s=30: -0.05  (mild straight)
+#   s=35: -0.09  (mild)
+#   s=40: -0.33  (strong corner)
+#   s=45: -0.17  (strong)
+#   s=55: +0.36  (hairpin flip)
+#   s=60: -0.43  (hairpin inside)          ← 코너
+#   s=70: +0.23
+
+patches:
+  # ───── 저마찰 0.4 (빙판) ─────
+  - name: icy_long_straight            # μ=0.4 직선 (장가속 구간)
+    s_start: 6.0
+    s_end:   14.0
+    d_min:  -0.9
+    d_max:   0.9
+    mu:      0.40
+    color:   [0.3, 0.6, 1.0, 0.55]     # 청백 (얼음)
+
+  - name: icy_hairpin                  # μ=0.4 코너 (헤어핀)
+    s_start: 55.0
+    s_end:   62.0
+    d_min:  -1.0
+    d_max:   1.0
+    mu:      0.40
+    color:   [0.1, 0.5, 1.0, 0.55]     # 짙은 청
+
+  # ───── 고마찰 1.2 (초강접지) ─────
+  - name: grippy_top_straight          # μ=1.2 직선 (상단)
+    s_start: 30.0
+    s_end:   37.0
+    d_min:  -0.7
+    d_max:   0.7
+    mu:      1.20
+    color:   [0.9, 0.2, 0.2, 0.55]     # 빨강 (고마찰)
+
+  - name: grippy_right_corner          # μ=1.2 코너 (강한 우회전)
+    s_start: 42.0
+    s_end:   48.0
+    d_min:  -0.9
+    d_max:   0.9
+    mu:      1.20
+    color:   [1.0, 0.3, 0.1, 0.55]     # 진한 빨강

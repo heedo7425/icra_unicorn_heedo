@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<!-- Isaac Sim + PP (Pure Pursuit) 통합 런치.
+
+     upenn_mpc_isaac.launch 의 인프라 (rosbridge / map / URDF / TF / frenet)
+     를 재사용하면서 controller:=none 으로 MPC 를 끄고, 대신 race_stack 의
+     기본 경로 (3d_headtohead.launch, ctrl_algo=PP) + velocity_scaler /
+     ot_interpolator / sector_tuner 를 올려 PP 가 동작하게 함.
+
+     Isaac 쪽은 /icra_isaac_ws/scripts/run_mpc_srx1.py 가
+     /car_state/odom, /car_state/pose, /livox/imu 를 rosbridge 로 publish,
+     /vesc/high_level/ackermann_cmd_mux/input/nav_1 을 subscribe.
+
+     Usage:
+       roslaunch controller isaac_sim_pp.launch map:=gazebo_wall_2
+
+     전제: icra2026 컨테이너 내부 실행, issac_icra 컨테이너 별도 실행.
+-->
+<launch>
+  <arg name="racecar_version"  default="SIM"/>
+  <arg name="map"              default="gazebo_wall_2"/>
+  <arg name="rviz"             default="true"/>
+  <arg name="rosbridge_port"   default="9090"/>
+  <arg name="ctrl_algo"        default="PP"
+       doc="PP | MAP | STANLEY | ..."/>
+  <arg name="LU_table"         default="SRX1-0427"/>
+  <arg name="enable_smart_scaling" default="true"/>
+  <arg name="enable_planners"  default="false"
+       doc="true 면 3d_headtohead 가 planner 노드 기동 (OT/recovery/SQP)"/>
+
+  <!-- ══════════════════ 1) Isaac 인프라 ══════════════════
+       rosbridge, map_server, racecar URDF, global_republisher,
+       frenet_odom_republisher, isaac_odom_tf, lap_analyser,
+       map-specific sector rosparams, RViz. MPC 는 끔. -->
+  <include file="$(find controller)/upenn_mpc/launch/upenn_mpc_isaac.launch">
+    <arg name="racecar_version" value="$(arg racecar_version)"/>
+    <arg name="map"             value="$(arg map)"/>
+    <arg name="rviz"            value="$(arg rviz)"/>
+    <arg name="rosbridge_port"  value="$(arg rosbridge_port)"/>
+    <arg name="controller"      value="none"/>
+  </include>
+
+  <!-- ══════════════════ 2) IMU relay ══════════════════
+       Isaac 은 /livox/imu 로 publish, controller_manager 는 /imu/data 구독. -->
+  <node pkg="topic_tools" type="relay" name="imu_relay"
+        args="/livox/imu /imu/data" output="screen"/>
+
+  <!-- ══════════════════ 3) Sector tuners + velocity_scaler + ot_interpolator
+       (3d_base_system.launch 중 SE/VESC 제외 부분만 복제) ══════════════════
+       Map-specific rosparams 는 upenn_mpc_isaac.launch 가 이미 로드함:
+         /map_params, /ot_map_params, /static_obs_map_params. -->
+  <group ns="dyn_sector_tuner">
+    <node pkg="sector_tuner_3d"                 type="sector_server.py"
+          name="speed"       output="screen"/>
+    <node pkg="overtaking_sector_tuner_3d"      type="ot_sector_server.py"
+          name="overtake"    output="screen"/>
+    <node pkg="static_obstacle_sector_tuner_3d" type="static_obs_sector_server.py"
+          name="static_obs"  output="screen"/>
+    <node pkg="friction_sector_tuner"           type="friction_sector_server.py"
+          name="friction"    output="screen"/>
+  </group>
+
+  <node pkg="sector_tuner_3d" type="vel_scaler_node.py" name="velocity_scaler"
+        output="screen">
+    <param name="enable_smart_scaling" value="$(arg enable_smart_scaling)"/>
+  </node>
+
+  <node pkg="overtaking_sector_tuner_3d" type="ot_interpolator.py"
+        name="ot_interpolator" output="screen"/>
+
+  <!-- ══════════════════ 4) State indicator (sim mode: display only) ══════════════════ -->
+  <node pkg="state_machine" type="state_indicator_node.py" name="state_indicator"
+        output="screen"/>
+
+  <!-- ══════════════════ 5) 3d_headtohead (PP + state_machine + planner params) ══════════════════
+       ctrl_algo=PP 기본, enable_planners 는 arg 로 전달. -->
+  <include file="$(find stack_master)/launch/3d_headtohead.launch">
+    <arg name="racecar_version"   value="$(arg racecar_version)"/>
+    <arg name="ctrl_algo"         value="$(arg ctrl_algo)"/>
+    <arg name="LU_table"          value="$(arg LU_table)"/>
+    <arg name="enable_planners"   value="$(arg enable_planners)"/>
+    <arg name="enable_prediction" value="false"/>
+    <arg name="perception"        value="false"/>
+  </include>
+</launch>

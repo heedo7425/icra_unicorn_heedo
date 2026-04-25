@@ -46,9 +46,9 @@ _PARENT = os.path.dirname(_HERE)  # -> controller/
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from upenn_mpc.reference_builder import build_preview, extract_frenet_state  # noqa: E402
-from upenn_mpc.vehicle_model import NU, NX, NP, load_vehicle_params_from_ros  # noqa: E402
-from upenn_mpc.mpcc_ocp_upenn import NP_GP  # noqa: E402
+from upenn_mpcc_rm.reference_builder import build_preview, extract_frenet_state  # noqa: E402
+from upenn_mpcc_rm.vehicle_model import NU, NX, NP, load_vehicle_params_from_ros  # noqa: E402
+from upenn_mpcc_rm.mpcc_ocp_upenn import NP_GP  # noqa: E402
 
 
 # Column indices for our "wpnts" ndarray (matches mpc_node.py expectations).
@@ -56,14 +56,17 @@ from upenn_mpc.mpcc_ocp_upenn import NP_GP  # noqa: E402
 C_X, C_Y, C_Z, C_VX, _, C_S, C_KAPPA, C_PSI, C_AX, C_D, C_MU_RAD = range(11)
 
 
-class EkfMpcNode:
+class UpennMpccNode:
     def __init__(self) -> None:
-        rospy.init_node("upenn_mpc_controller", anonymous=False)
-        self.name = "upenn_mpc_controller"
+        rospy.init_node("upenn_mpcc_controller", anonymous=False)
+        self.name = "upenn_mpcc_controller"
         self.lock = threading.Lock()
 
         # ---- Params (under /upenn_mpc/* namespace) ----
-        NS = "upenn_mpc"
+        # Param namespace = upenn_mpcc (distinct from upenn_mpc so both packages
+        # can coexist in the rosparam server). Topics remain /upenn_mpc/* for
+        # compatibility with mu_applier / hud / trainer / residual_publisher.
+        NS = "upenn_mpcc"
         self.loop_rate = float(rospy.get_param(f"{NS}/loop_rate_hz", 50))
         self.test_mode = bool(rospy.get_param(f"{NS}/test_mode", False))
         self.N = int(rospy.get_param(f"{NS}/N_horizon", 20))
@@ -114,6 +117,10 @@ class EkfMpcNode:
             "w_u_steer_rate": float(rospy.get_param(f"{NS}/w_u_steer_rate", 3.0)),
             "w_u_accel": float(rospy.get_param(f"{NS}/w_u_accel", 0.1)),
             "w_terminal_scale": float(rospy.get_param(f"{NS}/w_terminal_scale", 1.0)),
+            # MPCC-specific: progress reward weights (replace vx_ref tracking).
+            # Stage cost gets `-w_progress * vx`, terminal gets `-w_progress_e * s`.
+            "w_progress": float(rospy.get_param(f"{NS}/w_progress", 2.0)),
+            "w_progress_e": float(rospy.get_param(f"{NS}/w_progress_e", 20.0)),
             "friction_margin": float(rospy.get_param(f"{NS}/friction_margin", 0.95)),
             "friction_slack_penalty": float(rospy.get_param(f"{NS}/friction_slack_penalty", 1e3)),
         }
@@ -132,10 +139,10 @@ class EkfMpcNode:
         self.publish_base_cmp = bool(rospy.get_param(f"{NS}/publish_base_cmp", True))
         if not self.test_mode:
             try:
-                from upenn_mpc.mpcc_ocp_upenn import build_tracking_ocp_upenn  # noqa: E402
+                from upenn_mpcc_rm.mpcc_ocp_upenn import build_tracking_ocp_upenn  # noqa: E402
                 t0 = time.perf_counter()
                 codegen_dir = rospy.get_param(
-                    f"{NS}/codegen_dir", "/tmp/upenn_mpc_c_generated"
+                    f"{NS}/codegen_dir", "/tmp/upenn_mpcc_c_generated"
                 )
                 self.solver = build_tracking_ocp_upenn(
                     self.vp, self.mpc_cfg, codegen_dir=codegen_dir
@@ -439,8 +446,9 @@ class EkfMpcNode:
         dpsi = self._wrap_pi(yaw_world - psi_ref)
 
         vx = float(od.twist.twist.linear.x)
-        vy = float(od.twist.twist.linear.y)
-        omega = float(im.angular_velocity.z) if im is not None else 0.0
+        # ### upenn_mpcc_rm: kinematic 모델 → vy, omega state 사용 안함. 0 강제.
+        vy = 0.0
+        omega = 0.0
 
         self._ego_yaw = yaw_world
         self._n_local_raw = n_local
@@ -504,7 +512,7 @@ class EkfMpcNode:
 
     # ---- Solve ----
     def _solve(self, x0: np.ndarray, wpnts: np.ndarray) -> Tuple[float, float, float, float, Optional[np.ndarray]]:
-        from upenn_mpc.mpcc_ocp_upenn import solve_once_upenn
+        from upenn_mpcc_rm.mpcc_ocp_upenn import solve_once_upenn
 
         # Use runtime μ (patch/rls/gp) only if adaptation enabled; else fallback.
         if self.mu_source != "static" and self.mu_adapt_enable:
@@ -796,4 +804,4 @@ class EkfMpcNode:
 
 
 if __name__ == "__main__":
-    EkfMpcNode().run()
+    UpennMpccNode().run()

@@ -1,11 +1,17 @@
 <launch>
 
+<!-- 어떤 라인 (raceline/centerline) 을 frenet 원점 spline 으로 쓸지 선택.
+     mpcc 쪽이 centerline 모드로 돌 때 이 값을 /centerline_waypoints 로 맞춰야
+     두 노드가 같은 frenet 프레임을 공유한다. 기본값은 race_stack 관습대로 raceline. -->
+<arg name="waypoints_topic" default="/global_waypoints"/>
+
 <node name="frenet_odom_republisher" pkg="frenet_odom_republisher"
       type="frenet_odom_republisher_node"
       output="screen">
   <remap from="/odom" to="/car_state/odom"/>
   <remap from="/odom_frenet" to="/car_state/odom_frenet"/>
   <remap from="/odom_frenet_fixed" to="/car_state/odom_frenet_fixed"/>
+  <remap from="/global_waypoints" to="$(arg waypoints_topic)"/>
 </node>
 
 </launch>

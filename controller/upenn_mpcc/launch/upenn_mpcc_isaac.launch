@@ -15,7 +15,7 @@
   <arg name="tire_model"      default="pacejka"/>
   <!-- Set "upenn_mpc" (default) to run the MPC node, "none" to skip it
        (use when testing an external controller like pure-pursuit). -->
-  <arg name="controller"      default="upenn_mpc"/>
+  <arg name="controller"      default="upenn_mpcc"/>
   <arg name="line"            default="raceline"
        doc="raceline | centerline — MPC 가 추종할 기준선"/>
   <arg name="wall_viz"        default="true"/>
@@ -85,20 +85,20 @@
   <node name="lap_analyser" pkg="lap_analyser" type="lap_analyser.py"
         output="screen"/>
 
-  <!-- upenn_mpc controller (skipped when controller:=none, i.e. testing PP). -->
-  <node if="$(eval controller == 'upenn_mpc')"
-        name="upenn_mpc" pkg="controller" type="upenn_mpc_node.py"
+  <!-- upenn_mpcc controller (skipped when controller:=none). -->
+  <node if="$(eval controller == 'upenn_mpcc')"
+        name="upenn_mpcc" pkg="controller" type="upenn_mpcc_node.py"
         output="screen" required="true">
     <rosparam command="load"
-              file="$(find controller)/upenn_mpc/config/upenn_mpc_srx1.yaml"/>
+              file="$(find controller)/upenn_mpcc/config/upenn_mpcc_srx1.yaml"/>
     <param name="mu_source" value="static"/>
     <param name="gp/enable" value="false"/>
     <param name="line_source" value="$(arg line)"/>
   </node>
 
-  <!-- RViz — 기본 upenn_mpc 설정 재사용 (prediction, reference, TF, 등). -->
+  <!-- RViz — upenn_mpcc 디렉토리의 rviz 설정 사용. -->
   <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz"
-        args="-d $(find controller)/upenn_mpc/rviz/upenn_mpc.rviz"
+        args="-d $(find controller)/upenn_mpcc/rviz/upenn_mpc.rviz"
         output="screen"/>
 
   <!-- Wall point-cloud overlay (for rviz visual alignment with the mesh). -->
