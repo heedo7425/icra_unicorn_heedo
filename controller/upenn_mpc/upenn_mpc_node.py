@@ -37,7 +37,8 @@ from f110_msgs.msg import WpntArray
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Float32MultiArray, Bool
+from std_msgs.msg import Float32, Float32MultiArray, Bool, Int8
+from std_srvs.srv import Trigger, TriggerResponse
 from visualization_msgs.msg import Marker, MarkerArray
 
 # Import shared mpc modules (kept in controller/mpc/).
@@ -199,6 +200,11 @@ class EkfMpcNode:
         # Base comparison (residual=0 parallel solve): 속도/조향 비교용
         self.cmd_base_speed_pub = rospy.Publisher("/upenn_mpc/cmd_base_speed", Float32, queue_size=1)
         self.cmd_base_steer_pub = rospy.Publisher("/upenn_mpc/cmd_base_steer", Float32, queue_size=1)
+        # ### HJ : mpc_param 데몬용 — solver status / reload service
+        self.solve_status_pub = rospy.Publisher("/upenn_mpc/solve_status", Int8, queue_size=10)
+        self._reload_srv = rospy.Service(
+            "/upenn_mpc/reload_params", Trigger, self._reload_cb
+        )
 
         rospy.Subscriber("/car_state/odom", Odometry, self._odom_cb)
         rospy.Subscriber("/car_state/pose", PoseStamped, self._pose_cb)
@@ -502,6 +508,143 @@ class EkfMpcNode:
         self._stuck_count = 0
         rospy.logwarn(f"[{self.name}] RESPAWN (wpnt[0]) + solvers cold-started")
 
+    # ---- mpc_param hot-reload ----
+    # ### HJ : mpc_param 데몬이 yaml 패치 후 호출. acados rebuild 없이
+    # 가중치 + 상태/입력 bound 만 핫스왑. COLD 키 (N_horizon, dt, GP enable,
+    # vehicle params, friction_circle, codegen_dir) 와 friction_margin 은
+    # 무시 — 데몬 측 forbidden_keys 로 액션 자체가 차단되지만 방어 차원에서
+    # 여기서도 다시 무시한다.
+    _RELOAD_HOT_KEYS = (
+        "w_d", "w_dpsi", "w_vx", "w_vy", "w_omega",
+        "w_steer", "w_u_steer_rate", "w_u_accel",
+        "w_terminal_scale", "friction_slack_penalty",
+        "v_max", "v_min", "max_steer", "max_steer_rate",
+        "max_accel", "max_decel",
+    )
+    _RELOAD_RUNTIME_KEYS = (
+        "mu_default", "speed_boost", "mu_scale_exp",
+    )
+
+    def _reload_cb(self, _req):
+        try:
+            return self._do_reload()
+        except Exception as e:
+            rospy.logerr(f"[{self.name}] reload exception: {e}")
+            return TriggerResponse(success=False, message=f"exception: {e}")
+
+    def _do_reload(self) -> TriggerResponse:
+        NS = "upenn_mpc"
+        diffs = []
+
+        # 1) HOT mpc_cfg 키 갱신 + acados solver 에 push
+        new_cfg = dict(self.mpc_cfg)
+        for k in self._RELOAD_HOT_KEYS:
+            if rospy.has_param(f"{NS}/{k}"):
+                old = self.mpc_cfg.get(k, None)
+                new = rospy.get_param(f"{NS}/{k}")
+                try:
+                    new = float(new)
+                except (TypeError, ValueError):
+                    continue
+                if old is None or abs(float(old) - new) > 1e-12:
+                    new_cfg[k] = new
+                    diffs.append(f"{k}: {old} -> {new}")
+        # 2) Runtime-only 키 (solver 무관, attribute 만)
+        rt_changes = {}
+        for k in self._RELOAD_RUNTIME_KEYS:
+            if rospy.has_param(f"{NS}/{k}"):
+                cur = getattr(self, k, None)
+                new = float(rospy.get_param(f"{NS}/{k}"))
+                if cur is None or abs(float(cur) - new) > 1e-12:
+                    rt_changes[k] = (cur, new)
+                    setattr(self, k, new)
+                    diffs.append(f"{k}: {cur} -> {new} (runtime)")
+        # max_steer 는 노드 attribute 도 같이 갱신 (clip 에서 사용).
+        if "max_steer" in new_cfg:
+            self.max_steer = float(new_cfg["max_steer"])
+        if "v_max" in new_cfg:
+            self.v_max = float(new_cfg["v_max"])
+
+        # 3) acados solver 에 cost / constraint 핫스왑 (둘 다 있으면 둘 다)
+        with self.lock:
+            self.mpc_cfg = new_cfg
+            for slv in (self.solver, self.solver_base):
+                if slv is None:
+                    continue
+                try:
+                    self._apply_mpc_cfg_to_solver(slv, new_cfg)
+                except Exception as e:
+                    rospy.logwarn(f"[{self.name}] solver hot-update partial fail: {e}")
+
+        msg = f"reloaded {len(diffs)} keys: " + ("; ".join(diffs) if diffs else "(no diffs)")
+        rospy.loginfo(f"[{self.name}] {msg}")
+        return TriggerResponse(success=True, message=msg)
+
+    def _apply_mpc_cfg_to_solver(self, slv, cfg: dict) -> None:
+        """Push HOT cfg into an acados solver instance without rebuild."""
+        # Stage cost weights (mirror mpcc_ocp_upenn build_tracking_ocp_upenn).
+        W_stage = np.diag([
+            float(cfg.get("w_d", 10.0)),
+            float(cfg.get("w_dpsi", 5.0)),
+            float(cfg.get("w_vx", 1.0)),
+            float(cfg.get("w_vy", 0.5)),
+            float(cfg.get("w_omega", 0.1)),
+            float(cfg.get("w_steer", 0.01)),
+            float(cfg.get("w_u_steer_rate", 0.5)),
+            float(cfg.get("w_u_accel", 0.05)),
+        ])
+        W_term_scale = float(cfg.get("w_terminal_scale", 10.0))
+        W_N = W_term_scale * np.diag([
+            float(cfg.get("w_d", 10.0)),
+            float(cfg.get("w_dpsi", 5.0)),
+            float(cfg.get("w_vx", 1.0)),
+            float(cfg.get("w_vy", 0.5)),
+            float(cfg.get("w_omega", 0.1)),
+            float(cfg.get("w_steer", 0.01)),
+        ])
+        for k in range(self.N):
+            slv.cost_set(k, "W", W_stage)
+        slv.cost_set(self.N, "W", W_N)
+
+        # Slack penalty (friction circle soft constraints).
+        slack = float(cfg.get("friction_slack_penalty", 1e3))
+        slack_vec = slack * np.ones(2)
+        for k in range(self.N + 1):
+            try:
+                slv.cost_set(k, "Zl", slack_vec)
+                slv.cost_set(k, "Zu", slack_vec)
+                slv.cost_set(k, "zl", slack_vec)
+                slv.cost_set(k, "zu", slack_vec)
+            except Exception:
+                # Stage may not have slack; skip.
+                pass
+
+        # State bounds (vx, delta) on stages 1..N. Initial state is fixed.
+        v_min = float(cfg.get("v_min", 0.0))
+        v_max = float(cfg.get("v_max", 8.0))
+        max_steer = float(cfg.get("max_steer", 0.4))
+        lbx = np.array([v_min, -max_steer])
+        ubx = np.array([v_max,  max_steer])
+        for k in range(1, self.N + 1):
+            try:
+                slv.constraints_set(k, "lbx", lbx)
+                slv.constraints_set(k, "ubx", ubx)
+            except Exception:
+                pass
+
+        # Control bounds (u_ddelta, u_ax) on stages 0..N-1.
+        max_steer_rate = float(cfg.get("max_steer_rate", 3.5))
+        max_accel = float(cfg.get("max_accel", 5.0))
+        max_decel = float(cfg.get("max_decel", -6.0))
+        lbu = np.array([-max_steer_rate, max_decel])
+        ubu = np.array([ max_steer_rate, max_accel])
+        for k in range(self.N):
+            try:
+                slv.constraints_set(k, "lbu", lbu)
+                slv.constraints_set(k, "ubu", ubu)
+            except Exception:
+                pass
+
     # ---- Solve ----
     def _solve(self, x0: np.ndarray, wpnts: np.ndarray) -> Tuple[float, float, float, float, Optional[np.ndarray]]:
         from upenn_mpc.mpcc_ocp_upenn import solve_once_upenn
@@ -625,6 +768,11 @@ class EkfMpcNode:
             f"x_end={x_end[:4].round(3)}",
         )
         self.solve_time_pub.publish(Float32(data=info["solve_time_ms"]))
+        # ### HJ : mpc_param 데몬용 — solver status (0=ok, 2=max_iter, 4=qp_fail, etc.)
+        try:
+            self.solve_status_pub.publish(Int8(data=int(status)))
+        except Exception:
+            pass
 
         if status not in (0, 2, 4):
             rospy.logwarn_throttle(

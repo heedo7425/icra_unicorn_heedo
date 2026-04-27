@@ -1,0 +1,326 @@
+# mpc_param.yaml — 작업 로그 + 사용법
+# 이 파일은 ROS param 으로 로드되는 yaml 이 아님. 사람용 메타 문서.
+# 모든 변경 사항은 여기에 누적 기록한다.
+
+meta:
+  package: controller/mpc_param
+  purpose: |
+    sim 옆에서 데몬으로 떠 있다가 lap 끝마다 로그 → 진단 → 룰 평가 →
+    yaml 패치 → 노드 hot-reload 까지 자동으로 수행하는 사이드카.
+  target_initial: upenn_mpc
+  target_planned: [upenn_mpcc, upenn_mpcc_rm, ekf_mpc, rls_mpc, wuee_mpcc]
+  default_mode: auto         # 자동 적용. 사람 confirm 없음.
+  kill: SIGINT (Ctrl-C)
+
+# ============================================================
+# 폴더 구조
+# ============================================================
+layout:
+  README.md: 패키지 개요 + 워크플로 다이어그램 + 안정장치 요약
+  mpc_param.yaml: 이 파일 (작업 로그 + 사용법)
+  docs/:
+    inventory.md: |
+      Phase 0 산출물. upenn_mpc 의 토픽/lap 이벤트/yaml 키 사용처 매핑.
+      yaml 키 30+ 개를 HOT/WARM/Runtime-only/COLD/STATIC 로 분류.
+  rules/:
+    upenn_mpc.yaml: |
+      증상 → action 룰 (Phase 2). 사용자가 직접 편집 가능.
+      각 룰: when (메트릭 표현식), severity, actions (key/op/factor/clamp), reason.
+  sectors/:
+    "<map>.yaml": |
+      트랙별 sector 분할 override. 없으면 곡률 자동 분할 사용.
+  scripts/: CLI / one-shot 도구
+  daemon/: 데몬 본체 (subscriber + metric + rule + patcher)
+  logs/:
+    tune_trail.csv: lap 단위 메트릭 + 적용 diff append-only
+    "runs/": 런 단위 상세 dump (선택)
+
+# ============================================================
+# 사용법 (계획. Phase 4 데몬 완성 후 실제 커맨드 확정)
+# ============================================================
+usage:
+  prerequisite: |
+    1) Docker 컨테이너 icra2026 안에서 실행. 호스트는 yaml 편집만.
+    2) sim + upenn_mpc 노드가 이미 떠 있어야 함.
+       roslaunch upenn_mpc upenn_mpc_sim.launch
+    3) lap_analyser 가 떠 있어야 함 (lap_data 토픽 발행).
+  start_daemon: |
+    # 컨테이너 안에서
+    rosrun mpc_param tuner_daemon.py _target:=upenn_mpc
+    # 또는 launch (Phase 4 추가 예정)
+    roslaunch mpc_param tuner.launch target:=upenn_mpc
+  monitor: |
+    # 다른 터미널에서
+    tail -F controller/mpc_param/logs/tune_trail.csv
+  stop: Ctrl-C → 마지막 yaml 상태로 정지. git log 에 트레일 남음.
+  pause_run: |
+    rostopic pub /mpc_param/pause std_msgs/Bool "data: true"   # WARMUP 만 유지
+    rostopic pub /mpc_param/pause std_msgs/Bool "data: false"  # 재개
+
+# ============================================================
+# 안정장치 (Phase 4)
+# ============================================================
+safety:
+  step_bound:
+    per_key_per_lap: 0.20      # ±20%
+    cumulative_per_lap: 0.30   # 모든 룰 합산 후 ±30%
+  rollback:
+    primary_metric: "lap_time + lambda * infeasible_count"
+    lambda: 0.5                # s per infeasible event (잠정. 튜닝 가능)
+    worsen_threshold: 0.03     # +3% 이상 악화 시 직전 yaml 복귀
+    cooldown_lap_after_rollback: 1
+  cooldown:
+    same_key_change_streak: 3
+    forced_observe_lap: 1
+  convergence:
+    consecutive_low_only_laps: 2
+    lap_time_change_under: 0.01    # 1%
+    on_converge: FROZEN            # 자동 적용 정지, 추천만 출력
+  crash_guard:
+    infeasible_per_lap_max: 50     # 초과 시 직전 yaml 복귀 + PAUSED
+    sim_silence_sec: 5             # lap_data 무수신 → PAUSED
+
+# ============================================================
+# 적용 가능 키 화이트리스트 (룰 action 에서 허용되는 키만)
+# COLD/STATIC 키는 자동 적용 금지. friction_margin 은 안전 이유로 제외.
+# ============================================================
+hot_keys:
+  - w_d
+  - w_dpsi
+  - w_vx
+  - w_vy
+  - w_omega
+  - w_steer
+  - w_u_steer_rate
+  - w_u_accel
+  - w_terminal_scale
+  - friction_slack_penalty
+warm_keys:
+  - v_max
+  - v_min
+  - max_steer
+  - max_steer_rate
+  - max_accel
+  - max_decel
+runtime_keys:
+  - mu_default
+  - speed_boost
+  - mu_scale_exp
+forbidden_auto:    # 자동 변경 금지
+  - friction_margin     # 안전 마진. 사람이 명시 결정.
+  - friction_circle     # COLD 빌드 + on/off 는 정책 결정
+  - N_horizon           # COLD
+  - dt                  # COLD
+  - gp/residual_enable  # COLD
+  - vehicle_model.*     # 측정 후 고정 그룹
+  - line_source         # STATIC
+  - mu_source           # STATIC
+  - codegen_dir         # STATIC
+
+# ============================================================
+# 작업 로그 (역순. 가장 최근 위)
+# ============================================================
+worklog:
+  - date: 2026-04-27
+    phase: 4
+    title: 데몬 본체 + state machine + 안정장치 통합
+    done:
+      - daemon/tuner.py — 모든 컴포넌트 통합
+        - ChannelHub + metrics + rules + YamlPatcher 한 번에 wiring
+        - state machine: WARMUP → ACTIVE → (FROZEN | PAUSED)
+          - WARMUP: 첫 N (기본 2) lap 은 관측만
+          - ACTIVE: 매 lap 평가 + 자동 적용
+          - FROZEN: 수렴 도달, 추천만 출력 (5% degrade 시 ACTIVE 복귀)
+          - PAUSED: crash 또는 패치 실패 시 — 관측 only
+        - 안정장치 (mpc_param.yaml safety 섹션 그대로):
+          - rollback: primary = lap_time + λ*infeasible_count, +3% 악화 → 직전 yaml 복귀
+          - cooldown: 같은 키 3 lap 연속 변경 후 1 lap 관측 강제
+          - crash guard: infeasible > 50 → rollback + PAUSED
+          - convergence: LOW only 2 lap + lap_time Δ < 1% → FROZEN
+          - forbidden 키 이중 방어 (룰 평가 + patcher 둘 다)
+        - logs/tune_trail.csv — 매 lap row 추가 (메트릭 + applied_diff JSON + state)
+      - daemon/channels.py 보강 — /<target>/solve_status 구독 → infeasible 카운트 자동
+      - launch/tuner.launch — args 화 (target, yaml, rules, lap_topic, sectors,
+        warmup_laps, rollback_threshold/lambda)
+      - 모든 파일 syntax check 통과
+    findings:
+      - lap_data 토픽은 lap 시작 이벤트 없음 → t_anchor 를 직전 lap 종료 시점으로 잡음.
+        첫 lap 은 anchor 만 만들고 emit skip (warmup 1회 까먹음). 영향 없음.
+      - cooldown 은 연속 적용 streak 만 카운트. 적용 안 된 lap (rule 미발화 또는
+        suppression) 에선 streak 리셋. 의도: "3 lap 연속 같은 방향 푸쉬" 만 진정.
+      - rollback 후 last_snapshot 무효화 → 다음 패치에서 새 snapshot 까지 추가
+        rollback 불가. 더블 rollback 위험 회피.
+      - tuner.py 는 rosrun controller tuner.py 로 호출 가능 (catkin 가 controller
+        패키지 하위 .py 를 자동 검색). launch 에선 pkg=controller type=tuner.py.
+    usage_summary: |
+      # 컨테이너 안에서:
+      roslaunch controller upenn_mpc_sim.launch          # 1) sim + mpc 노드
+      roslaunch lap_analyser lap_analyser.launch         # 2) lap 이벤트 발행기
+      roslaunch controller tuner.launch                  # 3) 데몬 (이 패키지)
+      tail -F controller/mpc_param/logs/tune_trail.csv   # 모니터링
+      # Ctrl-C 로 종료 — 마지막 yaml 상태 그대로 유지, git log 가 트레일.
+    next: |
+      Phase 5 (옵션): TUI/대시보드. 현 상태로도 csv + rosout 으로 모니터링 충분.
+      Phase 6: 다른 MPC (upenn_mpcc, ekf_mpc 등) 로 확장 — 룰 yaml + reload 서비스
+      만 노드 측에 복제하면 됨.
+  - date: 2026-04-27
+    phase: 3
+    title: hot-reload service + yaml patcher
+    done:
+      - controller/upenn_mpc/upenn_mpc_node.py 수정 (### HJ : 주석)
+        - import: Int8, std_srvs.srv.Trigger/TriggerResponse
+        - publisher 신설: /upenn_mpc/solve_status (Int8) — daemon 의 infeasible 카운트 소스
+        - service 신설: /upenn_mpc/reload_params (Trigger)
+        - _reload_cb / _do_reload / _apply_mpc_cfg_to_solver 메서드 추가
+          - HOT 16 키 (w_*, friction_slack_penalty, v_*, max_*) → mpc_cfg 갱신
+            + acados solver.cost_set / constraints_set 호출 (rebuild 없음)
+          - Runtime 3 키 (mu_default, speed_boost, mu_scale_exp) → attribute 갱신
+          - solver_base 도 동일하게 핫스왑 (둘 다 살아있을 때)
+        - 솔버 status (status code) 도 매 tick publish — 0=ok, 2=max_iter 등
+        - syntax check 통과
+      - daemon/patcher.py — YamlPatcher
+        - line-regex in-place edit (한 줄 한 키 패턴만 매칭, 주석/들여쓰기 보존)
+        - apply(): yaml edit → rospy.set_param → reload service 호출 → git commit
+        - restore(): snapshot 으로 yaml + param 복구 + reload + commit
+        - service call 실패 시 yaml 자동 복구 (반쯤 적용된 상태 방지)
+        - dry_run 모드, git_repo 자동 탐지
+      - scripts/test_patcher_smoke.py — yaml edit + 주석 보존 + rollback 검증 통과
+    findings:
+      - acados solver 의 cost_set "Zl/Zu/zl/zu" 는 stage 별로 slack 미설정 시
+        예외 → try/except 로 무시. friction circle 슬랙은 모든 stage 에 있음.
+      - state bound (lbx/ubx) 는 stages 1..N (initial state x0 는 constraints.x0
+        로 별도 fix). control bound (lbu/ubu) 는 stages 0..N-1.
+      - line-regex 패처는 nested mapping (gp:) 은 안 건드림. 룰 yaml 의
+        forbidden_keys 와 합쳐 이중 방어.
+      - git commit author 는 'mpc_param-tuner' 로 고정. 사용자 git config 안 건드림.
+    next: Phase 4 — 데몬 본체 (state machine + rollback + cooldown + convergence + crash guard)
+  - date: 2026-04-27
+    phase: 2
+    title: rule yaml + safe-eval engine + priority graph
+    done:
+      - rules/upenn_mpc.yaml — 14개 룰, 6 레벨 (L0~L5)
+        L0 SAFETY (3): infeasible / slip 포화 / off-track
+        L1 PATH (4): corner under/oversteer, late turn-in, undertrack
+        L2 STABILITY (2): yaw 진동 / vy 발산
+        L3 SPEED (2): headroom / too aggressive
+        L4 SMOOTHNESS (2): steer / accel chatter
+        L5 TERMINAL (1): preview leak
+      - daemon/rules.py — load_ruleset, _safe_eval (no __builtins__),
+        evaluate(metrics, policy, rules, current_yaml, forbidden):
+          1) when 절 평가 (all/any 둘 다 지원)
+          2) suppression graph 적용 (좁은 모순 관계만)
+          3) 같은 키 multiplicative merge → step bound (±20%) → clamp
+          4) forbidden 키 / yaml 미존재 키 거부
+        반환: (FiredRule[], KeyUpdate[], debug)
+      - scripts/test_rules_smoke.py — 6 시나리오 검증
+    findings:
+      - 초기 설계의 blanket "lower-suppress" 는 잘못. L4/L5 (smoothness/terminal)
+        은 L3 (speed) 와 직교 관계라 동시 적용되어야 옳음.
+        → suppression 을 dict 그래프로 변경:
+          L0 → 모든 하위; L1, L2 → L3 만; L4, L5 → 누구도 suppress 안 함.
+      - speed_headroom 룰이 "clean lap 디폴트" 처럼 거의 매 lap 발화 함.
+        이게 부담되면 추가 가드 (lap_time stagnation 체크 등) 필요할 수 있음.
+        지금은 step_bound (±20%) + clamp [0.5,1.5] 로 폭주 방지.
+      - "+" (가산) 액션은 멱승 도메인으로 변환해서 처리 — 현재 룰엔 미사용.
+    next: Phase 3 — yaml patcher + reload 서비스 (노드 코드에 _reload_cb 추가)
+  - date: 2026-04-27
+    phase: 1
+    title: live metric calculator + smoke test
+    done:
+      - daemon/channels.py — ChannelHub (ROS subscriber + thread-safe ring buffer)
+        - 구독 토픽 13개 (vx/vy/yaw/x/y/s/n/omega/ay_imu/delta_cmd/speed_cmd/solve_ms/mu_used)
+        - lap_data 콜백 → LapEvent dispatch (lap 경계 + lap_time + lat_err 캐리)
+        - raceline ndarray 캐시 (M,11)
+        - report_infeasible() 훅 (Phase 3 에서 노드 측 wiring 후 호출)
+      - daemon/metrics.py — pure numpy, ROS-free 계산기
+        - auto_sectors_by_curvature(|κ| > 0.4 디폴트, min_len_m 흡수)
+        - load_sector_override (sectors/<map>.yaml)
+        - 파생 채널: slip_f/r, ay (model + IMU fallback), ay_usage, u_steer_rate
+        - LAP 집계: mean/max/p95 |n|, max ay_usage, slip max, steer_rate rms,
+          omega FFT peak freq, solve p50/p99, vx mean/max, infeasible count
+        - SECTOR 집계: corner 의 entry/mid/exit 3분할 (특히 max_n_exit_abs +
+          n_exit_signed_mean 으로 under/oversteer 부호 판별)
+        - trail_row + TRAIL_HEADER (19 cols) — Phase 4 에서 logs/tune_trail.csv append
+      - scripts/test_metrics_smoke.py — 합성 lap (코너 1번에 understeer 의도 주입)
+        - sector 자동 분할 5개 (straight 3 + corner 2) 정상
+        - C00 의 max_n_exit_abs=0.45 검출 (signed +0.45) → 룰 발화 시뮬 가능
+        - solve_p99 / FFT / trail row 모두 정상
+    findings:
+      - delta_cmd 채널은 actual steering 이 아니라 publish 된 cmd. 실제 응답은
+        steering_lag (tau_steer=0.158) 만큼 지연. 제어 거칠기 측정엔 cmd 로 충분.
+      - ay 는 vx*omega (model) 우선, NaN 구간만 IMU.linear_acceleration.y 폴백.
+        IMU bias 가 누적될 가능성 있어 model-based 가 더 안전.
+      - lap_analyser 는 lap 시작 시점 이벤트 발행 안 함 → t_anchor 는 첫 lap_data
+        도착 시점으로 잡고, 그 이후엔 직전 lap 종료를 다음 lap 시작으로 사용.
+        첫 lap 은 lap_event emit skip.
+      - sector wrap-around (s_end < s_start) 처리 코드 포함.
+    next: Phase 2 — rules/upenn_mpc.yaml 스키마 + safe-eval 엔진
+  - date: 2026-04-27
+    phase: 0
+    title: 인벤토리 + 폴더 skeleton
+    done:
+      - controller/mpc_param/ 디렉토리 + 6개 서브폴더 생성
+      - README.md (워크플로 다이어그램, 안정장치 요약)
+      - docs/inventory.md (yaml 키 분류표, 토픽 인벤토리, lap 이벤트 소스 식별)
+      - mpc_param.yaml (이 파일) — 작업 로그 + 사용법
+    findings:
+      - lap 이벤트 소스 = lap_analyser 의 'lap_data' 토픽 (LapData 메시지)
+        path: f110_utils/nodes/lap_analyser/src/lap_analyser/lap_analyser.py:61
+      - upenn_mpc_node 에 reload 서비스 미존재 → Phase 3 에서 추가 필요
+      - solve_status 직접 publish 토픽 없음 → solve_ms 만 가용. Phase 3 시 추가 publish 검토
+    decisions:
+      - friction_margin 은 OPTION B 채택 (자동 변경 금지, 안전 마진 보호)
+      - COLD 그룹 (N_horizon, dt, vehicle params) 는 자동 적용 금지
+    next: Phase 1 — live metric calculator (in-memory subscriber + per-lap aggregator)
+
+# ============================================================
+# 결정 이력 (의사결정 트레일)
+# ============================================================
+decisions:
+  - id: D-001
+    date: 2026-04-27
+    topic: friction_margin 핫리로드 여부
+    options:
+      A: OCP 코드 수정해서 stage parameter 로 분리 (영구 핫)
+      B: COLD 유지 + 자동 변경 금지
+    chosen: B
+    reason: 안전 마진을 데몬이 슬금슬금 깎는 위험 회피. 사람이 의도적으로 결정해야 할 값.
+
+  - id: D-002
+    date: 2026-04-27
+    topic: 로그 형식
+    options:
+      A: rosbag (표준, 후처리 무거움)
+      B: in-memory + per-lap csv
+    chosen: B
+    reason: 데몬이 살아있으니 토픽 직접 subscribe 가 가볍고 즉시 진단 가능.
+
+  - id: D-003
+    date: 2026-04-27
+    topic: sector 분할
+    chosen: 곡률 기반 자동 분할 디폴트 + sectors/<map>.yaml override 옵션
+    reason: 트랙별 손튜닝 부담 최소화 + 필요 시 override 길 열어둠.
+
+  - id: D-004
+    date: 2026-04-27
+    topic: rollback primary metric
+    chosen: "lap_time + lambda * infeasible_count"
+    reason: 사용자 명시 — 안정성 가중치까지 디폴트로 포함.
+
+  - id: D-005
+    date: 2026-04-27
+    topic: kill switch
+    chosen: SIGINT (Ctrl-C) only
+    reason: 사용자 명시. 단순화.
+
+  - id: D-006
+    date: 2026-04-27
+    topic: 룰 작성 위치
+    chosen: rules/<target>.yaml (사용자 편집 가능)
+    reason: 사용자 명시. 트랙별 룰 추가 용이.
+
+  - id: D-007
+    date: 2026-04-27
+    topic: 자동 적용 모드
+    chosen: 디폴트 ON (사람 confirm 없이 적용)
+    reason: 사용자 명시. 안정장치 (rollback/cooldown/convergence) 가 보호.

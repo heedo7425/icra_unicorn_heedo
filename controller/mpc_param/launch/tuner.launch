@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!--
+  mpc_param tuner — sim 옆에서 자동 튜닝 데몬 실행.
+  Prereq:
+    1) sim + upenn_mpc 노드 기동 (예: roslaunch controller upenn_mpc_sim.launch)
+    2) lap_analyser 가 lap_data 토픽 발행 중
+
+  Usage:
+    roslaunch controller tuner.launch
+    roslaunch controller tuner.launch yaml:=/path/to/upenn_mpc_kd.yaml
+-->
+<launch>
+  <arg name="target"     default="upenn_mpc"/>
+  <arg name="yaml"       default="$(find controller)/upenn_mpc/config/upenn_mpc_srx1.yaml"/>
+  <arg name="rules"      default="$(find controller)/mpc_param/rules/upenn_mpc.yaml"/>
+  <arg name="trail_csv"  default="$(find controller)/mpc_param/logs/tune_trail.csv"/>
+  <arg name="lap_topic"  default="lap_data"/>
+  <arg name="sectors"    default=""/>
+  <arg name="warmup_laps" default="2"/>
+  <arg name="rollback_threshold" default="0.03"/>
+  <arg name="rollback_lambda"    default="0.5"/>
+
+  <node pkg="controller" type="tuner.py" name="mpc_param_tuner" output="screen"
+        args="--target $(arg target)
+              --yaml $(arg yaml)
+              --rules $(arg rules)
+              --trail-csv $(arg trail_csv)
+              --lap-topic $(arg lap_topic)
+              --warmup-laps $(arg warmup_laps)
+              --rollback-threshold $(arg rollback_threshold)
+              --rollback-lambda $(arg rollback_lambda)"/>
+</launch>

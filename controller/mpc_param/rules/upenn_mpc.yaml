@@ -1,0 +1,204 @@
+# rules/upenn_mpc.yaml — symptom-to-action 룰베이스
+#
+# 평가 컨텍스트 (safe eval):
+#   lap      : dict   — Phase 1 lap 메트릭 (mean_abs_n, max_ay_usage, ...)
+#   corners  : list   — 각 corner sector 메트릭
+#   sectors  : list   — 모든 sector
+#   helpers  : any/all/sum/min/max/abs/len
+#
+# 우선순위 계층 (위가 높음). 상위 레벨이 한 개라도 발화하면 같은 lap 의
+# 하위 레벨은 SUPPRESS (모순 액션 방지).
+#   L0 SAFETY    — infeasible / slip 포화 / off-track
+#   L1 PATH      — n / dpsi 추종
+#   L2 STABILITY — yaw 진동 / vy 발산
+#   L3 SPEED     — ay headroom / 속도 공격성
+#   L4 SMOOTHNESS — steer/accel rate
+#   L5 TERMINAL  — preview leak (w_terminal_scale)
+#
+# 액션 op:
+#   "*" : key *= factor   (멱승 누적)
+#   "+" : key += factor   (가산. weight 키엔 거의 안 씀)
+# clamp 는 절대 한계. step bound (±20%) 는 데몬이 일괄 적용.
+
+policy:
+  step_bound_per_key_per_lap: 0.20      # ±20%
+  # Suppression graph: 키가 발화하면 value 의 레벨들을 같은 lap 에서 무효화.
+  # 모순 관계만 좁게 정의. orthogonal (smoothness/terminal) 은 항상 허용.
+  suppression:
+    L0_safety:    [L1_path, L2_stability, L3_speed, L4_smoothness, L5_terminal]
+    L1_path:      [L3_speed]      # 추종 깨졌는데 속도 올리지 말 것
+    L2_stability: [L3_speed]      # 불안정한데 속도 올리지 말 것
+    # L3, L4, L5 는 누구도 suppress 안 함
+
+rules:
+  # ============================================================
+  # L0 SAFETY
+  # ============================================================
+  - name: safety_infeasible
+    priority: L0_safety
+    severity: HIGH
+    when:
+      all:
+        - "lap['infeasible_count'] > 5"
+    actions:
+      - {key: friction_slack_penalty, op: "*", factor: 1.5, clamp: [100, 50000]}
+      - {key: w_u_steer_rate, op: "*", factor: 1.10, clamp: [0.05, 20]}
+    reason: "OCP infeasible — slack 비용↑ + steer rate 진정"
+
+  - name: safety_slip_rear_saturation
+    priority: L0_safety
+    severity: HIGH
+    when:
+      all:
+        - "lap['max_abs_slip_r'] > 0.25"
+    actions:
+      - {key: w_omega, op: "*", factor: 1.20, clamp: [0.1, 30]}
+      - {key: w_vy,    op: "*", factor: 1.15, clamp: [0.05, 5]}
+      - {key: speed_boost, op: "*", factor: 0.95, clamp: [0.5, 1.5]}
+    reason: "후륜 슬립 임계 — yaw/vy 댐핑 강화 + 살짝 감속"
+
+  - name: safety_offtrack
+    priority: L0_safety
+    severity: HIGH
+    when:
+      all:
+        - "lap['max_abs_n'] > 0.55"
+    actions:
+      - {key: w_d, op: "*", factor: 1.20, clamp: [0.2, 10]}
+    reason: "트랙 이탈 직전 — 기준선 추종 가중 회복"
+
+  # ============================================================
+  # L1 PATH
+  # ============================================================
+  - name: corner_exit_understeer
+    priority: L1_path
+    severity: HIGH
+    when:
+      any:
+        - "any(c['n_exit_signed_mean'] > 0.30 and c['max_ay_usage'] < 0.85 for c in corners)"
+    actions:
+      - {key: w_d,    op: "*", factor: 0.85, clamp: [0.2, 10]}
+      - {key: w_dpsi, op: "*", factor: 1.15, clamp: [0.5, 30]}
+    reason: "코너 출구 바깥으로 돔 → 기준선 추종 완화 + heading 적극"
+
+  - name: corner_exit_oversteer
+    priority: L1_path
+    severity: HIGH
+    when:
+      any:
+        - "any(c['n_exit_signed_mean'] < -0.25 and c['max_abs_slip_r'] > 0.18 for c in corners)"
+    actions:
+      - {key: w_dpsi, op: "*", factor: 0.90, clamp: [0.5, 30]}
+      - {key: w_omega, op: "*", factor: 1.15, clamp: [0.1, 30]}
+    reason: "코너 출구 안쪽 cut + 후륜 슬립 → heading 진정 + yaw 댐핑"
+
+  - name: corner_late_turn_in
+    priority: L1_path
+    severity: MED
+    when:
+      any:
+        - "any(c['n_entry_signed_mean'] > 0.20 for c in corners)"
+    actions:
+      - {key: w_dpsi, op: "*", factor: 1.12, clamp: [0.5, 30]}
+    reason: "코너 진입 늦음 → turn-in 적극화"
+
+  - name: undertrack_global
+    priority: L1_path
+    severity: MED
+    when:
+      all:
+        - "lap['mean_abs_n'] > 0.20"
+        - "lap['max_abs_n'] < 0.55"     # offtrack 룰과 분리
+    actions:
+      - {key: w_d, op: "*", factor: 1.10, clamp: [0.2, 10]}
+    reason: "전반적 추종 약함 — w_d 점진 ↑"
+
+  # ============================================================
+  # L2 STABILITY
+  # ============================================================
+  - name: yaw_oscillation
+    priority: L2_stability
+    severity: MED
+    when:
+      all:
+        - "lap['omega_oscillation_hz'] > 1.5"
+        - "lap['omega_oscillation_hz'] < 6.0"
+    actions:
+      - {key: w_omega, op: "*", factor: 1.15, clamp: [0.1, 30]}
+      - {key: w_terminal_scale, op: "*", factor: 0.92, clamp: [0.5, 5]}
+    reason: "yaw 진동 — 댐핑 ↑ + terminal preview 영향 ↓"
+
+  - name: vy_growth
+    priority: L2_stability
+    severity: MED
+    when:
+      all:
+        - "lap['max_abs_slip_r'] > 0.18"
+        - "lap['max_abs_slip_r'] <= 0.25"   # safety 와 분리
+    actions:
+      - {key: w_vy, op: "*", factor: 1.10, clamp: [0.05, 5]}
+    reason: "후륜 슬립 증가 추세 — 사전 진정"
+
+  # ============================================================
+  # L3 SPEED
+  # ============================================================
+  - name: speed_headroom
+    priority: L3_speed
+    severity: MED
+    when:
+      all:
+        - "lap['max_ay_usage'] < 0.70"
+        - "lap['mean_abs_n'] < 0.15"
+        - "lap['infeasible_count'] == 0"
+    actions:
+      - {key: speed_boost, op: "*", factor: 1.05, clamp: [0.5, 1.5]}
+      - {key: w_vx, op: "*", factor: 1.08, clamp: [0.2, 10]}
+    reason: "그립 여유 + 추종 양호 → 속도 공격성 ↑"
+
+  - name: speed_too_aggressive
+    priority: L3_speed
+    severity: HIGH
+    when:
+      any:
+        - "lap['max_ay_usage'] > 1.05"
+    actions:
+      - {key: speed_boost, op: "*", factor: 0.92, clamp: [0.5, 1.5]}
+      - {key: w_vx, op: "*", factor: 0.92, clamp: [0.2, 10]}
+    reason: "friction circle 침범 — 속도 페널티 완화 + boost ↓"
+
+  # ============================================================
+  # L4 SMOOTHNESS
+  # ============================================================
+  - name: steer_chatter
+    priority: L4_smoothness
+    severity: LOW
+    when:
+      all:
+        - "lap['u_steer_rate_rms'] > 1.5"
+    actions:
+      - {key: w_u_steer_rate, op: "*", factor: 1.15, clamp: [0.05, 20]}
+    reason: "steer rate 거칢 — 변화량 페널티 ↑"
+
+  - name: accel_chatter
+    priority: L4_smoothness
+    severity: LOW
+    when:
+      all:
+        - "lap['solve_p99_ms'] > 0"
+        - "lap['vx_max'] - lap['vx_mean'] > 4.0"   # 가속/감속 폭 큼
+    actions:
+      - {key: w_u_accel, op: "*", factor: 1.10, clamp: [0.02, 5]}
+    reason: "가감속 폭 큼 → 액셀 변화량 페널티 점진 ↑"
+
+  # ============================================================
+  # L5 TERMINAL
+  # ============================================================
+  - name: preview_leak_early_turnin
+    priority: L5_terminal
+    severity: LOW
+    when:
+      any:
+        - "any(c['n_entry_signed_mean'] < -0.20 for c in corners)"
+    actions:
+      - {key: w_terminal_scale, op: "*", factor: 0.92, clamp: [0.5, 5]}
+    reason: "코너 진입 전부터 안쪽으로 미리 꺾음 → terminal 영향 ↓"
