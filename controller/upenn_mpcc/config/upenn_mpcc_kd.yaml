@@ -50,7 +50,7 @@ upenn_mpcc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 4.80824       ### HJ : 데몬 누적 → 5.66 까지 도달했다 차 spawn-stuck 사이클 →
+  w_d: 5.28906       ### HJ : 데몬 누적 → 5.66 까지 도달했다 차 spawn-stuck 사이클 →
                           ###       원복. 데몬은 baseline 5.0 에서 다시 시작.
                           # iter24: 6 → 5 (best)
 
@@ -72,7 +72,7 @@ upenn_mpcc:
   #   직진/코너 탈출에서 가속 부족 → ↑
   #   코너 진입이 너무 빨라 스핀 → ↓
   # 권장: 1.0 ~ 5.0
-  w_progress: 0.729   ### HJ : 데몬 누적 0.729 → baseline 1.0 원복.
+  w_progress: 0.6561   ### HJ : 데몬 누적 0.729 → baseline 1.0 원복.
                           ###       line=raceline 시도 위해 1.0 (centerline+0.7
                           ###       에서 lap 가능했던 값 → raceline 환경에선
                           ###       progress 1.0 적정 추정).
@@ -155,7 +155,7 @@ upenn_mpcc:
   #     저속 singular 회피는 w_vx 상향 + vehicle_model vx floor 로 대응.
   #   v_max: 주행 상한. 원래 6.0 → 부하 테스트용 12.0 으로 개방.
   v_min:            0.0
-  v_max: 3.4295    ### HJ : 4.5 도 s=29 좌회전 inner crash. v_max 영향
+  v_max: 3.25802    ### HJ : 4.5 도 s=29 좌회전 inner crash. v_max 영향
                            ###       없음 (충돌 시 vx 2.29, 권장 2.73 보다 느림).
                            ###       baseline (lap 34.5s) 으로 후퇴. cost weight
                            ###       조정으로 push 시도.
