@@ -46,7 +46,7 @@ upenn_mpc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 2.805      ### HJ : 데몬이 safety_offtrack false positive 로 w_d 3→10 끌어
+  w_d: 2.55      ### HJ : 데몬이 safety_offtrack false positive 로 w_d 3→10 끌어
                               ###       올려 lap 27.6→29.0s. 원복. max_abs_n metric 이
                               ###       raceline frenet 기준이라 centerline 추종 시 발화.
                               # iter2: 1.5 → 3.0 (raceline 강제 추종, inner-cut 억제)
@@ -153,7 +153,7 @@ upenn_mpc:
   #   ↑ 전체적으로 더 빠르게 (테스트/성능 평가용).
   #   ↓ 보수적 주행.
   # 원본 1.6 → 1.3 → 코너 진입 속도 완화용.
-  speed_boost: 0.9
+  speed_boost:      1.0
 
   # μ 스케일 지수 (exp). 노면 grip 에 따라 vx_ref 재조정 정도.
   #   0: μ 변화 무시 (고정 vx_ref 사용)
