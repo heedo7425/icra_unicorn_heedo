@@ -46,9 +46,9 @@ upenn_mpc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 10       ### HJ : 6.0 시도 → 효과 미미 (충돌 1→2). raceline
-                              ###       자체가 wall 너무 가까움이 진짜 원인.
-                              ###       baseline 으로 원복하고 line_source=centerline 으로 시도.
+  w_d: 2.55      ### HJ : 데몬이 safety_offtrack false positive 로 w_d 3→10 끌어
+                              ###       올려 lap 27.6→29.0s. 원복. max_abs_n metric 이
+                              ###       raceline frenet 기준이라 centerline 추종 시 발화.
                               # iter2: 1.5 → 3.0 (raceline 강제 추종, inner-cut 억제)
 
   # [Heading error] dpsi = wrap(yaw - psi_ref). Path tangent 와 차량 방향 차이.
@@ -58,7 +58,7 @@ upenn_mpc:
   #   코너 못 돌고 직진 → ↑ (적극 turn-in)
   #   코너 후 스핀/요 복귀 실패 → ↑ (단, w_omega 와 같이)
   #   일찍 꺾음/조기 조향 → ↓
-  w_dpsi:           10.0      # ### KD iter3: 5.5 → 10. heading 추종 강화 — 코너
+  w_dpsi: 12      # ### KD iter3: 5.5 → 10. heading 추종 강화 — 코너
                               #   dpsi 가 -0.7 까지 누적되어 크래시 → 적극 turn-in.
 
   # [Longitudinal speed] vx - vx_ref 페널티.
@@ -107,7 +107,7 @@ upenn_mpc:
   #   ↑ horizon 끝에 더 strong 하게 기준선/heading 맞추려 함. 안정성↑.
   #   ↓ terminal 무관심. 진동 가능.
   # 권장: 1.0~3.0.
-  w_terminal_scale: 1.5
+  w_terminal_scale: 1.38
 
   # ============================================================
   # Limits — 차량 물리 한계 (hard constraints)
