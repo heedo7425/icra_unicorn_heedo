@@ -50,7 +50,7 @@ upenn_mpcc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 5.75   # iter24: 6 살짝 worse → 5 (iter22 best) 복귀.
+  w_d: 6.6125   # iter24: 6 살짝 worse → 5 (iter22 best) 복귀.
 
   # [Heading error] dpsi = wrap(yaw - psi_ref). Path tangent 와 차량 방향 차이.
   #   ↑ Heading 맞추려 적극 조향. turn-in 빠름, 코너 복귀 빠름. 과하면 oversteer.
@@ -146,7 +146,7 @@ upenn_mpcc:
   #     저속 singular 회피는 w_vx 상향 + vehicle_model vx floor 로 대응.
   #   v_max: 주행 상한. 원래 6.0 → 부하 테스트용 12.0 으로 개방.
   v_min:            0.0
-  v_max: 2.85    # ### KD iter1: 7 → 3. kd hairpin (R=0.88m, vx_max=2.65)
+  v_max: 2.7075    # ### KD iter1: 7 → 3. kd hairpin (R=0.88m, vx_max=2.65)
                           #   horizon 1s 안에 7→2.6 감속 불가능 (max_decel 부족).
                           #   straights 에서도 손해 보지만 hairpin 통과 우선.
 
@@ -182,7 +182,7 @@ upenn_mpcc:
   # Friction circle 여유 (0~1). (μ·margin·Nz) 의 허용 ratio.
   #   ↓ 안전 (더 일찍 saturation 취급).
   #   ↑ tire 최대 활용. 위험.
-  friction_margin: 0.9025   # ### KD iter1: 0.75 → 0.95. hairpin 한계점 (95%) 까지
+  friction_margin: 0.857375   # ### KD iter1: 0.75 → 0.95. hairpin 한계점 (95%) 까지
                           #   plan 가능해야 통과. (upenn_mpc kd 검증 동일 논리.)
 
   # Friction 제약 위반 시 slack penalty. 너무 낮으면 제약 무력화.
