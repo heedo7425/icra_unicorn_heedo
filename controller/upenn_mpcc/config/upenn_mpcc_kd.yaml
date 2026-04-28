@@ -60,7 +60,7 @@ upenn_mpcc:
   #   코너 못 돌고 직진 → ↑ (적극 turn-in)
   #   코너 후 스핀/요 복귀 실패 → ↑ (단, w_omega 와 같이)
   #   일찍 꺾음/조기 조향 → ↓
-  w_dpsi: 14.9547        ### HJ : 강제 baseline reset.
+  w_dpsi: 13.3524        ### HJ : 강제 baseline reset.
 
   # [Progress reward] MPCC 의 핵심: stage cost 에 -w_progress * vx 추가.
   # 즉 "vx 크게 갖는 게 이득" → optimizer 가 자연스레 가속. friction circle
@@ -122,7 +122,7 @@ upenn_mpcc:
   #   ↑ horizon 끝에 더 strong 하게 기준선/heading 맞추려 함. 안정성↑.
   #   ↓ terminal 무관심. 진동 가능.
   # 권장: 1.0~3.0.
-  w_terminal_scale: 0.557847    ### HJ : 강제 baseline reset.
+  w_terminal_scale: 0.606355    ### HJ : 강제 baseline reset.
                           # 2.0 → 1.5 → 1.0 (rule 적용 push)
 
   # ============================================================
