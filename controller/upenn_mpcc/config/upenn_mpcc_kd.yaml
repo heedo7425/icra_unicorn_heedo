@@ -50,7 +50,7 @@ upenn_mpcc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 5.5   ### HJ : Pure discovery (1.5) → 직선 R=11m 에서도 outer
+  w_d: 4.675   ### HJ : Pure discovery (1.5) → 직선 R=11m 에서도 outer
                           ###       wall 박음. boundary constraint 없는 OCP 한계.
                           ###       path-tracking mode 복원, line=raceline 으로 전환.
                           # iter24: 6 → 5 (best)
@@ -62,7 +62,7 @@ upenn_mpcc:
   #   코너 못 돌고 직진 → ↑ (적극 turn-in)
   #   코너 후 스핀/요 복귀 실패 → ↑ (단, w_omega 와 같이)
   #   일찍 꺾음/조기 조향 → ↓
-  w_dpsi: 6.16   # iter27: 8 → 5.5 복귀 (iter22 동등 → 5.5 단순).
+  w_dpsi: 7.392   # iter27: 8 → 5.5 복귀 (iter22 동등 → 5.5 단순).
 
   # [Progress reward] MPCC 의 핵심: stage cost 에 -w_progress * vx 추가.
   # 즉 "vx 크게 갖는 게 이득" → optimizer 가 자연스레 가속. friction circle
@@ -127,7 +127,7 @@ upenn_mpcc:
   #   ↑ horizon 끝에 더 strong 하게 기준선/heading 맞추려 함. 안정성↑.
   #   ↓ terminal 무관심. 진동 가능.
   # 권장: 1.0~3.0.
-  w_terminal_scale: 0.92   ### HJ : 1.5 큰 효과 (s=15 hairpin 9% → 77.5% 사용,
+  w_terminal_scale: 0.8464   ### HJ : 1.5 큰 효과 (s=15 hairpin 9% → 77.5% 사용,
                           ###       trip 17→39s) → 더 push. 1.0 으로 inner cut
                           ###       남은 코너 (s=72) 도 잡힘 시도.
                           # 2.0 → 1.5 → 1.0 (rule 적용 push)
