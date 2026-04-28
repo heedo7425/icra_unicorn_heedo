@@ -21,7 +21,7 @@ upenn_mpc:
   #     먼 preview 가 제어에 "누수" 되어 조기 turn-in 유발 가능.
   #   ↓ 반응적. 근거리만 보고 대응. 빠른 코너에서 놓칠 수 있음.
   # 권장: 15~30.
-  N_horizon:        20
+  N_horizon:        20      ### HJ : 30 시도 → 더 빨리 충돌 + solve 20ms → 원복.
 
   # Sample time (s). 매 스텝 길이.
   #   ↑ horizon 길이 확보에 유리. discretization 오차↑.
@@ -46,8 +46,10 @@ upenn_mpc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d:              3.0       # ### KD iter2: 1.5 → 3.0. prediction 이 raceline
-                              #   안쪽으로 cut 하는 거 억제 (raceline 강제 추종).
+  w_d: 3.6       ### HJ : 6.0 시도 → 효과 미미 (충돌 1→2). raceline
+                              ###       자체가 wall 너무 가까움이 진짜 원인.
+                              ###       baseline 으로 원복하고 line_source=centerline 으로 시도.
+                              # iter2: 1.5 → 3.0 (raceline 강제 추종, inner-cut 억제)
 
   # [Heading error] dpsi = wrap(yaw - psi_ref). Path tangent 와 차량 방향 차이.
   #   ↑ Heading 맞추려 적극 조향. turn-in 빠름, 코너 복귀 빠름. 과하면 oversteer.
@@ -119,9 +121,11 @@ upenn_mpc:
   #   ↑ 급 조향 권한 확대. 긴급 코너/회피 대응↑. 서보 부담↑.
   #   ↓ 부드러운 조향 강제. 긴급 대응 부족 시 언더스티어.
   # 권장: 2.0~4.0.
-  max_steer_rate:   5.0       # ### KD iter3: 3.0 → 5.0. sim hard limit 은 3.2 지만
-                              #   solver plan 에서 더 빠른 steer ramp 허용 → cmd
-                              #   saturate 해도 OK. turn-in 빨라짐.
+  max_steer_rate:   3.2       # ### HJ : 5.0 → 3.2. sim/실차 servo hard cap 과 정합.
+                              #   이전 5.0 은 plan 이 코너 진입 transient 에서 실행
+                              #   불가능한 steer ramp 를 가정 → 실 wheel 이 못 따라가
+                              #   outer drift 누적 (s=60, s=72 코너 매 lap 처박힘).
+                              #   3.2 로 낮추면 plan-실행 일치 → transient lag 제거.
 
   # Longitudinal accel/decel 한계 (m/s²). 차량 파워트레인/브레이크 한계.
   max_accel:        3.0
@@ -133,9 +137,9 @@ upenn_mpc:
   #     저속 singular 회피는 w_vx 상향 + vehicle_model vx floor 로 대응.
   #   v_max: 주행 상한. 원래 6.0 → 부하 테스트용 12.0 으로 개방.
   v_min:            0.0
-  v_max:            2.4       # ### KD iter5: 2.7 → 2.4. iter4 에서 v_max-vx_ref
-                              #   gap 이 0.05 m/s 뿐 → 진입 시 brake 여유 없이
-                              #   apex 한계점 도달 → 슬립. 0.25 m/s 마진 확보.
+  v_max:            3.2       ### HJ : 9.0 시도 전에 bisect — 2.4 OK, 4.0 crash.
+                              ###       3.2 로 안전 max 탐색. lap 완주 시 3.5/4.0
+                              ###       으로 push. 코너 진입 transient brake 한계.
 
   # ============================================================
   # Friction — 노면 마찰 관련
@@ -164,12 +168,15 @@ upenn_mpc:
   #   true: F_front² ≤ (μ·margin·N_f)² 등으로 tire saturation 제약.
   #         현실적이지만 solver 부담↑.
   #   false: 제약 없음. 비현실적 코너 명령 가능.
-  friction_circle:  true
+  friction_circle:  true    ### HJ : OFF 시 QP_FAILED 27% 발생 → 복원. NaN 은
+                            ###       LM regularization 강화 (F4) 로 잡는 방향.
 
   # Friction circle 여유 (0~1). (μ·margin·Nz) 의 허용 ratio.
   #   ↓ 안전 (더 일찍 saturation 취급).
   #   ↑ tire 최대 활용. 위험.
-  friction_margin:  0.95      # ### KD iter4: 0.5 → 0.95 (복원). hairpin R=0.88m
+  friction_margin:  0.95      ### HJ : 1.1 시도 → QP_FAILED 86% 폭증 → 원복.
+                              ###       margin>1.0 은 OCP 를 unbounded 로 만듦.
+                              # iter4: 0.5 → 0.95 (복원). hairpin R=0.88m
                               #   에서 vx_ref 2.65 만 도달해도 a_y=8.0 m/s² 필요 →
                               #   margin 0.5 면 4.2 m/s² cap 으로 OCP 가 "코너
                               #   불가능" 판단해 외측 wider arc plan → 충돌. 풀
