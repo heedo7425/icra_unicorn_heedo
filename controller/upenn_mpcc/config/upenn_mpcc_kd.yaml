@@ -50,7 +50,7 @@ upenn_mpcc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 4.675   ### HJ : Pure discovery (1.5) → 직선 R=11m 에서도 outer
+  w_d: 5.1425   ### HJ : Pure discovery (1.5) → 직선 R=11m 에서도 outer
                           ###       wall 박음. boundary constraint 없는 OCP 한계.
                           ###       path-tracking mode 복원, line=raceline 으로 전환.
                           # iter24: 6 → 5 (best)
@@ -73,7 +73,7 @@ upenn_mpcc:
   #   직진/코너 탈출에서 가속 부족 → ↑
   #   코너 진입이 너무 빨라 스핀 → ↓
   # 권장: 1.0 ~ 5.0
-  w_progress: 0.9   ### HJ : Pure discovery 실패. path-tracking 복원.
+  w_progress: 0.81   ### HJ : Pure discovery 실패. path-tracking 복원.
                           ###       line=raceline 시도 위해 1.0 (centerline+0.7
                           ###       에서 lap 가능했던 값 → raceline 환경에선
                           ###       progress 1.0 적정 추정).
