@@ -50,7 +50,10 @@ upenn_mpcc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d:              5.0   # iter24: 6 살짝 worse → 5 (iter22 best) 복귀.
+  w_d: 4.25   ### HJ : Pure discovery (1.5) → 직선 R=11m 에서도 outer
+                          ###       wall 박음. boundary constraint 없는 OCP 한계.
+                          ###       path-tracking mode 복원, line=raceline 으로 전환.
+                          # iter24: 6 → 5 (best)
 
   # [Heading error] dpsi = wrap(yaw - psi_ref). Path tangent 와 차량 방향 차이.
   #   ↑ Heading 맞추려 적극 조향. turn-in 빠름, 코너 복귀 빠름. 과하면 oversteer.
@@ -59,7 +62,7 @@ upenn_mpcc:
   #   코너 못 돌고 직진 → ↑ (적극 turn-in)
   #   코너 후 스핀/요 복귀 실패 → ↑ (단, w_omega 와 같이)
   #   일찍 꺾음/조기 조향 → ↓
-  w_dpsi:           5.5   # iter27: 8 → 5.5 복귀 (iter22 동등 → 5.5 단순).
+  w_dpsi: 6.6   # iter27: 8 → 5.5 복귀 (iter22 동등 → 5.5 단순).
 
   # [Progress reward] MPCC 의 핵심: stage cost 에 -w_progress * vx 추가.
   # 즉 "vx 크게 갖는 게 이득" → optimizer 가 자연스레 가속. friction circle
@@ -70,7 +73,11 @@ upenn_mpcc:
   #   직진/코너 탈출에서 가속 부족 → ↑
   #   코너 진입이 너무 빨라 스핀 → ↓
   # 권장: 1.0 ~ 5.0
-  w_progress:       2.0   # iter20: 1.0 → 2.0. w_d 완화와 세트, progress 회복.
+  w_progress:       1.0   ### HJ : Pure discovery 실패. path-tracking 복원.
+                          ###       line=raceline 시도 위해 1.0 (centerline+0.7
+                          ###       에서 lap 가능했던 값 → raceline 환경에선
+                          ###       progress 1.0 적정 추정).
+                          # iter20: 1.0 → 2.0 | HJ: 다양 → 1.0
 
   # [Terminal progress reward] terminal cost 에 -w_progress_e * s.
   # horizon 끝 시점에 s 가 최대가 되도록 유도 (먼 미래까지 달려나가게).
@@ -120,7 +127,10 @@ upenn_mpcc:
   #   ↑ horizon 끝에 더 strong 하게 기준선/heading 맞추려 함. 안정성↑.
   #   ↓ terminal 무관심. 진동 가능.
   # 권장: 1.0~3.0.
-  w_terminal_scale: 2.0   # iter25: 3.0 → 2.0 복귀 (3 은 sim freeze).
+  w_terminal_scale: 0.92   ### HJ : 1.5 큰 효과 (s=15 hairpin 9% → 77.5% 사용,
+                          ###       trip 17→39s) → 더 push. 1.0 으로 inner cut
+                          ###       남은 코너 (s=72) 도 잡힘 시도.
+                          # 2.0 → 1.5 → 1.0 (rule 적용 push)
 
   # ============================================================
   # Limits — 차량 물리 한계 (hard constraints)
@@ -146,9 +156,10 @@ upenn_mpcc:
   #     저속 singular 회피는 w_vx 상향 + vehicle_model vx floor 로 대응.
   #   v_max: 주행 상한. 원래 6.0 → 부하 테스트용 12.0 으로 개방.
   v_min:            0.0
-  v_max:            3.0    # ### KD iter1: 7 → 3. kd hairpin (R=0.88m, vx_max=2.65)
-                          #   horizon 1s 안에 7→2.6 감속 불가능 (max_decel 부족).
-                          #   straights 에서도 손해 보지만 hairpin 통과 우선.
+  v_max:            4.0    ### HJ : 4.5 도 s=29 좌회전 inner crash. v_max 영향
+                           ###       없음 (충돌 시 vx 2.29, 권장 2.73 보다 느림).
+                           ###       baseline (lap 34.5s) 으로 후퇴. cost weight
+                           ###       조정으로 push 시도.
 
   # ============================================================
   # Friction — 노면 마찰 관련
