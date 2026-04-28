@@ -2,9 +2,9 @@ upenn_mpcc:
   N_horizon: 30
   dt: 0.05
   window_size: 200
-  w_d: 6
-  w_dpsi: 6.6
-  w_progress: 2.55
+  w_d: 5.0
+  w_dpsi: 5.5
+  w_progress: 3.0
   w_progress_e: 3.0
   w_vx: 0.0
   w_vy: 0.3
@@ -13,7 +13,7 @@ upenn_mpcc:
   w_u_steer_rate: 3.0
   w_u_accel: 0.3
   w_terminal_scale: 1.0
-  n_ref_max_offset: 0
+  n_ref_max_offset: 0.0
   n_ref_blend_stages: 5.0
   n_ref_vx_threshold: 1.0
   max_steer: 0.4
@@ -21,7 +21,7 @@ upenn_mpcc:
   max_accel: 3.0
   max_decel: -3.0
   v_min: 0.0
-  v_max: 3.249
+  v_max: 3.61
   mu_default: 0.85
   speed_boost: 1.0
   mu_scale_exp: 0.0
