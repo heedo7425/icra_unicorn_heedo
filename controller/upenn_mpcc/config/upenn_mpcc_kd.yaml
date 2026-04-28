@@ -50,7 +50,7 @@ upenn_mpcc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 4.94527           ### HJ : 강제 baseline reset. 데몬 누적 변경으로 차 lap 못 돔.
+  w_d: 5.4398           ### HJ : 강제 baseline reset. 데몬 누적 변경으로 차 lap 못 돔.
                           # iter24: 6 → 5 (best)
 
   # [Heading error] dpsi = wrap(yaw - psi_ref). Path tangent 와 차량 방향 차이.
@@ -71,7 +71,7 @@ upenn_mpcc:
   #   직진/코너 탈출에서 가속 부족 → ↑
   #   코너 진입이 너무 빨라 스핀 → ↓
   # 권장: 1.0 ~ 5.0
-  w_progress: 0.81    ### HJ : 강제 baseline reset.
+  w_progress: 0.729    ### HJ : 강제 baseline reset.
                           # iter20: 1.0 → 2.0 | HJ: 다양 → 1.0
 
   # [Terminal progress reward] terminal cost 에 -w_progress_e * s.
@@ -126,6 +126,26 @@ upenn_mpcc:
                           # 2.0 → 1.5 → 1.0 (rule 적용 push)
 
   # ============================================================
+  # n_ref shift — centerline 추종 mode 에서 raceline outer-inner-outer 패턴 주입
+  # ============================================================
+  # MPCC는 n_ref 추종. 기본 0 (centerline 정중앙). raceline d_offset 을 n_ref 로
+  # 주입하면 차가 raceline shape 추종 → outer 사용. 데몬 튜닝 가능.
+  #   ↑ 더 적극적 outer-inner-outer (코너 wall 가까이)
+  #   ↓ 보수적 (centerline 가까이)
+  # 권장: 0.20 ~ 0.50.
+  n_ref_max_offset: 0.50
+
+  # ramp 단계 수 — 첫 N stage 동안 current_n → target 으로 부드러운 전환.
+  #   ↑ 부드럽지만 첫 단계에서 outer 활용 늦음
+  #   ↓ 빠른 outer 진입 but jerky 가능성
+  n_ref_blend_stages: 2
+
+  # n_ref shift 활성화 vx 임계값. 이 값 이상에서만 shift 작동.
+  #   ↑ 출발/저속 안정 but lap 동안 활성 시간↓
+  #   ↓ 더 일찍 활성 but 출발 시 lateral push 위험
+  n_ref_vx_threshold: 1.0
+
+  # ============================================================
   # Limits — 차량 물리 한계 (hard constraints)
   # ============================================================
 
@@ -149,7 +169,7 @@ upenn_mpcc:
   #     저속 singular 회피는 w_vx 상향 + vehicle_model vx floor 로 대응.
   #   v_max: 주행 상한. 원래 6.0 → 부하 테스트용 12.0 으로 개방.
   v_min:            0.0
-  v_max: 3.61       ### HJ : 강제 baseline reset. 데몬은 4.0 에서 다시 시작.
+  v_max: 3.4295       ### HJ : 강제 baseline reset. 데몬은 4.0 에서 다시 시작.
 
   # ============================================================
   # Friction — 노면 마찰 관련
