@@ -1,302 +1,60 @@
-# ============================================================
-# upenn_mpcc — SRX1 tuning for TRUE MPCC (Model Predictive Contouring Control).
-# All params under /upenn_mpcc/* namespace.
-#
-# MPCC vs MPC 차이:
-#   - vx_ref 추종 제거. 대신 progress reward (-w_progress * vx) 로 "빨리 가도록"
-#     유도. 속도 상한은 friction circle + v_max 가 결정.
-#   - cost type = EXTERNAL (NLS 아님). contouring(n²) + heading(dpsi²) + reg
-#     + progress 선형항 복합. w_progress/w_progress_e 가 추가됨.
-#
-# 튜닝 가이드:
-#   - 먼저 "차가 달리긴 하는지" 확보 → apex/속도 디테일 튜닝.
-#   - w_progress 올리면 공격적 (친 friction 한계까지 뛰게 됨).
-#   - w_d (contouring) 는 path 에 얼마나 붙을지, w_progress 와 tradeoff.
-# ============================================================
-
 upenn_mpcc:
-  # ============================================================
-  # Horizon — MPC 가 앞을 얼마나 내다볼지
-  # ============================================================
-
-  # Prediction horizon stage 수. T_horizon = N_horizon * dt.
-  #   ↑ 더 길게 예측 → 코너 미리 대비, 속도↑ 가능. 하지만 solve time↑ +
-  #     먼 preview 가 제어에 "누수" 되어 조기 turn-in 유발 가능.
-  #   ↓ 반응적. 근거리만 보고 대응. 빠른 코너에서 놓칠 수 있음.
-  # 권장: 15~30.
-  N_horizon:        30    # iter5: 20 → 30.  T_horizon = 30·0.05 = 1.5s.
-                          # vx=10 에서 preview 15m — 코너 2-3초 전 감속 유도.
-
-  # Sample time (s). 매 스텝 길이.
-  #   ↑ horizon 길이 확보에 유리. discretization 오차↑.
-  #   ↓ 정밀. solve time↑, horizon 짧아짐.
-  # 권장: 0.02~0.08. loop_rate_hz 와 일치시키는 게 보통.
-  dt:               0.05
-
-  # Global raceline 중 MPC 한 tick 에 쓰는 window 크기 (wpnts 개수).
-  # N_horizon 커버 가능한 만큼만 있으면 됨. 너무 크면 메모리만 낭비.
-  window_size:      200
-
-  # ============================================================
-  # State / input weights — OCP cost 의 diagonal weight (W_stage)
-  # cost = Σ w_i * (x_i - x_i_ref)^2  + Σ w_u * u^2
-  # 모든 w 는 ≥ 0.
-  # ============================================================
-
-  # [Lateral position] |n - n_ref| 페널티.
-  # n = 기준선과의 수직거리 (centerline 모드: 센터라인, raceline 모드: raceline).
-  #   ↑ 기준선에 딱 붙음. tight tracking. apex 못 끊음 (바깥으로 돔).
-  #   ↓ 기준선 허술하게 추종. 안쪽 cut 허용. 너무 낮으면 벽에 부딪힘.
-  # 증상 매핑:
-  #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
-  #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 4.94527           ### HJ : 강제 baseline reset. 데몬 누적 변경으로 차 lap 못 돔.
-                          # iter24: 6 → 5 (best)
-
-  # [Heading error] dpsi = wrap(yaw - psi_ref). Path tangent 와 차량 방향 차이.
-  #   ↑ Heading 맞추려 적극 조향. turn-in 빠름, 코너 복귀 빠름. 과하면 oversteer.
-  #   ↓ Heading 무관심. 코너 진입 늦음, 코너 후 기울어진 채 달림.
-  # 증상 매핑:
-  #   코너 못 돌고 직진 → ↑ (적극 turn-in)
-  #   코너 후 스핀/요 복귀 실패 → ↑ (단, w_omega 와 같이)
-  #   일찍 꺾음/조기 조향 → ↓
-  w_dpsi: 14.9547        ### HJ : 강제 baseline reset.
-
-  # [Progress reward] MPCC 의 핵심: stage cost 에 -w_progress * vx 추가.
-  # 즉 "vx 크게 갖는 게 이득" → optimizer 가 자연스레 가속. friction circle
-  # 이 코너에서 자동 brake 역할.
-  #   ↑ 공격적 주행. friction limit 까지 밀어붙임. 스핀 위험.
-  #   ↓ 보수적. 느리게 감. w_d/w_dpsi 와의 균형으로 소극적 주행.
-  # 증상 매핑:
-  #   직진/코너 탈출에서 가속 부족 → ↑
-  #   코너 진입이 너무 빨라 스핀 → ↓
-  # 권장: 1.0 ~ 5.0
-  w_progress: 0.81    ### HJ : 강제 baseline reset.
-                          # iter20: 1.0 → 2.0 | HJ: 다양 → 1.0
-
-  # [Terminal progress reward] terminal cost 에 -w_progress_e * s.
-  # horizon 끝 시점에 s 가 최대가 되도록 유도 (먼 미래까지 달려나가게).
-  #   ↑ horizon 끝 진행 강조. 더 공격적 looking-ahead.
-  #   ↓ terminal 무관심. 진동 가능.
-  # 권장: 10.0 ~ 50.0 (stage 의 ~10x 가 일반적).
-  w_progress_e:     3.0    # iter8: 10 → 3. horizon 끝 raceline 복귀 못 하던 이슈
-                           # (stage0/end 둘 다 0.7m 괴리) 해결 목적.
-
-  # [Legacy] w_vx — MPCC 에선 사용 안 함 (vx_ref tracking 제거). 남겨만 둠.
-  w_vx:             0.0
-
-  # [Lateral velocity slip] vy 페널티.
-  #   ↑ 슬립 억제. 코너링 시 steady turn 선호. 공격성↓.
-  #   ↓ 슬립 허용. 드리프트-like 공격 코너링 가능. 제어성↓.
-  # 권장: 0.3~1.0.
-  w_vy:             0.3
-
-  # [Yaw rate] omega 페널티.
-  #   ↑ 요 회전 억제 = 회전 damping. 스핀 방지, but turn-in 둔해짐.
-  #   ↓ 회전 자유. 민첩. 스핀 위험.
-  # 증상 매핑:
-  #   스핀/요 폭주 → ↑
-  #   코너 진입 둔함 → ↓
-  w_omega:          2.0
-
-  # [Steering angle] 절대 steer 크기 페널티 (steering-centering).
-  #   ↑ 조향을 0 근처로 유지. 직진 안정. 코너 공격성↓.
-  #   ↓ 큰 조향 자유.
-  # 권장: 0.1~1.0.
-  w_steer:          0.3
-
-  # [Steering rate] Δδ/Δt 페널티. 조향 변화 smoothness.
-  #   ↑ 조향이 매끄럽게. 스핀/jerk 방지. 하지만 급한 코너 대응 느림.
-  #   ↓ 조향이 급격히 변할 수 있음. 민첩 but jerky.
-  # 증상 매핑:
-  #   조향 saturation/떨림 → ↑
-  #   조향 반응 느려 벽 충돌 → ↓
-  w_u_steer_rate:   3.0
-
-  # [Longitudinal accel] a_x 페널티. 감속/가속 smoothness.
-  #   ↑ 급 가감속 억제. smooth 한 속도 프로파일.
-  #   ↓ 공격적 브레이킹/가속 허용.
-  w_u_accel:        0.3
-
-  # [Terminal cost scale] horizon 끝 stage 의 cost 배율 (W_e = scale * W).
-  #   ↑ horizon 끝에 더 strong 하게 기준선/heading 맞추려 함. 안정성↑.
-  #   ↓ terminal 무관심. 진동 가능.
-  # 권장: 1.0~3.0.
-  w_terminal_scale: 0.557847    ### HJ : 강제 baseline reset.
-                          # 2.0 → 1.5 → 1.0 (rule 적용 push)
-
-  # ============================================================
-  # n_ref shift — centerline 추종 mode 에서 raceline outer-inner-outer 패턴 주입
-  # ============================================================
-  # MPCC는 n_ref 추종. 기본 0 (centerline 정중앙). raceline d_offset 을 n_ref 로
-  # 주입하면 차가 raceline shape 추종 → outer 사용. 데몬 튜닝 가능.
-  #   ↑ 더 적극적 outer-inner-outer (코너 wall 가까이)
-  #   ↓ 보수적 (centerline 가까이)
-  # 권장: 0.20 ~ 0.50.
-  n_ref_max_offset: 0.50
-
-  # ramp 단계 수 — 첫 N stage 동안 current_n → target 으로 부드러운 전환.
-  #   ↑ 부드럽지만 첫 단계에서 outer 활용 늦음
-  #   ↓ 빠른 outer 진입 but jerky 가능성
-  n_ref_blend_stages: 2
-
-  # n_ref shift 활성화 vx 임계값. 이 값 이상에서만 shift 작동.
-  #   ↑ 출발/저속 안정 but lap 동안 활성 시간↓
-  #   ↓ 더 일찍 활성 but 출발 시 lateral push 위험
+  N_horizon: 30
+  dt: 0.05
+  window_size: 200
+  w_d: 6
+  w_dpsi: 6.6
+  w_progress: 2.55
+  w_progress_e: 3.0
+  w_vx: 0.0
+  w_vy: 0.3
+  w_omega: 2.0
+  w_steer: 0.3
+  w_u_steer_rate: 3.0
+  w_u_accel: 0.3
+  w_terminal_scale: 1.0
+  n_ref_max_offset: 0
+  n_ref_blend_stages: 5.0
   n_ref_vx_threshold: 1.0
-
-  # ============================================================
-  # Limits — 차량 물리 한계 (hard constraints)
-  # ============================================================
-
-  # Steering 각 한계 (rad). SRX1: 0.4 rad ≈ 23°.
-  # 실제 스티어링 하드웨어/지오메트리 한계에 맞춰야 함. 임의 변경 X.
-  max_steer:        0.4
-
-  # Steering 각속도 한계 (rad/s).
-  #   ↑ 급 조향 권한 확대. 긴급 코너/회피 대응↑. 서보 부담↑.
-  #   ↓ 부드러운 조향 강제. 긴급 대응 부족 시 언더스티어.
-  # 권장: 2.0~4.0.
-  max_steer_rate:   3.0
-
-  # Longitudinal accel/decel 한계 (m/s²). 차량 파워트레인/브레이크 한계.
-  max_accel:        3.0
-  max_decel:       -3.0
-
-  # Velocity 한계.
-  #   v_min: 반드시 0.0. v_min>0 이면 정지→출발 시 1 step 내 v_min 도달 불가
-  #     (Δv_max = max_accel*dt = 0.15 m/s) → QP infeasible → MINSTEP 루프.
-  #     저속 singular 회피는 w_vx 상향 + vehicle_model vx floor 로 대응.
-  #   v_max: 주행 상한. 원래 6.0 → 부하 테스트용 12.0 으로 개방.
-  v_min:            0.0
-  v_max: 3.61       ### HJ : 강제 baseline reset. 데몬은 4.0 에서 다시 시작.
-
-  # ============================================================
-  # Friction — 노면 마찰 관련
-  # ============================================================
-
-  # 기본 μ (mu_source=static 일 때 OCP 에 주입되는 값).
-  # 실노면 기준. 드라이: 0.9~1.0, 미끄러움: 0.3~0.6.
-  mu_default:       0.85   # iter15: sim 과 매칭 복원. v_max 만 raceline 에 맞게.
-
-  # vx_ref 에 곱하는 배수. raceline vx 전체를 스케일.
-  #   ↑ 전체적으로 더 빠르게 (테스트/성능 평가용).
-  #   ↓ 보수적 주행.
-  # 원본 1.6 → 1.3 → 코너 진입 속도 완화용.
-  speed_boost:      1.0
-
-  # μ 스케일 지수 (exp). 노면 grip 에 따라 vx_ref 재조정 정도.
-  #   0: μ 변화 무시 (고정 vx_ref 사용)
-  #   >0: grippy 노면에서 더 빠르게 / 미끄러움에서 느리게 자동조정.
-  # 현재 0 (OFF) — GP residual 이 dynamics 에서 흡수.
-  mu_scale_exp:     0.0
-
-  # μ margin 계수. friction-circle 여유분 관련. 튜닝 불필요 (default 2.0).
-  mu_margin_k:      2.0
-
-  # Friction circle 제약 ON/OFF (soft nonlinear).
-  #   true: F_front² ≤ (μ·margin·N_f)² 등으로 tire saturation 제약.
-  #         현실적이지만 solver 부담↑.
-  #   false: 제약 없음. 비현실적 코너 명령 가능.
-  friction_circle:  true
-
-  # Friction circle 여유 (0~1). (μ·margin·Nz) 의 허용 ratio.
-  #   ↓ 안전 (더 일찍 saturation 취급).
-  #   ↑ tire 최대 활용. 위험.
-  friction_margin:  0.95   # ### KD iter1: 0.75 → 0.95. hairpin 한계점 (95%) 까지
-                          #   plan 가능해야 통과. (upenn_mpc kd 검증 동일 논리.)
-
-  # Friction 제약 위반 시 slack penalty. 너무 낮으면 제약 무력화.
-  friction_slack_penalty: 1000.0
-
-  # ============================================================
-  # μ source — 마찰계수를 어디서 받을지
-  # ============================================================
-  # static       : mu_default 고정
-  # ground_truth : /mu_ground_truth → /upenn_mpc/mu_estimate relay (sanity check)
-  # gp           : base μ = mu_default 유지. GP residual(Δvx,Δvy,Δω) 를
-  #                OCP model 에 additive 주입 → 마찰 변화를 online 학습.
-  mu_source:        gp     # iter28: centerline 6랩 안정 → GP 학습 데이터 확보 가능.
-                           # 모델 mismatch (Pacejka vs sim linear tire) 보정 시도.
+  max_steer: 0.4
+  max_steer_rate: 3.0
+  max_accel: 3.0
+  max_decel: -3.0
+  v_min: 0.0
+  v_max: 3.249
+  mu_default: 0.85
+  speed_boost: 1.0
+  mu_scale_exp: 0.0
+  mu_margin_k: 2.0
+  friction_circle: true
+  friction_margin: 0.85
+  friction_slack_penalty: 200.0
+  mu_source: gp
   mu_estimate_topic: /upenn_mpc/mu_estimate
-
-  # ============================================================
-  # GP residual learner (UPenn-style online, arxiv 2303.13694)
-  # ============================================================
-  # Inputs (6D):  vx, vy, omega, delta, a_cmd, delta_rate
-  # Outputs (3D): residual on (dvx/dt, dvy/dt, domega/dt) over Pacejka base.
-  # Trainer: lap-end GPyTorch BatchIndependentMultitaskGP (ExactGP, RBF+ARD).
-  # Publisher: 50Hz eval → /upenn_mpc/residual (Float32MultiArray).
-  # MPC: residual 을 N+1 stages 에 broadcast (Phase 1, horizon 내 constant).
   gp:
-    # 학습 모델 저장 경로. 재실행 시 load.
-    model_path:        /tmp/upenn_mpc_models/latest.pth
-    # 학습 데이터 rolling FIFO 크기. 대략 5 lap 정도 커버.
-    #   ↑ 더 많은 패치 포함 가능. 학습 시간↑.
-    #   ↓ 최신 데이터에만 집중.
-    buffer_size:       10000
-    # Lap-end 1 회 학습 epoch 수. GPyTorch ARD 에서 소요 시간 균형.
-    train_epochs:      100
-    # 학습률.
-    train_lr:          0.05
-    # 학습 시작 최소 샘플 수. 미달이면 학습 skip.
+    model_path: /tmp/upenn_mpc_models/latest.pth
+    buffer_size: 10000
+    train_epochs: 100
+    train_lr: 0.05
     train_min_samples: 400
-    # 학습 당 max 샘플 수. 7D ARD 에서 O(N³·D) 방지.
     train_max_samples: 700
-    # Outlier 제거 quantile (0~1). 1.0 = OFF.
-    #   낮출수록 꼬리 제거 강함. icy 잔차도 cutoff 될 수 있어 주의.
-    outlier_quantile:  1.0
-    # Lap 시작 skip (초). 초기 warmup 구간 데이터 제외.
-    skip_first_sec:    3.0
-    # Residual clip (Δvx, Δvy, Δω) 상한. 이상치 방지.
-    residual_clip:     [10.0, 5.0, 12.0]
-    # Stagewise residual 사용 (Phase 2). 현재 false (Phase 1: 전 horizon constant).
-    enable_stagewise:  false
-    # Residual 주입 ON/OFF. 디버깅 시 false 로 끄면 pure Pacejka 비교 가능.
-    residual_enable:   true  # iter28: GP residual 활성
-    # PyTorch thread 수. 너무 크면 ROS 다른 노드와 경합.
+    outlier_quantile: 1.0
+    skip_first_sec: 3.0
+    residual_clip:
+    - 10.0
+    - 5.0
+    - 12.0
+    enable_stagewise: false
+    residual_enable: true
     torch_num_threads: 2
-
-  # ============================================================
-  # μ patches (2D sim 다중 노면 시각화 + ground truth)
-  # ============================================================
-  # 맵별 yaml path. 빈 값 = 전구간 mu_default 균일.
-  mu_patches_file:  ""
-
-  # ============================================================
-  # Node 동작
-  # ============================================================
-
-  # 제어 루프 주기 (Hz). dt 와 보통 일치 (50Hz = dt 0.02) 또는 배수.
-  loop_rate_hz:     50
-
-  # Test 모드 (true: drive cmd = 0 고정. 로직만 돌림).
-  test_mode:        false
-
-  # 노드 기동 후 drive 시작까지 대기 시간 (s). TF/센서 안정화용.
-  #   ↓ 빠르게 출발. 센서 준비 덜 됐을 수 있음.
-  #   ↑ 안전 대기.
-  startup_delay_s:  7.0
-
-  # Warmup (초기 정지 → 출발 시 kick). 현재는 사실상 비활성.
-  warmup_vx_min:    0.02    # 이 속도 이하면 warmup 발동 (거의 정지)
-  warmup_speed_cmd: 2.0     # warmup 시 보낼 speed cmd
-  warmup_exit_vx:   0.05    # 이 속도 초과하면 warmup 종료 (영구 비활성)
-
-  # Teleport 감지 threshold (m). tick 간 xy 점프가 이 값 초과하면 reset.
-  # Simulator respawn / localization jump 대응.
+  mu_patches_file: ''
+  loop_rate_hz: 50
+  test_mode: false
+  startup_delay_s: 1.0
+  warmup_vx_min: 0.02
+  warmup_speed_cmd: 2.0
+  warmup_exit_vx: 0.05
   reset_jump_thres_m: 1.0
-
-  # Solver status != 0 이 이 tick 수 연속되면 cold-start rescue.
   stuck_status_thres: 5
-
-  # acados C-codegen 디렉토리. 임시 경로 OK.
-  codegen_dir:      /tmp/upenn_mpcc_c_generated
-
-  # ============================================================
-  # Line source — MPC 추종 기준선 (launch 에서 line:= arg 로 override)
-  # ============================================================
-  # raceline   : 최적선 (corner-cut). 가장 빠르지만 공격적.
-  # centerline : 정중앙. 보수적. raceline 이 내측 벽 찍을 때 fallback.
-  # 주: centerline 모드는 raceline 캐시에서 nearest-xy 로 vx 주입받아 사용.
-  line_source:      raceline
+  codegen_dir: /tmp/upenn_mpcc_c_generated
+  line_source: raceline
