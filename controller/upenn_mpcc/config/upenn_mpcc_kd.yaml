@@ -50,7 +50,7 @@ upenn_mpcc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 4.675       ### HJ : 데몬 누적 → 5.66 까지 도달했다 차 spawn-stuck 사이클 →
+  w_d: 3.97375       ### HJ : 데몬 누적 → 5.66 까지 도달했다 차 spawn-stuck 사이클 →
                           ###       원복. 데몬은 baseline 5.0 에서 다시 시작.
                           # iter24: 6 → 5 (best)
 
@@ -61,7 +61,7 @@ upenn_mpcc:
   #   코너 못 돌고 직진 → ↑ (적극 turn-in)
   #   코너 후 스핀/요 복귀 실패 → ↑ (단, w_omega 와 같이)
   #   일찍 꺾음/조기 조향 → ↓
-  w_dpsi: 7.392    ### HJ : 데몬 누적 (11.6, 30) clamp 천장 도달 → 원복.
+  w_dpsi: 8.8704    ### HJ : 데몬 누적 (11.6, 30) clamp 천장 도달 → 원복.
 
   # [Progress reward] MPCC 의 핵심: stage cost 에 -w_progress * vx 추가.
   # 즉 "vx 크게 갖는 게 이득" → optimizer 가 자연스레 가속. friction circle
@@ -126,7 +126,7 @@ upenn_mpcc:
   #   ↑ horizon 끝에 더 strong 하게 기준선/heading 맞추려 함. 안정성↑.
   #   ↓ terminal 무관심. 진동 가능.
   # 권장: 1.0~3.0.
-  w_terminal_scale: 0.8464   ### HJ : 데몬 누적 0.716 → baseline 1.0 원복. (1.5 was earlier
+  w_terminal_scale: 0.778688   ### HJ : 데몬 누적 0.716 → baseline 1.0 원복. (1.5 was earlier
                           ###       trip 17→39s) → 더 push. 1.0 으로 inner cut
                           ###       남은 코너 (s=72) 도 잡힘 시도.
                           # 2.0 → 1.5 → 1.0 (rule 적용 push)
