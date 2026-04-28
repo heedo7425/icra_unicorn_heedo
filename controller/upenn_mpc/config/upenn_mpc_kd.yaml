@@ -46,7 +46,7 @@ upenn_mpc:
   # 증상 매핑:
   #   바깥으로 도는 언더스티어 → ↓ (안쪽 cut 허용)
   #   기준선 못 따라가 벽 충돌 → ↑
-  w_d: 4.32       ### HJ : 6.0 시도 → 효과 미미 (충돌 1→2). raceline
+  w_d: 5.184       ### HJ : 6.0 시도 → 효과 미미 (충돌 1→2). raceline
                               ###       자체가 wall 너무 가까움이 진짜 원인.
                               ###       baseline 으로 원복하고 line_source=centerline 으로 시도.
                               # iter2: 1.5 → 3.0 (raceline 강제 추종, inner-cut 억제)
