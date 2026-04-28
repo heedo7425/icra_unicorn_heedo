@@ -62,7 +62,7 @@ upenn_mpcc:
   #   코너 못 돌고 직진 → ↑ (적극 turn-in)
   #   코너 후 스핀/요 복귀 실패 → ↑ (단, w_omega 와 같이)
   #   일찍 꺾음/조기 조향 → ↓
-  w_dpsi: 10.3852   # iter27: 8 → 5.5 복귀 (iter22 동등 → 5.5 단순).
+  w_dpsi: 9.27252   # iter27: 8 → 5.5 복귀 (iter22 동등 → 5.5 단순).
 
   # [Progress reward] MPCC 의 핵심: stage cost 에 -w_progress * vx 추가.
   # 즉 "vx 크게 갖는 게 이득" → optimizer 가 자연스레 가속. friction circle
