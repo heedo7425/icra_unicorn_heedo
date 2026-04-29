@@ -13,7 +13,7 @@ mpcc:
   loop_rate_hz:     50.0
 
   # ---- Limits ----
-  v_max: 2.85
+  v_max:            3.0
   v_min:            0.0
   max_steer:        0.4
   max_steer_rate:   3.0
@@ -40,7 +40,7 @@ mpcc:
   qL_term:          1.0
 
   # ---- Track soft slack ----
-  track_slack_penalty: 1200
+  track_slack_penalty: 1000.0
 
   # ---- Bound inset (car half-width, geometric) ----
   bound_inset:      0.10
