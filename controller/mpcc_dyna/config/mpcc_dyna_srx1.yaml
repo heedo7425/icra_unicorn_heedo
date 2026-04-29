@@ -1,0 +1,73 @@
+# ============================================================
+# mpcc_dyna — Dynamic single-track + Pacejka MPCC (Phase 2A: dynamic dynamics,
+#              no friction ellipse 아직). 친션 ellipse 는 Phase 2B 에서 추가.
+# state (8): [X, Y, psi, vx, vy, omega, delta, theta]
+# input (3): [u_ddelta, u_a, vs]
+# residual (11): [eC, eL, dpsi, delta, u_ddelta, u_a,
+#                 vs_target-vs, v_target-vx, vs-vx, vy, omega]
+# constraints: track inner/outer half-space (soft slack), vx/δ box, input box.
+# ============================================================
+mpcc_dyna:
+  # ---- Horizon / dt ----
+  N_horizon:        40
+  dt:               0.05
+  loop_rate_hz:     50.0
+
+  # ---- Limits ----
+  v_max: 3.15
+  v_min:            0.0
+  max_steer:        0.4
+  max_steer_rate:   3.0
+  max_accel:        3.0
+  max_decel:       -3.0
+  vs_min:           0.0
+  vs_max:           4.0      # v_max + 33% 여유
+  vs_target:        3.0      # = v_max (vs 가 vx 따라가도록)
+
+  # ---- Cost weights ----
+  qC: 0.1       # contour (centerline 약하게 — racing line 자유)
+  qL:               100.0     # lag (qL >> qC)
+  qMu: 0.6       # heading
+  qVs:              0.5       # progress reward
+  qV: 0.216       # vx → v_max push
+  qVsv:             1.0       # vs ↔ vx 동기화 (drift 방지)
+  qVy:              0.5       # ### HJ Phase 2 : sideslip damping (실차 IMU noise 안정)
+  qOmega:           0.2       # ### HJ Phase 2 : yaw rate damping
+  qDelta:           1.0       # steering 절대값 (wari-gari 진정)
+  qDDelta:          5.0       # steering rate
+  qA:               0.5       # accel rate
+  qC_term: 9.2
+  qL_term: 0.92
+
+  # ---- Soft slack penalties (한계 침범 비용) ----
+  track_slack_penalty:    1000.0    # 트랙 경계
+  # ### HJ Phase 2B : friction ellipse 침범 페널티 (runtime tunable).
+  friction_slack_penalty: 200.0
+  # friction_margin: Pacejka peak F_y_max 의 사용 비율. codegen-baked.
+  # 0.85 = Pacejka 한계의 85% 까지만 안전 사용 (15% margin).
+  # 변경 시 노드 restart + /tmp/mpcc_dyna_codegen 삭제 필수.
+  friction_margin:        0.85
+
+  # ---- Bound inset (car half-width, geometric) ----
+  bound_inset:      0.10
+
+  # ---- Solver ----
+  levenberg_marquardt:    5.0     # Pacejka 비선형 + 실차 noise 대응
+  sim_method_num_steps:   5       # 실차 CPU 빠듯할 때 3 으로 줄이기 가능
+  qp_solver_iter_max:     200
+
+  # ---- Misc ----
+  startup_delay_s:        1.0
+  warm_start_max_drift:   1.5     # unused (drift-free anchoring 도입 후)
+  codegen_dir:            /tmp/mpcc_dyna_codegen
+
+  # ---- Vehicle parameter overrides ----
+  # 우선순위: defaults → /vehicle/* + /tire_*/* (rosparam) → 이 section.
+  # SIM 환경:
+  #   /vehicle/mu = 1.0 (vehicle_srx1.yaml; sim 차량 base mu)
+  #   sim 의 실효 grip = pbl_params.yaml 의 friction_coeff = 0.85
+  #   ⟹ OCP 모델 mu 를 0.85 로 강제 매칭 (sim physics 와 grip 동일).
+  # 실차 deploy 시: 이 section 을 지우거나 비우면 stack_master/config/<CAR>/<CAR>_pacejka.yaml
+  # 의 /vehicle/*, /tire_*/* 가 그대로 사용됨.
+  vehicle_overrides:
+    mu: 0.85
