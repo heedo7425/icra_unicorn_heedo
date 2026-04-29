@@ -14,7 +14,7 @@ mpcc_dyna:
   loop_rate_hz:     50.0
 
   # ---- Limits ----
-  v_max: 1.8574
+  v_max: 2.06378
   v_min:            0.0
   max_steer:        0.4
   max_steer_rate:   3.0
@@ -29,7 +29,7 @@ mpcc_dyna:
   qL:               100.0     # lag (qL >> qC)
   qMu: 1.49299       # heading
   qVs:              0.5       # progress reward
-  qV: 0.2539       # vx → v_max push
+  qV: 0.317375       # vx → v_max push
   qVsv:             1.0       # vs ↔ vx 동기화 (drift 방지)
   qVy:              0.5       # ### HJ Phase 2 : sideslip damping (실차 IMU noise 안정)
   qOmega:           0.2       # ### HJ Phase 2 : yaw rate damping
@@ -40,7 +40,7 @@ mpcc_dyna:
   qL_term: 0.606355
 
   # ---- Soft slack penalties (한계 침범 비용) ----
-  track_slack_penalty: 12839.2    # 트랙 경계
+  track_slack_penalty: 10699.3    # 트랙 경계
   # ### HJ Phase 2B : friction ellipse 침범 페널티 (runtime tunable).
   friction_slack_penalty: 200.0
   # friction_margin: Pacejka peak F_y_max 의 사용 비율. codegen-baked.
