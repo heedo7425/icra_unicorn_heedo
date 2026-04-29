@@ -14,7 +14,7 @@ mpcc_dyna:
   loop_rate_hz:     50.0
 
   # ---- Limits ----
-  v_max: 2.07934
+  v_max: 1.97537
   v_min:            0.0
   max_steer:        0.4
   max_steer_rate:   3.0
@@ -40,7 +40,7 @@ mpcc_dyna:
   qL_term: 0.778688
 
   # ---- Soft slack penalties (한계 침범 비용) ----
-  track_slack_penalty: 6191.74    # 트랙 경계
+  track_slack_penalty: 7430.08    # 트랙 경계
   # ### HJ Phase 2B : friction ellipse 침범 페널티 (runtime tunable).
   friction_slack_penalty: 200.0
   # friction_margin: Pacejka peak F_y_max 의 사용 비율. codegen-baked.
