@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<!--
+  mpcc_kine_sim.launch — minimal kinematic MPCC + f1tenth_simulator.
+
+  Usage:
+    roslaunch controller mpcc_kine_sim.launch                        # default map=f
+    roslaunch controller mpcc_kine_sim.launch map:=kd_0420_v1
+    roslaunch controller mpcc_kine_sim.launch rviz:=false
+-->
+<launch>
+  <arg name="racecar_version" default="SIM"/>
+  <arg name="map"             default="f"/>
+  <arg name="rviz"            default="true"/>
+  <arg name="vehicle_yaml"    default="/shared_vehicle/vehicle_srx1.yaml"/>
+  <!-- 단일 yaml (mpcc_kine_srx1.yaml) 사용. -->
+  <arg name="mpc_config" default="mpcc_kine_srx1"/>
+
+  <!-- Vehicle params (kinematic uses only l_wb) -->
+  <rosparam command="load" file="$(arg vehicle_yaml)" ns=""/>
+
+  <!-- Base sim -->
+  <include file="$(find stack_master)/launch/base_system.launch">
+    <arg name="racecar_version" value="$(arg racecar_version)"/>
+    <arg name="map"             value="$(arg map)"/>
+    <arg name="sim"             value="true"/>
+  </include>
+
+  <!-- IMU relay -->
+  <node name="imu_name_relay" pkg="topic_tools" type="relay"
+        args="/vesc/sensors/imu/raw /livox/imu"/>
+
+  <!-- Spawn on wpnt[0] + stuck supervisor -->
+  <node pkg="controller" type="spawn_on_waypoint.py" name="spawn_on_waypoint" output="screen">
+    <param name="~supervise" value="true"/>
+    <param name="~stuck_sec" value="1.5"/>
+  </node>
+
+  <!-- sim 환경 lap_analyser unblock -->
+  <node pkg="rostopic" type="rostopic" name="state_marker_dummy"
+        args="pub -l /state_marker visualization_msgs/Marker
+              '{header: {frame_id: map},
+                pose: {position: {x: 0, y: 0, z: 0}, orientation: {w: 1}}}' "/>
+  <node pkg="rostopic" type="rostopic" name="lap_analyser_autostart"
+        args="pub -l /lap_analyser/start std_msgs/Empty '{}' " launch-prefix="bash -c 'sleep 3; $0 $@'"/>
+
+  <!-- MPCC params -->
+  <rosparam command="load"
+            file="$(find controller)/mpcc_kine/config/$(arg mpc_config).yaml"
+            ns=""/>
+
+  <!-- MPCC controller -->
+  <node pkg="controller" type="mpcc_kine_node.py" name="mpcc_kine_controller" output="screen">
+    <param name="~drive_topic" value="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
+  </node>
+
+  <!-- RViz -->
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_mpcc_kine"
+        args="-d $(find controller)/mpcc_kine/rviz/mpcc_kine.rviz"/>
+</launch>

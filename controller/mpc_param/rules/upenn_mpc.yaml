@@ -62,10 +62,29 @@ rules:
     severity: HIGH
     when:
       all:
-        - "lap['max_abs_n'] > 0.55"
+        ### HJ : 0.55 → 0.85. centerline 추종 시 raceline frenet n 이 자연스레
+        ###       0.5+ 까지 가는데 false positive 로 매 lap 발화. 0.85 면 진짜
+        ###       이탈 위험 시점만 잡힘.
+        - "lap['max_abs_n'] > 0.85"
     actions:
       - {key: w_d, op: "*", factor: 1.20, clamp: [0.2, 10]}
     reason: "트랙 이탈 직전 — 기준선 추종 가중 회복"
+
+  ### HJ : 충돌 감지 룰 (P1). wall_touch 가 발생하면 즉시 SAFETY 액션.
+  ###       데몬은 별도로 즉시 rollback 도 수행 (tuner._handle_lap 내).
+  ###       이 rule 은 rollback 후에도 반복 충돌 시 아예 보수 모드 진입.
+  - name: crash_detected
+    priority: L0_safety
+    severity: HIGH
+    when:
+      all:
+        - "lap['crash_count'] > 0"
+    actions:
+      - {key: w_d, op: "*", factor: 1.10, clamp: [0.2, 10]}
+      - {key: friction_margin, op: "*", factor: 0.95, clamp: [0.3, 1.0]}
+      - {key: speed_boost, op: "*", factor: 0.90, clamp: [0.5, 1.5]}
+      - {key: v_max, op: "*", factor: 0.95, clamp: [2.0, 9.0]}   ### HJ : v_max 후퇴
+    reason: "wall touch 감지 — 추종 ↑ + 마찰 마진 ↓ + 속도 ↓ (보수 모드)"
 
   # ============================================================
   # L1 PATH
@@ -148,12 +167,34 @@ rules:
     when:
       all:
         - "lap['max_ay_usage'] < 0.70"
-        - "lap['mean_abs_n'] < 0.15"
+        ### HJ : 0.15 → 0.30 완화 (centerline 추종 시 자연스러운 n 변동 허용)
+        - "lap['mean_abs_n'] < 0.30"
         - "lap['infeasible_count'] == 0"
+        ### HJ : 충돌 0 일 때만 push (안전 보장)
+        - "lap['crash_count'] == 0"
     actions:
       - {key: speed_boost, op: "*", factor: 1.05, clamp: [0.5, 1.5]}
       - {key: w_vx, op: "*", factor: 1.08, clamp: [0.2, 10]}
-    reason: "그립 여유 + 추종 양호 → 속도 공격성 ↑"
+      - {key: v_max, op: "*", factor: 1.05, clamp: [2.0, 9.0]}   ### HJ : v_max push
+    reason: "그립 여유 + 추종 양호 + 충돌 0 → 속도 공격성 ↑ + v_max↑"
+
+  ### HJ : Lap time regression (P2). best 대비 5% 이상 느림 + 충돌 0 + 추종 OK
+  ###       → speed_boost ↑ + w_d ↓ (path 좀 풀어 코너 cut 허용).
+  ###       baseline 대비 회복 또는 새 best 추구.
+  ### HJ : threshold 1.03 → 1.10. 매 lap 발화 + 다중 키 push 누적 → unstable 관찰.
+  - name: lap_time_regression
+    priority: L3_speed
+    severity: MED
+    when:
+      all:
+        - "lap['crash_count'] == 0"
+        - "lap['infeasible_count'] == 0"
+        - "lap.get('best_lap_time', 0) > 0"
+        - "lap['lap_time'] > lap['best_lap_time'] * 1.10"
+    actions:
+      - {key: speed_boost, op: "*", factor: 1.03, clamp: [0.5, 1.5]}   ### HJ : 1.05 → 1.03
+      - {key: v_max, op: "*", factor: 1.02, clamp: [2.0, 9.0]}         ### HJ : 1.03 → 1.02
+    reason: "lap_time best 대비 10%+ 느림 + 안전 OK → speed↑ + v_max↑ (보수)"
 
   - name: speed_too_aggressive
     priority: L3_speed
@@ -164,6 +205,7 @@ rules:
     actions:
       - {key: speed_boost, op: "*", factor: 0.92, clamp: [0.5, 1.5]}
       - {key: w_vx, op: "*", factor: 0.92, clamp: [0.2, 10]}
+      - {key: v_max, op: "*", factor: 0.95, clamp: [2.0, 9.0]}   ### HJ : v_max 후퇴
     reason: "friction circle 침범 — 속도 페널티 완화 + boost ↓"
 
   # ============================================================

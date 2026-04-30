@@ -150,29 +150,41 @@ def build_tracking_ocp_upenn(
 
     ocp.constraints.x0 = np.zeros(NX)
 
-    # Friction circle (soft nonlinear).
-    m_val = float(vp["m"])
-    margin = float(mpc_cfg.get("friction_margin", 0.95))
-    h_front = model.fyf_expr ** 2 - (mu * margin * model.nf_expr) ** 2
-    h_rear = (m_val * u_ax) ** 2 + model.fyr_expr ** 2 - (mu * margin * model.nr_expr) ** 2
-    ocp.model.con_h_expr = ca.vertcat(h_front, h_rear)
-    ocp.constraints.lh = np.array([-1e12, -1e12], dtype=np.float64)
-    ocp.constraints.uh = np.array([0.0, 0.0], dtype=np.float64)
-    ocp.constraints.idxsh = np.arange(2)
-    slack_penalty = float(mpc_cfg.get("friction_slack_penalty", 1e3))
-    ocp.cost.zl = slack_penalty * np.ones(2)
-    ocp.cost.zu = slack_penalty * np.ones(2)
-    ocp.cost.Zl = slack_penalty * np.ones(2)
-    ocp.cost.Zu = slack_penalty * np.ones(2)
+    # Friction circle (soft nonlinear) — yaml `friction_circle` 로 toggle.
+    ### HJ : friction_circle 자체를 NaN 진단용으로 끌 수 있게 conditional.
+    ###       yaml 의 `friction_circle: false` 면 constraint 미생성.
+    fric_circle_enable = bool(mpc_cfg.get("friction_circle", True))
+    if fric_circle_enable:
+        m_val = float(vp["m"])
+        margin = float(mpc_cfg.get("friction_margin", 0.95))
+        h_front = model.fyf_expr ** 2 - (mu * margin * model.nf_expr) ** 2
+        h_rear = (m_val * u_ax) ** 2 + model.fyr_expr ** 2 - (mu * margin * model.nr_expr) ** 2
+        ocp.model.con_h_expr = ca.vertcat(h_front, h_rear)
+        ocp.constraints.lh = np.array([-1e12, -1e12], dtype=np.float64)
+        ocp.constraints.uh = np.array([0.0, 0.0], dtype=np.float64)
+        ocp.constraints.idxsh = np.arange(2)
+        slack_penalty = float(mpc_cfg.get("friction_slack_penalty", 1e3))
+        ocp.cost.zl = slack_penalty * np.ones(2)
+        ocp.cost.zu = slack_penalty * np.ones(2)
+        ocp.cost.Zl = slack_penalty * np.ones(2)
+        ocp.cost.Zu = slack_penalty * np.ones(2)
 
     # Solver options.
     ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.integrator_type = "ERK"
+    ### HJ : ERK 적분 sub-step 수. default=1 (dt=0.05 한 번에 적분).
+    ###       sim 은 dt=0.01 로 5 sub-step 적분 → MPC 와 정밀도 mismatch (가설:
+    ###       이게 ratio 0.83 dynamic understeer gap 17% 의 원인).
+    ###       5 로 늘려 dt_internal=0.01 매칭. solve time 약간 ↑.
+    ocp.solver_options.sim_method_num_steps = 5
     ocp.solver_options.nlp_solver_type = "SQP_RTI"
+    ### HJ : 1 → 3 시도했으나 RESCUE 24→31 로 늘어남 → 1 로 원복.
     ocp.solver_options.nlp_solver_max_iter = 1
     ocp.solver_options.qp_solver_iter_max = 200
     ocp.solver_options.qp_solver_warm_start = 2
+    ### HJ : 0.1 시도했으나 QP_FAILED 32% 폭증 → 0.01 원복. LM 너무 강하면 SQP
+    ###       step 왜곡되어 resulting QP 풀기 어려움.
     ocp.solver_options.levenberg_marquardt = 0.01
     ocp.solver_options.regularize_method = "CONVEXIFY"
     ocp.solver_options.print_level = 0

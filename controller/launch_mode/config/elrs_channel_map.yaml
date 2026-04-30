@@ -1,0 +1,27 @@
+# =====================================================================
+# ELRS / Joy channel reference for launch_mode.
+#
+# This file is reference-only. Actual values live in launch_mode.yaml
+# under `auto_arm_button`, `launch_arm_button`, `go_button`, etc.
+#
+# The elrs_joy_node publishes /joy with mappings from
+# stack_master/config/<CAR>/devices/joy_teleop.yaml. Verify your
+# transmitter's switch -> joy index mapping with:
+#     rostopic echo /joy
+# while flipping each switch.
+# =====================================================================
+
+# Defaults shipped with launch_mode.yaml
+defaults:
+  auto_arm_button:    5      # right bumper (already used by joy_teleop autonomous_control)
+  launch_arm_button:  7      # 2-position toggle on transmitter
+  go_button:          6      # momentary push button on transmitter
+
+# If your transmitter exposes the launch_arm/go as analog axes instead
+# of buttons, set the *_axis fields in launch_mode.yaml and leave
+# *_button at -1.
+example_axis_setup:
+  launch_arm_axis:        4    # axis index in /joy.axes
+  launch_arm_threshold:   0.5  # axis > threshold => armed
+  go_axis:                5
+  go_threshold:           0.5

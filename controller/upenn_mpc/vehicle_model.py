@@ -109,7 +109,10 @@ def build_dynamic_bicycle_model(vp: dict) -> "AcadosModel":
     # ---- Slip angles (with low-speed regularization) ----
     # Pacejka slip at vx≈0 is numerically pathological. vx_reg floors the denominator
     # so atan2 remains well-conditioned; HPIPM solver needs this for convergence.
-    eps_vx = 1.5  # [m/s] — effective "pseudo-speed" minimum inside tire model
+    ### HJ : 1.5 → 0.5. v_max=2.4 cap 영역에서 vx_reg 부풀림이 18~80%였음.
+    ###       0.5 로 낮추면 v=2.4 에서 2% 이하로 줄고, v=0 singularity 는 여전히 회피.
+    ###       2D sim/실차 모두 코너에서 plan-실행 갭(slip 과소평가) 의심 케이스에 적용.
+    eps_vx = 0.5  # [m/s] — effective "pseudo-speed" minimum inside tire model
     vx_reg = ca.sqrt(vx * vx + eps_vx * eps_vx)
     # Standard single-track slip-angle convention (Liniger 2015, Rajamani):
     #   α_f = δ − atan((v_y + l_f·ω)/v_x)

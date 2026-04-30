@@ -793,12 +793,29 @@ class EkfMpcNode:
         vx_cmd = float(np.clip(x0[3] + u_ax * self.dt, 0.0, self.v_max))
 
         # Horizon xy in world frame.
+        ### HJ : 이전 버전 — `idx = min(k, M-1)` 로 stage k 를 wpnts[k] 에 매핑.
+        ###       OCP build_preview 는 `idx_k = int(k * vx*dt / ds_med)` 사용 →
+        ###       v=2.4, ds=0.1, dt=0.05 에서 stage 20 → OCP idx=24, publish idx=20
+        ###       → publish marker 가 진짜 plan 보다 4 wpnt (~0.4m) 뒤늦게 그려짐.
+        ###       fix: solver state 의 s_k (차 기준 frenet s) 를 wpnts s 와 매칭.
+        ###       wrap-around 안전 처리.
         M = wpnts.shape[0]
         traj = np.empty((self.N + 1, 2))
+        s0_abs = float(wpnts[0, C_S])
+        TL = float(self.track_length) if self.track_length and self.track_length > 0 else None
         for k in range(self.N + 1):
             xk = self.solver.get(k, "x")
+            s_k = float(xk[0])  # frenet s (차 기준 진행 거리)
             n_k = float(xk[1])
-            idx = min(k, M - 1)
+            target_s = s0_abs + s_k
+            if TL is not None:
+                target_s = target_s % TL
+                diffs = np.abs(wpnts[:, C_S] - target_s)
+                diffs = np.minimum(diffs, TL - diffs)
+            else:
+                diffs = np.abs(wpnts[:, C_S] - target_s)
+            idx = int(np.argmin(diffs))
+            idx = min(idx, M - 1)
             wx, wy, wpsi = wpnts[idx, C_X], wpnts[idx, C_Y], wpnts[idx, C_PSI]
             traj[k, 0] = wx - n_k * math.sin(wpsi)
             traj[k, 1] = wy + n_k * math.cos(wpsi)

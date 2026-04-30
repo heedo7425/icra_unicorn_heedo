@@ -15,13 +15,24 @@ import yaml
 
 
 # Priority order (low number = high priority).
+# ### HJ : 두 가지 hierarchy 동시 지원.
+# (a) Legacy 6-level (upenn_mpc / upenn_mpcc): safety → path → stability → speed
+#     → smoothness → terminal
+# (b) New 4-level (mpcc, control-engineering 표준): safety → stability → speed
+#     → smoothness  (path/terminal 흡수)
+# yaml 마다 자기 hierarchy 만 사용. 두 set 다 등록해 둬서 어떤 yaml 든 동작.
 PRIORITY_LEVELS = {
+    # legacy 6-level
     "L0_safety":     0,
     "L1_path":       1,
     "L2_stability":  2,
     "L3_speed":      3,
     "L4_smoothness": 4,
     "L5_terminal":   5,
+    # new 4-level (mpcc.yaml)
+    "L1_stability":  1,
+    "L2_speed":      2,
+    "L3_smoothness": 3,
 }
 
 SEVERITY_RANK = {"HIGH": 3, "MED": 2, "LOW": 1}

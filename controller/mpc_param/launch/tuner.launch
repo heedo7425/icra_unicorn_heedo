@@ -2,23 +2,50 @@
 <!--
   mpc_param tuner — sim 옆에서 자동 튜닝 데몬 실행.
   Prereq:
-    1) sim + upenn_mpc 노드 기동 (예: roslaunch controller upenn_mpc_sim.launch)
+    1) sim + MPC(C) 노드 기동
     2) lap_analyser 가 lap_data 토픽 발행 중
 
   Usage:
-    roslaunch controller tuner.launch
-    roslaunch controller tuner.launch yaml:=/path/to/upenn_mpc_kd.yaml
+    roslaunch controller tuner.launch                        # upenn_mpc + kd 맵
+    roslaunch controller tuner.launch target:=upenn_mpcc     # upenn_mpcc + kd 맵
+    roslaunch controller tuner.launch map:=f                 # f 맵
+    roslaunch controller tuner.launch yaml:=/path/to/x.yaml  # 수동 yaml 경로
+
+  ### HJ : target / map 만 주면 yaml + rules 자동 결정.
 -->
 <launch>
-  <arg name="target"     default="upenn_mpc"/>
-  <arg name="yaml"       default="$(find controller)/upenn_mpc/config/upenn_mpc_srx1.yaml"/>
-  <arg name="rules"      default="$(find controller)/mpc_param/rules/upenn_mpc.yaml"/>
+  <arg name="target"     default="upenn_mpc"
+       doc="upenn_mpc | upenn_mpcc | mpcc_kine | mpcc_dyna"/>
+  <arg name="map"        default="kd_0420_v1"
+       doc="맵 이름. yaml basename = {target}_{map_short} 형식 자동 매핑."/>
+
+  <!-- map_short: mpcc_kine / mpcc_dyna 는 단일 srx1.yaml 통일.
+       upenn_mpc, upenn_mpcc 는 kd / srx1 로 분리 유지. -->
+  <arg name="map_short"
+       default="$(eval 'srx1' if target.startswith('mpcc_') else ('kd' if map.startswith('kd') else 'srx1'))"/>
+
+  <!-- yaml / rules 자동 매핑. 수동 override 가능. -->
+  <arg name="yaml"       default="$(find controller)/$(arg target)/config/$(arg target)_$(arg map_short).yaml"/>
+  <arg name="rules"      default="$(find controller)/mpc_param/rules/$(arg target).yaml"/>
+
   <arg name="trail_csv"  default="$(find controller)/mpc_param/logs/tune_trail.csv"/>
   <arg name="lap_topic"  default="lap_data"/>
   <arg name="sectors"    default=""/>
   <arg name="warmup_laps" default="2"/>
   <arg name="rollback_threshold" default="0.03"/>
   <arg name="rollback_lambda"    default="0.5"/>
+  <!-- ### HJ : lap 못 돌고 stuck 일 때 timeout 후 synthetic failed-lap 발화.
+       30s → 90s. EMERGENCY setup 보수 lap 35s 도 watchdog 안 발화하게.
+       spawn-driven escalation 이 주력 (즉시 반응), watchdog 은 spawn 안 도는 stuck 보조. -->
+  <arg name="lap_watchdog_timeout_s" default="90.0"/>
+  <!-- ### HJ : 이 값보다 짧은 lap 은 artifact (spawn 등) 로 무시. -->
+  <arg name="min_real_lap_s" default="15.0"/>
+  <!-- ### HJ : Panic recovery — N watchdog 연속 시 last_good yaml 복원.
+       1→3 으로 환원. 단일 watchdog 으로 EMERGENCY 발화하면 정상 lap 도중
+       stuck 일 시 (긴 코너 통과 등) 즉시 baseline 흔들림. spawn-driven 은 즉시
+       반응 (count 2~3) 하므로 watchdog 은 백업으로 보수. -->
+  <arg name="panic_watchdog_threshold" default="3"/>
+  <arg name="panic_cooldown_laps" default="3"/>
 
   <node pkg="controller" type="tuner.py" name="mpc_param_tuner" output="screen"
         args="--target $(arg target)
@@ -28,5 +55,10 @@
               --lap-topic $(arg lap_topic)
               --warmup-laps $(arg warmup_laps)
               --rollback-threshold $(arg rollback_threshold)
-              --rollback-lambda $(arg rollback_lambda)"/>
+              --rollback-lambda $(arg rollback_lambda)">
+    <param name="~lap_watchdog_timeout_s" value="$(arg lap_watchdog_timeout_s)"/>
+    <param name="~min_real_lap_s" value="$(arg min_real_lap_s)"/>
+    <param name="~panic_watchdog_threshold" value="$(arg panic_watchdog_threshold)"/>
+    <param name="~panic_cooldown_laps" value="$(arg panic_cooldown_laps)"/>
+  </node>
 </launch>

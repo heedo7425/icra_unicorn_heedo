@@ -1,0 +1,30 @@
+# =====================================================================
+# Per-car VESC firmware limits (READ from VESC Tool, do not invent).
+#
+# This file is reference-only — it documents what each car's firmware is
+# set to. The launch_mode node reads i_firmware_cap from
+# launch_mode.yaml; this snippet helps you keep launch_mode.yaml in sync
+# with the actual VESC Tool config.
+#
+# Workflow:
+#   1. Connect VESC Tool to each car.
+#   2. Note the values below from "Motor Settings -> Current".
+#   3. Set launch_mode.yaml `i_firmware_cap` to motor_current_max for that car.
+#   4. Set launch_mode.yaml `i_launch_max` <= 0.95 * i_firmware_cap and
+#      tune via on-track sweep.
+# =====================================================================
+
+# Example (replace with your real numbers from VESC Tool)
+UNICORN1:
+  motor_current_max:    60.0   # [A]
+  abs_max_current:      80.0   # [A]
+  battery_current_max:  50.0   # [A]
+  notes: ""
+
+UNICORN2:
+  motor_current_max:    60.0
+  abs_max_current:      80.0
+  battery_current_max:  50.0
+  notes: ""
+
+# Add other cars (FIESTA1, FIESTA2, SRX1, SRX2, VIPER1, HOBAO ...) below.

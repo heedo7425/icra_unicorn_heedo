@@ -1,10 +1,15 @@
 # The distance between the front and
 # rear axle of the racecar
-wheelbase: 0.3302 # meters
+### HJ : sim 차량 동역학을 SRX1 sys ID 결과와 동기화 (sim ↔ 실차 거동 일치 목표).
+###       원본은 generic f1tenth defaults. SRX1_pacejka.yaml / SRX1_linear.yaml 기준.
+wheelbase: 0.307 # meters  ### HJ : 0.3302 → 0.307 (SRX1 l_wb)
 # width of racecar
 width: 0.2032 # meters
 
 # steering delay
+### HJ : buffer_length=1 검증 결과: cmd→actual lag 50→20ms 로 줄었지만
+###       plan-actual divergence 0.515→0.487m 거의 변화 없음. actuator lag 가
+###       root cause 아님 → 5 로 원복. 실차 servo lag 와 일관 유지.
 buffer_length: 5
 
 # Limits on the speed and steering angle
@@ -14,13 +19,15 @@ max_accel: 7.51 # meters/second^2
 max_decel: 8.26 # meters/second^2
 max_steering_vel: 3.2 # radians/second
 friction_coeff: 0.85 # - (complete estimate)  ### HJ : MPCC mu_tire 와 맞춤
-height_cg: 0.074 # m (roughly measured to be 3.25 in)
-l_cg2rear: 0.17145 # m (decently measured to be 6.75 in)
-l_cg2front: 0.15875 # m (decently measured to be 6.25 in)
-C_S_front: 4.718 #.79 # 1/rad ? (estimated weight/4)
-C_S_rear: 5.4562 #.79 # 1/rad ? (estimated weight/4)
-mass: 3.47 # kg (measured on car 'lidart')
-moment_inertia: .04712 # kg m^2 (estimated as a rectangle with width and height of car and evenly distributed mass, then shifted to account for center of mass location)
+height_cg: 0.014 # m  ### HJ : 0.074 → 0.014 (SRX1 h_cg)
+l_cg2rear: 0.145 # m  ### HJ : 0.17145 → 0.145 (SRX1 l_r)
+l_cg2front: 0.162 # m  ### HJ : 0.15875 → 0.162 (SRX1 l_f)
+### HJ : C_S 패치 후 sim 거동 악화 (1 lap 못 돔). 단위 불일치 의심으로 원복.
+###       기하학(l_wb, l_f, l_r, m, I_z)만 SRX1 동기화 유지.
+C_S_front: 4.718 # 1/rad ?  (원복: SRX1_linear 5.036 시 sim 발산)
+C_S_rear:  5.4562 # 1/rad ? (원복)
+mass: 3.54 # kg  ### HJ : 3.47 → 3.54 (SRX1 m)
+moment_inertia: 0.05797 # kg m^2  ### HJ : 0.04712 → 0.05797 (SRX1 I_z)
 
 
 # The rate at which the pose and the lidar publish

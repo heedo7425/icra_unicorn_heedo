@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<!--
+  Launch-mode current-based throttle override for race start.
+
+  Run alongside the regular controller (mu_ppc / upenn_mpc / mpcc_dyna).
+  This node only fires when:
+    1. autonomous arm button is held (right bumper, /joy buttons[5])
+    2. dedicated launch_arm RC channel is ON
+    3. vehicle is stationary
+    4. dedicated GO RC signal rising edge
+
+  The high_level mux must have an `input/launch` entry at higher priority
+  than `input/nav_1`. Add to high_level_mux.yaml of your CAR config.
+
+  Required topics produced by base_system / controller:
+    /joy
+    /car_state/odom
+    /car_state/odom_frenet
+    /vesc/odom
+    /vesc/sensors/core
+    /global_waypoints
+    /vesc/high_level/ackermann_cmd_mux/input/nav_1   (steer pass-through)
+
+  Example:
+    roslaunch controller launch_mode.launch racecar_version:=$CAR_NAME
+-->
+<launch>
+  <arg name="racecar_version" default="$(optenv CAR_NAME UNICORN2)"/>
+  <arg name="config" default="$(find controller)/launch_mode/config/launch_mode.yaml"/>
+
+  <node pkg="controller" type="launch_mode_node.py" name="launch_mode" output="screen">
+    <rosparam command="load" file="$(arg config)" subst_value="true"/>
+  </node>
+</launch>

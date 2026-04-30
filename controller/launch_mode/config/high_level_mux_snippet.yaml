@@ -1,0 +1,23 @@
+# =====================================================================
+# Mux entry to add (or paste) into:
+#   stack_master/config/<CAR>/devices/high_level_mux.yaml
+#
+# Add the `launch` entry with priority HIGHER than `nav_1` so the
+# launch ackermann (steer pass-through) overrides the regular controller
+# while LAUNCH is active. Throttle goes via /vesc/commands/motor/current
+# directly and bypasses the ackermann path entirely.
+#
+# DO NOT just copy this file verbatim — append the `launch` block under
+# the existing high_level_mux's `subscribers:` list and renumber as needed.
+# =====================================================================
+
+high_level_mux:
+  subscribers:
+    - name:        launch
+      topic:       /vesc/high_level/ackermann_cmd_mux/input/launch
+      timeout:     0.2
+      priority:    100        # MUST be greater than nav_1 priority
+      short_desc:  "Launch-mode steer pass-through (current-based throttle)"
+
+    # existing entries (nav_1 etc.) keep their priorities below 100
+    # ...

@@ -185,6 +185,8 @@ def compute_lap_metrics(snapshot: Dict[str, Tuple[np.ndarray, np.ndarray]],
         "valid": True,
         "samples": int(grid.size),
         "duration_s": float(grid[-1] - grid[0]),
+        ### HJ : crash_count 명시적 보장 (lap_event 에서 옴, default 0)
+        "crash_count": int(lap_event.get("crash_count", 0)),
         "mean_abs_n": _nan_safe(np.nanmean, np.abs(n)),
         "max_abs_n": _nan_safe(np.nanmax, np.abs(n)),
         "p95_abs_n": _nan_safe(np.nanpercentile, np.abs(n), 95),

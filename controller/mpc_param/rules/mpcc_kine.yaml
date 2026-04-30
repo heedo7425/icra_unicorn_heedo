@@ -1,0 +1,201 @@
+# rules/mpcc.yaml — Kinematic MPCC 용 룰베이스
+#
+# 사용자 의도: "빨리 안정적으로 가는 게 중요. centerline 추종 자체는 중요 X."
+# → MPCC 의 path tracking 은 어차피 cost 의 qC/qL 로 들어감.
+#   '추종 강화' 액션 (qC ↑) 은 racing line 자유도 깎으므로 기본적으로 회피.
+#   대신: 진동 잡고 (L1) → 속도 push (L2) → 입력 부드럽게 (L3) 가 우선순위.
+#
+# Cost (NLS, kinematic single-track):
+#   y = [eC, eL, dpsi, delta, u_ddelta, u_a, vs_target-vs, v_target-v]
+#   W = diag([qC, qL, qMu, qDelta, qDDelta, qA, qVs, qV])
+#
+# 우선순위 (4 단계, control hierarchy 표준):
+#   L0 SAFETY      — 벽/이탈 직전 / OCP 폭주 (즉시 보수)
+#   L1 STABILITY   — *진동 / 발산만*  (path tracking 룰 ❌)
+#   L2 SPEED       — push toward v_max + 코너 handling (빨리 가려고 corner 잘 풀기)
+#   L3 SMOOTHNESS  — 입력 chatter / terminal preview leak
+#
+# Suppression:
+#   L0 → suppress L1, L2, L3   (안전 보수 시 다른 액션 무시)
+#   L1 → suppress L2           (진동 안 잡히면 속도 ↑ 금지)
+#
+# Step bound: 한 lap 에 한 키 ±20%
+
+policy:
+  step_bound_per_key_per_lap: 0.20
+  suppression:
+    L0_safety:    [L1_stability, L2_speed, L3_smoothness]
+    L1_stability: [L2_speed]
+
+rules:
+  # ============================================================
+  # L0 SAFETY — 즉시 보수
+  # ============================================================
+  - name: safety_infeasible
+    priority: L0_safety
+    severity: HIGH
+    when:
+      all:
+        - "lap['infeasible_count'] > 5"
+    actions:
+      - {key: track_slack_penalty, op: "*", factor: 1.5,  clamp: [100, 50000]}
+      - {key: qDDelta,             op: "*", factor: 1.10, clamp: [0.01, 30]}
+    reason: "OCP infeasible — track slack penalty ↑ + steer rate 진정"
+
+  ### HJ : 사용자 의도 ("centerline 추종 안 중요, 빠르고 안정") 에 맞춰 threshold 완화.
+  ### 이전 0.85 는 racing line 의 자연스러운 wide cornering 도 false-positive 발화 →
+  ### v_max 깎임 → 다음 lap 느림 → rollback 무한 진동. 진짜 위험 신호 (충돌 / 매우
+  ### 큰 deviation) 일 때만 발화.
+  - name: safety_offtrack
+    priority: L0_safety
+    severity: HIGH
+    when:
+      any:
+        - "lap['max_abs_n'] > 1.5"           # 매우 큼 (벽 임박)
+        - "lap['mean_abs_n'] > 1.0 and lap['crash_count'] > 0"  # 지속적 wide + 실제 충돌
+    actions:
+      - {key: track_slack_penalty, op: "*", factor: 1.3,  clamp: [100, 50000]}
+      - {key: v_max,               op: "*", factor: 0.95, clamp: [1.0, 6.0]}
+    reason: "벽 임박 (n>1.5m) 또는 sustained wide + 충돌 — boundary 강화 + v_max ↓"
+
+  - name: crash_detected_light
+    priority: L0_safety
+    severity: HIGH
+    when:
+      all:
+        - "lap['crash_count'] > 0"
+        - "lap['crash_count'] <= 2"
+    actions:
+      - {key: track_slack_penalty, op: "*", factor: 1.3, clamp: [100, 50000]}
+      - {key: v_max,               op: "*", factor: 0.95, clamp: [1.0, 6.0]}
+    reason: "wall touch (≤2) — boundary 강화 + v_max ↓"
+
+  - name: crash_detected_chronic
+    priority: L0_safety
+    severity: HIGH
+    when:
+      all:
+        - "lap['crash_count'] >= 3"
+    actions:
+      - {key: track_slack_penalty, op: "*", factor: 1.5, clamp: [100, 50000]}
+      - {key: qV,                  op: "*", factor: 0.80, clamp: [0.0, 5]}
+      - {key: v_max,               op: "*", factor: 0.90, clamp: [1.0, 6.0]}
+    reason: "chronic wall touch — boundary 더 강하게 + push 후퇴 + v_max ↓"
+
+  # ============================================================
+  # L1 STABILITY — 진동 / 발산만 (path tracking 룰 없음)
+  # ============================================================
+  - name: steer_oscillation_strong
+    priority: L1_stability
+    severity: HIGH
+    when:
+      all:
+        - "lap['u_steer_rate_rms'] > 3.0"
+    actions:
+      - {key: qDelta,  op: "*", factor: 1.20, clamp: [0.0, 5]}
+      - {key: qDDelta, op: "*", factor: 1.20, clamp: [0.01, 30]}
+    reason: "steer 진동 강함 (RMS>3) — δ + δ̇ 페널티 동시 강하게.
+             진동 잡힐 때까지 L2/L3 액션 모두 suppress."
+
+  # ============================================================
+  # L2 SPEED — 빨리 가는 게 핵심 (corner handling 포함)
+  # ============================================================
+  - name: speed_headroom
+    priority: L2_speed
+    severity: MED
+    when:
+      all:
+        - "lap['max_ay_usage'] < 0.70"
+        - "lap['infeasible_count'] == 0"
+        - "lap['crash_count'] == 0"
+    actions:
+      - {key: qV,    op: "*", factor: 1.08, clamp: [0.0, 5]}
+      - {key: v_max, op: "*", factor: 1.05, clamp: [1.0, 6.0]}
+    reason: "헤드룸 + 충돌 0 → push ↑ + v_max ↑.
+             centerline 추종 (mean_abs_n) 조건 제거 — racing line 자유."
+
+  - name: lap_time_regression
+    priority: L2_speed
+    severity: MED
+    when:
+      all:
+        - "lap['crash_count'] == 0"
+        - "lap['infeasible_count'] == 0"
+        - "lap.get('best_lap_time', 0) > 0"
+        - "lap['lap_time'] > lap['best_lap_time'] * 1.10"
+    actions:
+      - {key: qV,    op: "*", factor: 1.03, clamp: [0.0, 5]}
+      - {key: v_max, op: "*", factor: 1.02, clamp: [1.0, 6.0]}
+    reason: "lap_time best 대비 +10% 느림 + 안전 OK → push ↑ (보수)"
+
+  - name: speed_too_aggressive
+    priority: L2_speed
+    severity: HIGH
+    when:
+      any:
+        - "lap['max_ay_usage'] > 1.05"
+    actions:
+      - {key: qV,    op: "*", factor: 0.85, clamp: [0.0, 5]}
+      - {key: qVs,   op: "*", factor: 0.92, clamp: [0.1, 3]}
+      - {key: v_max, op: "*", factor: 0.95, clamp: [1.0, 6.0]}
+    reason: "코너 lat-accel 한계 침범 — push 후퇴 + v_max ↓"
+
+  ### HJ : 코너 handling — 빨리 가는 게 목적이므로 L2 (path tracking 강제 X).
+  ### qC↓ 는 centerline 자유도 ↑ 라 racing line 잡는 데 도움.
+  - name: corner_exit_understeer
+    priority: L2_speed
+    severity: MED
+    when:
+      any:
+        - "any(c['n_exit_signed_mean'] > 0.30 and c['max_ay_usage'] < 0.85 for c in corners)"
+    actions:
+      - {key: qC,  op: "*", factor: 0.85, clamp: [0.1, 5]}
+      - {key: qMu, op: "*", factor: 1.15, clamp: [0.02, 5]}
+    reason: "코너 출구 바깥으로 돔 + 헤드룸 있음 → contour 더 풀고 (qC↓)
+             heading 으로 line 잡기 (qMu↑). 코너 출구 가속 잘하기."
+
+  - name: corner_late_turn_in
+    priority: L2_speed
+    severity: LOW
+    when:
+      any:
+        - "any(c['n_entry_signed_mean'] > 0.20 for c in corners)"
+    actions:
+      - {key: qMu, op: "*", factor: 1.10, clamp: [0.02, 5]}
+    reason: "코너 진입 늦음 → turn-in heading 적극화 (qC 는 안 건드림)"
+
+  # ============================================================
+  # L3 SMOOTHNESS — 입력 fine 다듬기
+  # ============================================================
+  - name: steer_chatter_mild
+    priority: L3_smoothness
+    severity: LOW
+    when:
+      all:
+        - "lap['u_steer_rate_rms'] > 1.5"
+        - "lap['u_steer_rate_rms'] <= 3.0"   # >3.0 은 L1 STABILITY 가 처리
+    actions:
+      - {key: qDDelta, op: "*", factor: 1.15, clamp: [0.01, 30]}
+      - {key: qDelta,  op: "*", factor: 1.10, clamp: [0.0, 5]}
+    reason: "steer rate mild chatter — 가벼운 페널티 ↑"
+
+  - name: accel_chatter
+    priority: L3_smoothness
+    severity: LOW
+    when:
+      all:
+        - "lap['vx_max'] - lap['vx_mean'] > 4.0"
+    actions:
+      - {key: qA, op: "*", factor: 1.10, clamp: [0.01, 10]}
+    reason: "가감속 폭 큼 → u_a 페널티 ↑"
+
+  - name: preview_leak_early_turnin
+    priority: L3_smoothness
+    severity: LOW
+    when:
+      any:
+        - "any(c['n_entry_signed_mean'] < -0.20 for c in corners)"
+    actions:
+      - {key: qC_term, op: "*", factor: 0.92, clamp: [1, 30]}
+      - {key: qL_term, op: "*", factor: 0.92, clamp: [0.5, 5]}
+    reason: "코너 진입 전부터 안쪽으로 미리 꺾음 → terminal 영향 ↓"

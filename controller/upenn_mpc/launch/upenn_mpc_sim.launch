@@ -17,11 +17,11 @@
   <arg name="line"            default="raceline"
        doc="raceline | centerline — MPC 가 추종할 기준선"/>
   <arg name="patches_file"    default="$(find controller)/upenn_mpc/config/mu_patches_$(arg map).yaml"/>
-  <!-- ### HJ : sim 차량 GT yaml. f110-simulator 의 pbl_params.yaml 을 MPC 가 보는
-       /vehicle/* + /tire_{front,rear}/* 네임스페이스로 옮긴 파일.
-       sim 과 OCP 의 동역학 모델 mismatch 제거 목적. -->
-  <arg name="vehicle_yaml"    default="/shared_vehicle/vehicle_f110sim.yaml"
-       doc="rosparam 으로 로드할 vehicle yaml. SRX1 실차 튜닝과 비교하려면 vehicle_srx1.yaml."/>
+  <!-- ### HJ : sim 차량 yaml.
+       SIM_*.yaml 을 SRX1_*.yaml 로 동기화한 후 MPC 도 SRX1 yaml 참조 (sim/실차 동일 차량).
+       원본 vehicle_f110sim.yaml 은 sim 의 generic f110 차량용 (현재 미사용). -->
+  <arg name="vehicle_yaml"    default="/shared_vehicle/vehicle_srx1.yaml"
+       doc="rosparam 으로 로드할 vehicle yaml. sim ↔ MPC 동일 차량 가정."/>
   <!-- ### KD iter1: 맵별 MPC tuning yaml. kd_* 맵은 hairpin 보수 튜닝 자동 선택. -->
   <arg name="mpc_config"      default="$(eval 'upenn_mpc_kd' if map.startswith('kd') else 'upenn_mpc_srx1')"
        doc="upenn_mpc/config/[name].yaml 의 basename. kd_* 는 자동 kd 튜닝, 그 외 srx1."/>
@@ -48,6 +48,17 @@
     <param name="~supervise" value="true"/>
     <param name="~stuck_sec" value="1.5"/>
   </node>
+
+  <!-- ### HJ : sim 환경엔 state_machine 이 없어 lap_analyser 가 /state_marker
+       wait 에서 무한 block → /lap_data 절대 publish 안 됨. dummy 1 회 publish
+       로 unblock + auto-start trigger. real car / state_machine 환경엔 이미
+       실 publisher 있어 무해. -->
+  <node pkg="rostopic" type="rostopic" name="state_marker_dummy"
+        args="pub -l /state_marker visualization_msgs/Marker
+              '{header: {frame_id: map},
+                pose: {position: {x: 0, y: 0, z: 0}, orientation: {w: 1}}}' "/>
+  <node pkg="rostopic" type="rostopic" name="lap_analyser_autostart"
+        args="pub -l /lap_analyser/start std_msgs/Empty '{}' " launch-prefix="bash -c 'sleep 3; $0 $@'"/>
 
   <!-- Load MPC params (upenn_mpc namespace) and override mu_source -->
   <rosparam command="load"

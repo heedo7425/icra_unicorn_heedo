@@ -22,7 +22,8 @@ from f110_msgs.msg import LapData, WpntArray
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Int8
+from std_msgs.msg import Float32, Int8, Bool
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
 # Wpnt column layout (mirror upenn_mpc_node.py)
 C_X, C_Y, C_Z, C_VX, _, C_S, C_KAPPA, C_PSI, C_AX, C_D, C_MU_RAD = range(11)
@@ -37,6 +38,8 @@ class LapEvent:
     max_lat_err: float
     t_start: float             # ROS time (s) of lap start
     t_end: float               # ROS time (s) of lap end
+    ### HJ : 충돌 인식. wall_collision rising-edge 이벤트 카운트 (lap 동안).
+    crash_count: int = 0       # number of distinct wall-touch events in this lap
 
 
 class ChannelBuffer:
@@ -92,8 +95,11 @@ class ChannelHub:
                 "solve_ms",                          # mpc telemetry
                 "mu_used",
                 "infeasible",                        # 0 or 1 events; Phase 3 wires real source
+                "wall_touch",                        ### HJ : /wall_collision rising edges
             ]
         }
+        ### HJ : wall_collision 마지막 상태 (rising-edge 감지용)
+        self._last_wall_state: int = 0
 
         self._raceline_lock = threading.Lock()
         self._raceline: Optional[np.ndarray] = None      # (M,11)
@@ -102,6 +108,9 @@ class ChannelHub:
         self._lap_cb = None
         self._lap_t_anchor: Optional[float] = None       # rolling lap start time
         self._last_lap_count: Optional[int] = None
+        ### HJ : spawn (re-teleport) 이벤트 callback. 데몬이 즉시 인식해 진단/rollback.
+        self._spawn_cb = None
+        self._spawn_seen_count: int = 0   # init 시 1회 자동 발화는 건너뛰기 위함
 
         # ---- Subscribers ----
         rospy.Subscriber("/car_state/odom",       Odometry,    self._cb_odom,    queue_size=50)
@@ -117,6 +126,11 @@ class ChannelHub:
         rospy.Subscriber(f"/{target}/solve_status", Int8,      self._cb_status,  queue_size=50)
         rospy.Subscriber(f"/{target}/mu_used",    Float32,     self._cb_mu,      queue_size=50)
         rospy.Subscriber("/global_waypoints_scaled", WpntArray, self._cb_raceline, queue_size=1)
+        ### HJ : 충돌 감지 토픽 구독. f1tenth_simulator 가 wall touch 시 True publish.
+        rospy.Subscriber("/wall_collision",       Bool,        self._cb_wall,    queue_size=20)
+        ### HJ : spawn (re-teleport) 이벤트. spawn_on_waypoint 가 stuck 시 publish.
+        rospy.Subscriber("/initialpose",          PoseWithCovarianceStamped,
+                                                               self._cb_spawn,   queue_size=10)
         rospy.Subscriber(lap_topic,               LapData,     self._cb_lap,     queue_size=10)
 
         rospy.loginfo(f"[mpc_param.channels] subscribed (target={target}, lap={lap_topic})")
@@ -168,6 +182,27 @@ class ChannelHub:
         if s not in (0, 2):
             self.ch["infeasible"].append(self._now(), 1.0)
 
+    def _cb_spawn(self, m: PoseWithCovarianceStamped) -> None:
+        ### HJ : spawn_on_waypoint 의 stuck-respawn 발화. sim 시작 시 1회 자동
+        ###       (warmup respawn) 무시, 그 이후 발화는 진짜 stuck/crash 신호.
+        ###       _spawn_cb 가 등록돼있으면 호출 (tuner 가 진단 + rollback 수행).
+        self._spawn_seen_count += 1
+        if self._spawn_seen_count <= 1:
+            return  # init 시 자동 1회 무시
+        if self._spawn_cb is not None:
+            try:
+                self._spawn_cb(self._now())
+            except Exception as e:
+                rospy.logerr(f"[mpc_param.channels] spawn callback error: {e}")
+
+    def _cb_wall(self, m: Bool) -> None:
+        ### HJ : rising-edge 만 카운트 (False→True). 한 번 닿으면 1 회 collision
+        ###       으로 침. wall_touch buf 에 timestamp 만 append (value=1).
+        cur = 1 if bool(m.data) else 0
+        if cur == 1 and self._last_wall_state == 0:
+            self.ch["wall_touch"].append(self._now(), 1.0)
+        self._last_wall_state = cur
+
     def _cb_raceline(self, m: WpntArray) -> None:
         if not m.wpnts:
             return
@@ -189,6 +224,9 @@ class ChannelHub:
             self._last_lap_count = m.lap_count
             rospy.loginfo(f"[mpc_param.channels] anchored at lap #{m.lap_count}")
             return
+        ### HJ : lap 동안 wall_touch rising-edge 횟수 카운트
+        wt_times, _ = self.ch["wall_touch"].slice(self._lap_t_anchor, t_end)
+        crash_n = int(len(wt_times))
         evt = LapEvent(
             lap_count=int(m.lap_count),
             lap_time=float(m.lap_time),
@@ -196,6 +234,7 @@ class ChannelHub:
             max_lat_err=float(m.max_lateral_error_to_global_waypoints),
             t_start=self._lap_t_anchor,
             t_end=t_end,
+            crash_count=crash_n,
         )
         self._lap_t_anchor = t_end
         self._last_lap_count = m.lap_count
@@ -208,6 +247,10 @@ class ChannelHub:
     # ---- Public ----
     def set_lap_callback(self, fn) -> None:
         self._lap_cb = fn
+
+    def set_spawn_callback(self, fn) -> None:
+        ### HJ : tuner 가 spawn 즉각 인식 위해 등록.
+        self._spawn_cb = fn
 
     def raceline(self) -> Optional[np.ndarray]:
         with self._raceline_lock:

@@ -1,0 +1,128 @@
+# =====================================================================
+# launch_mode — all user-tunable parameters in one file.
+# Loaded under launch_mode node's private namespace.
+# =====================================================================
+
+rate: 200                      # main loop / current publish rate [Hz]
+
+# ---------------------------------------------------------------------
+# ELRS / Joy channel mapping
+#   - auto_arm_button: matches joy_teleop right-bumper used to enable autonomous.
+#   - launch_arm: dedicated channel for arming launch boost.
+#   - go: dedicated channel for the actual GO command.
+# Either an axis (with threshold) or a button can be used; set the
+# unused index to -1 to disable that path.
+# Verify indices with: rostopic echo /joy
+# ---------------------------------------------------------------------
+auto_arm_button: 5             # right bumper (matches stack_master joy_teleop)
+launch_arm_axis: -1
+launch_arm_button: 7
+launch_arm_threshold: 0.5
+go_axis: -1
+go_button: 6
+go_threshold: 0.5
+joy_timeout_s: 0.5             # /joy stale -> collapse to safe
+
+# ---------------------------------------------------------------------
+# VESC current limits
+#   - i_firmware_cap MUST mirror the VESC Tool `motor_current_max` value.
+#     The node clips its command to this value, so we never expect the
+#     firmware to silently cut us.
+#   - i_launch_max is the SOFT command target. Calibrate via on-track
+#     sweeps; do NOT raise above i_firmware_cap.
+# ---------------------------------------------------------------------
+i_launch_max: 40.0             # [A]   <-- TUNE PER CAR
+i_firmware_cap: 60.0           # [A]   <-- MUST EQUAL VESC Tool motor_current_max
+
+# ---------------------------------------------------------------------
+# Topics
+# Override here if your namespace/mux layout differs.
+# ---------------------------------------------------------------------
+# inputs
+joy_topic:               /joy
+odom_topic:              /car_state/odom
+frenet_odom_topic:       /car_state/odom_frenet
+vesc_odom_topic:         /vesc/odom
+vesc_core_topic:         /vesc/sensors/core
+waypoints_topic:         /global_waypoints
+controller_ackermann_topic: /vesc/high_level/ackermann_cmd_mux/input/nav_1
+
+# outputs
+current_topic:           /vesc/commands/motor/current
+speed_topic:             /vesc/commands/motor/speed
+launch_ackermann_topic:  /vesc/high_level/ackermann_cmd_mux/input/launch
+servo_command_topic:     /vesc/sensors/servo_position_command
+
+# ---------------------------------------------------------------------
+# FSM exit conditions — first one to trigger ends LAUNCH.
+# ---------------------------------------------------------------------
+v_stationary:    0.10          # |v| below this counts as stationary [m/s]
+s_launch_m:      5.0           # exit if Δs from launch start exceeds this [m]
+v_ratio_exit:    0.7           # exit if v_now > ratio * v_ref
+t_max_s:         1.5           # absolute timeout [s]
+steer_exit_rad:  0.20          # exit if |steer| exceeds this (corner sensed)
+kappa_exit:      0.50          # exit if upcoming |kappa| exceeds this
+
+# ---------------------------------------------------------------------
+# Waypoint lookahead used to derive v_ref / kappa_ahead for exit logic.
+#   wpnt_ds: spacing of /global_waypoints, must match generation pipeline
+#   wpnt_lookahead_m: how far ahead to scan for v_ref and kappa_ahead
+# ---------------------------------------------------------------------
+wpnt_ds: 0.10                  # [m]
+wpnt_lookahead_m: 2.0          # [m]
+
+# ---------------------------------------------------------------------
+# Grid / opponent proximity
+#
+# Policy: launch_mode is the human's call. The node publishes a
+# continuous feasibility advisory on /launch_mode/feasibility:
+#     GREEN    full launch is safe
+#     YELLOW   reduced launch is safer (front blocked, lateral ok)
+#     RED      front blocked AND lateral tight — human assumes risk
+#     UNKNOWN  scan stale; system cannot advise
+# The /launch_mode/feasible Bool is true for GREEN or YELLOW.
+#
+# When the human flips launch_arm and triggers GO, the FSM picks intent:
+#     front grid                 -> FULL
+#     rear, scan stale           -> ABORT  (only sensor-failure veto)
+#     rear, front clear          -> FULL
+#     rear, front blocked        -> REDUCED (regardless of lateral)
+# REDUCED uses i*reduced_i_factor and exits at reduced_s_launch_m.
+# Runtime cutoff (front_ttc_th_s, front_proximity_min_m) still aborts
+# mid-launch on imminent collision.
+#
+# `safe_lateral_gap_m` is used ONLY by the advisory (RED vs YELLOW),
+# never as a veto. Tune it to your dashboard's risk threshold.
+# ---------------------------------------------------------------------
+grid_slot:               rear        # front | rear
+safe_lateral_gap_m:      0.6         # [m]
+
+front_roi_x_max:         1.5         # [m]
+front_roi_y_half:        0.30        # [m]
+side_roi_x_min:         -0.5         # [m]
+side_roi_x_max:          1.5         # [m]
+side_roi_y_min:          0.30        # [m]
+side_roi_y_max:          1.50        # [m]
+roi_min_points:          5
+
+reduced_i_factor:        0.6         # current scale in REDUCED launch
+reduced_s_launch_m:      1.5         # exit distance in REDUCED launch [m]
+
+front_ttc_th_s:          0.4         # runtime abort: time-to-collision [s]
+front_proximity_min_m:   0.30        # runtime abort: hard distance [m]
+
+scan_topic:              /scan
+scan_timeout_s:          0.3
+
+# RViz visualization (latched markers on /launch_mode/markers)
+viz_frame:               base_link
+viz_text_height:         0.5         # [m] above base_link origin
+viz_text_size:           0.4         # [m] glyph height
+
+# ---------------------------------------------------------------------
+# Slip guard — multiplicative current cut when wheel slip detected.
+# ---------------------------------------------------------------------
+slip_threshold:  0.20          # (v_wheel - v_body) / v_wheel
+slip_confirm_n:  2             # consecutive ticks above threshold
+slip_cut_factor: 0.8           # multiplicative current cut on slip
+i_floor_ratio:   0.4           # do not cut below this fraction of i_launch_max

@@ -1,10 +1,13 @@
-C_0d: 0.4769777665344132
-C_R: 3.693303119695026
-C_Sf: 3.70776089172916
-C_Sr: 14.917278165744078
-C_acc: 7.135521073243542
-C_d: -0.8555709456247437
-C_dec: 0.555393889733246
+# ### HJ : SIM 차량을 SRX1 실차로 동기화. 원본은 SIM_linear.yaml.bak_NUC1 백업.
+# Source: stack_master/config/SRX1/SRX1_linear.yaml
+C_0d: 0.48
+C_0v: 100
+C_Sf: 5.035741752330491
+C_Sr: 9.618871913816136
+C_acc: 3.2
+C_d: -1.1
+C_dec: 3.2
+C_v: 20
 I_z: 0.05797
 a_max: 3
 a_min: -3
@@ -13,7 +16,7 @@ l_f: 0.162
 l_r: 0.145
 l_wb: 0.307
 m: 3.54
-model_name: NUC1
-mu: 1
+model_name: SRX1_synced  # ### HJ : was NUC1
+mu: 1.0
 tau_steer: 0.15779476
 tire_model: linear
