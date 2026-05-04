@@ -46,3 +46,8 @@ lat_K_stanley: 1.5
 lat_pred_horizon: 0.3
 lat_pred_alpha: 0.3
 speed_ff_gain: 0.0
+
+# 2026-04-30: sim 의 compute_accel kp=1.5 P-controller 와 PPC AccelLim 가
+# 캐스케이드돼 cmd ramp 가 0.15 m/s² 수준으로 떨어짐 (실차 vesc 는 cmd 즉응이라
+# 무관). sim 환경에선 비활성.
+accel_limiter_enabled: false

@@ -89,6 +89,10 @@ private:
     ros::Subscriber pose_sub;
     ros::Subscriber pose_rviz_sub;
 
+    // ### HJ : runtime friction coefficient override (sector-aware).
+    // mu_patch_node 가 차량 s 위치에 따라 publish; 매 step 의 타이어 모델 반영.
+    ros::Subscriber friction_sub;
+
     // Publish a scan, odometry, pitch, and imu data
     bool broadcast_transform;
     bool pub_gt_pose;
@@ -291,6 +295,15 @@ public:
 
         // obstacle subscriber
         obs_sub = n.subscribe("/clicked_point", 1, &RacecarSimulator::obs_callback, this);
+
+        // ### HJ : sector-aware friction override (mu_ppc filter 환경)
+        friction_sub = n.subscribe<std_msgs::Float32>(
+            "/sim_friction_coeff", 1,
+            [this](const std_msgs::Float32::ConstPtr& msg) {
+                if (msg->data > 0.0f && msg->data < 5.0f) {
+                    params.friction_coeff = msg->data;
+                }
+            });
 
         // get collision safety margin
         n.getParam("coll_threshold", thresh);

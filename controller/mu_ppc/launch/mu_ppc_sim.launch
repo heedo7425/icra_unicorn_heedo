@@ -1,96 +1,96 @@
 <?xml version="1.0"?>
-<!--
-  mu_ppc_sim.launch — friction-aware Pure Pursuit on f1tenth_simulator (2D).
+<!-- 2D sim + 기존 race_stack PPC + mu_ppc_filter (overlay).
 
-  Usage:
-    roslaunch controller mu_ppc_sim.launch                       # default map=f
-    roslaunch controller mu_ppc_sim.launch map:=kd_0420_v1
-    roslaunch controller mu_ppc_sim.launch rviz:=false
-    roslaunch controller mu_ppc_sim.launch inject_zone:=true     # auto-inject demo friction zone
+     PPC 본체 (controller_manager + combined.Controller PP) 는 손대지 않음.
+     출력 토픽만 /mu_ppc/drive_raw 로 redirect → mu_ppc_filter 가 friction
+     기반 후처리 (v_circle clamp, max_steer scale) 후 nav_1 으로 republish.
 
-  Prereqs satisfied by this launch:
-    base_system (sim)            → /map, /global_waypoints, /car_state/*, /vesc/odom, /imu/data
-    state_machine_node           → /behavior_strategy (local wpnts inside)
-    recovery + start planner     → so state_machine has wpnts to chew on
-    mu_ppc_node                  → /mu_ppc/{lookahead, alpha, debug}, drive cmd
-
-  Note: controller_manager is intentionally NOT launched (mu_ppc replaces it).
+     Usage:
+       CAR_NAME=SIM roslaunch controller mu_ppc_sim.launch map:=f
+       CAR_NAME=SIM roslaunch controller mu_ppc_sim.launch map:=f sim_mu_patch:=false
 -->
 <launch>
-  <arg name="racecar_version" default="SIM"/>
-  <arg name="map"             default="f"/>
-  <arg name="rviz"            default="true"/>
-  <arg name="rate"            default="50"/>
-  <arg name="drive_topic"     default="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
-  <arg name="config"          default="$(find controller)/mu_ppc/config/mu_ppc.yaml"/>
-  <arg name="vehicle_yaml"    default="/shared_vehicle/vehicle_srx1.yaml"/>
+  <arg name="racecar_version"  default="SIM"/>
+  <arg name="map"              default="f"/>
+  <arg name="rviz"             default="true"/>
+  <arg name="ctrl_algo"        default="PP"/>
+  <arg name="LU_table"         default="SRX1-0427"/>
+  <arg name="sim_mu_patch"     default="true"
+       doc="true 면 sim 의 grip 도 sector-별로 변동 (mu_patch_node + simulator.cpp 패치)."/>
 
-  <!-- demo friction zone injection (for prior-only testing) -->
-  <arg name="inject_zone"     default="false"/>
-  <arg name="zone_s_start"    default="5.0"/>
-  <arg name="zone_s_end"      default="10.0"/>
-  <arg name="zone_friction"   default="0.5"/>
-
-  <!-- vehicle params (wheelbase etc.) -->
-  <rosparam command="load" file="$(arg vehicle_yaml)" ns=""/>
-
-  <!-- ============================================================ Base sim -->
+  <!-- 1) base_system (sim) -->
   <include file="$(find stack_master)/launch/base_system.launch">
     <arg name="racecar_version" value="$(arg racecar_version)"/>
     <arg name="map"             value="$(arg map)"/>
     <arg name="sim"             value="true"/>
   </include>
 
-  <!-- IMU relay (sim publishes on /vesc/sensors/imu/raw, mu_ppc wants /imu/data) -->
-  <node name="imu_relay_to_imu_data" pkg="topic_tools" type="relay"
-        args="/vesc/sensors/imu/raw /imu/data"/>
+  <!-- f110-simulator pbl_params.yaml 의 drive_topic 과 nav_drive_topic 이 SAME
+       (`.../input/nav_1`) 이라서 mux_controller 가 자기 pub 을 자기 sub 로 받아
+       100 kHz 무한 feedback loop 형성 (rostopic hz 로 확인). sim 이 토픽 폭주에 묻혀
+       cmd 를 거의 못 처리.
+       drive_topic (mux→sim 경로) 을 별도 토픽으로 분리해 loop 끊음.
+       pbl_sim.launch 가 mux_controller / f1tenth_simulator / behavior_controller 에
+       각각 pbl_params.yaml 을 private 로 로드하므로 해당 노드별로 override 한다.
+       (param 은 roslaunch 처리 순서상 include 후에 와야 덮어씀.) -->
+  <param name="/mux_controller/drive_topic"      value="/sim/drive_to_car"/>
+  <param name="/f1tenth_simulator/drive_topic"   value="/sim/drive_to_car"/>
+  <param name="/behavior_controller/drive_topic" value="/sim/drive_to_car"/>
 
-  <!-- spawn on raceline + stuck supervisor (same as mpcc_kine_sim) -->
+
+  <node name="imu_name_relay" pkg="topic_tools" type="relay"
+        args="/vesc/sensors/imu/raw /livox/imu"/>
+
+  <!-- spawn_on_waypoint 의 supervise=true 가 1.5초 stuck 감지 시 /initialpose
+       publish 해서 sim state reset → 차가 가속 시작도 못 하고 매 1.5초마다 리셋.
+       끄거나 stuck_sec 충분히 크게. 여기선 supervise 비활성화. -->
   <node pkg="controller" type="spawn_on_waypoint.py" name="spawn_on_waypoint" output="screen">
-    <param name="~supervise" value="true"/>
-    <param name="~stuck_sec" value="1.5"/>
+    <param name="~supervise" value="false"/>
   </node>
 
-  <!-- lap_analyser unblock for sim -->
-  <node pkg="rostopic" type="rostopic" name="state_marker_dummy"
-        args="pub -l /state_marker visualization_msgs/Marker
-              '{header: {frame_id: map},
-                pose: {position: {x: 0, y: 0, z: 0}, orientation: {w: 1}}}' "/>
-  <node pkg="rostopic" type="rostopic" name="lap_analyser_autostart"
-        args="pub -l /lap_analyser/start std_msgs/Empty '{}' " launch-prefix="bash -c 'sleep 3; $0 $@'"/>
-
-  <!-- ====================================================== State machine -->
-  <node pkg="state_machine" type="dynamic_statemachine_server.py"
-        name="dyn_statemachine" output="screen"/>
-  <node pkg="state_machine" type="state_machine_node.py" name="state_machine" output="screen">
-    <rosparam file="$(find stack_master)/config/state_machine_params.yaml"/>
+  <!-- 2) Friction sector plumbing -->
+  <node pkg="controller" type="friction_loader.py" name="friction_loader" output="screen">
+    <param name="~map" value="$(arg map)"/>
   </node>
 
-  <!-- minimal planners so state_machine has waypoints to publish -->
-  <node pkg="recovery_spliner" type="dynamic_recovery_spline_server.py"
-        name="dyn_planner_recovery" output="screen"/>
-  <node pkg="recovery_spliner" type="recovery_spliner_node.py"
-        name="recovery_planner_spline" output="screen"/>
-  <node pkg="spliner" type="start_spline_node_v2.py"
-        name="start_planner" output="screen"/>
+  <!-- 3) Sim grip override (옵션) -->
+  <node if="$(arg sim_mu_patch)" pkg="controller" type="mu_patch_node.py"
+        name="mu_patch" output="screen"/>
 
-  <!-- ============================================================ mu_ppc -->
-  <node pkg="controller" type="mu_ppc_node.py" name="mu_ppc" output="screen">
-    <rosparam command="load" file="$(arg config)" subst_value="true"/>
-    <param name="rate"        value="$(arg rate)"/>
-    <param name="drive_topic" value="$(arg drive_topic)"/>
+  <!-- 4) 기존 PPC — 출력만 /mu_ppc/drive_raw 로 redirect -->
+  <rosparam ns="L1_controller" command="load"
+            file="$(find stack_master)/config/$(arg racecar_version)/controller.yaml"/>
+  <!-- sim 의 compute_accel 은 kp=1.5 P-controller (시정수 0.67초) 라 PPC 의
+       AccelLim (v_max_next = v_now + ax*dt) 과 캐스케이드되면 ramp 가 0.15 m/s²
+       수준으로 떨어져 raceline 도달까지 30+초. 실차 vesc 는 cmd 에 즉응하므로
+       AccelLim 이 의미있지만 sim 에선 핸디캡. 비활성화. -->
+  <param name="/L1_controller/accel_limiter_enabled" value="false"/>
+  <node pkg="controller" name="dyn_controller" type="l1_params_server.py" output="screen"/>
+  <node pkg="controller" name="controller_manager" type="controller_manager.py"
+        output="screen" respawn="true" respawn_delay="2">
+    <param name="LU_table"  value="$(arg LU_table)"/>
+    <param name="ctrl_algo" value="$(arg ctrl_algo)"/>
+    <param name="drive_topic" value="/mu_ppc/drive_raw"/>
   </node>
 
-  <!-- ============================================ optional friction zone -->
-  <group if="$(arg inject_zone)">
-    <param name="/friction_map_params/n_sectors" value="1"/>
-    <param name="/friction_map_params/global_friction_limit" value="1.0"/>
-    <param name="/friction_map_params/Sector0/s_start"  value="$(arg zone_s_start)"/>
-    <param name="/friction_map_params/Sector0/s_end"    value="$(arg zone_s_end)"/>
-    <param name="/friction_map_params/Sector0/friction" value="$(arg zone_friction)"/>
-  </group>
+  <!-- state_machine: controller_manager 가 /behavior_strategy 구독 -->
+  <node pkg="state_machine" type="dynamic_statemachine_server.py" name="dyn_statemachine" output="screen"/>
+  <!-- state_machine 은 /car_state/odom + /global_waypoints_scaled +
+       /global_waypoints/overtaking + /car_state/odom_frenet 4개 wait_for_message
+       하므로 base_system 노드들 준비 전에 기동되면 죽을 수 있음. respawn 으로 복구. -->
+  <node pkg="state_machine" type="state_machine_node.py" name="state_machine"
+        output="screen" respawn="true" respawn_delay="2">
+    <rosparam command="load" file="$(find stack_master)/config/state_machine_params.yaml"/>
+  </node>
+  <node pkg="state_machine" type="state_indicator_node.py" name="state_indicator" output="screen"/>
 
-  <!-- ============================================================== RViz -->
+  <!-- 5) mu_ppc_filter — overlay 후 nav_1 으로 publish -->
+  <node pkg="controller" type="mu_ppc_filter.py" name="mu_ppc_filter" output="screen">
+    <param name="~drive_in"  value="/mu_ppc/drive_raw"/>
+    <param name="~drive_out" value="/vesc/high_level/ackermann_cmd_mux/input/nav_1"/>
+  </node>
+
+  <!-- 6) RViz -->
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_mu_ppc"
-        args="-d $(find controller)/mu_ppc/rviz/mu_ppc.rviz"/>
+        args="-d $(find controller)/mu_ppc/rviz/mu_ppc.rviz" required="false"/>
 </launch>

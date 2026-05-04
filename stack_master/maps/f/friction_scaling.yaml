@@ -1,0 +1,25 @@
+# map "f" — synthetic mu sectors for mu_ppc filter validation.
+#   ST1 idx 29..172  (s ~2.9..17.2m)  — long straight  → high  μ 1.3
+#   ST2 idx 234..341 (s ~23.4..34.1m) — long straight  → low   μ 0.7
+#   HP1 idx 490..496 (s ~49.0..49.6m) — hairpin        → low   μ 0.6
+#   HP2 idx 564..569 (s ~56.4..56.9m) — hairpin        → high  μ 1.3
+# 그 외 idx 구간은 sector 매칭 없음 → default 1.0.
+global_friction: 1.0
+global_friction_limit: 1.5
+n_sectors: 4
+Sector0:
+  start: 29
+  end: 172
+  friction: 1.3
+Sector1:
+  start: 234
+  end: 341
+  friction: 0.7
+Sector2:
+  start: 490
+  end: 496
+  friction: 0.6
+Sector3:
+  start: 564
+  end: 569
+  friction: 1.3
